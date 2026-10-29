@@ -6,7 +6,7 @@ flowchart TD
     D --> E["Worker watches their wallet"]
     E --> F["Copies buys at 0.25x"]
     F --> G["Mirrors their exits"]
-    G --> H{"Two losing closes?"}
+    G --> H{"Two losing closes in a row?"}
     H -->|no| E
     H -->|yes| I["Fire and hand off"]
     I --> J{"Next candidate eligible?"}

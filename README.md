@@ -1,10 +1,10 @@
 # ZCode Bot
 
-**Copy one Solana trader. A quarter of their size. Fire them after two losing closes.**
+**Copy one Solana trader. A quarter of their size. Fire them after two losing closes in a row.**
 
 ## What this is
 
-ZCode Bot runs on your own Windows PC. You import a trader from a leaderboard, or add one by hand. The bot watches that person's Solana wallet, repeats their buys in your wallet at a quarter of the size they put in, and mirrors their sells. Two losing closes in a row end the relationship: the bot stops copying, closes what it opened, and hires the next name from a shortlist ZCode researched beforehand. If no acceptable name is left, it pauses and says why.
+ZCode Bot runs on your own Windows PC. You import a trader from a leaderboard, or add one by hand. The bot watches that person's Solana wallet, repeats their buys in your wallet at a quarter of the size they put in, and mirrors their sells. Two losing closes in a row end the relationship, since a winning close resets the count; the bot stops copying, closes what it opened, and hires the next name from a shortlist ZCode researched beforehand. If no acceptable name is left, it pauses and says why.
 
 What you end up with:
 
@@ -56,7 +56,7 @@ When it works you land on the TRADE tab with a flat equity line and a **WAITING 
 
 ## The loop at a glance
 
-![The ZCode Bot loop: you import the weekly board, candidates gain Solana wallets, ZCode researches a shortlist, the bot hires a trader and watches their wallet, copies buys at 0.25x, mirrors exits, fires the trader after two losing closes, then hires the next candidate or pauses until a fresh shortlist arrives](docs/images/copy-loop-overview.png)
+![The ZCode Bot loop: you import the weekly board, candidates gain Solana wallets, ZCode researches a shortlist, the bot hires a trader and watches their wallet, copies buys at 0.25x, mirrors exits, fires the trader after two losing closes in a row, then hires the next candidate or pauses until a fresh shortlist arrives](docs/images/copy-loop-overview.png)
 
 _One hire at a time: the middle of the loop repeats for every leader swap, and the only exits are the next hire or a deliberate pause._
 
@@ -159,11 +159,11 @@ Execution is a single boundary. The paper executor simulates and never signs. Th
 
 Firing is atomic and ordered:
 
-![A state diagram of the firing handoff: watching the trader, firing after two losing closes, cancelling unsigned intents, closing positions per policy and cooling the trader down for 24 hours, then either hiring the next eligible candidate or pausing until a fresh shortlist or manual pick](docs/images/firing-handoff.png)
+![A state diagram of the firing handoff: watching the trader, firing after two losing closes in a row, cancelling unsigned intents, closing positions per policy and cooling the trader down for 24 hours, then either hiring the next eligible candidate or pausing until a fresh shortlist or manual pick](docs/images/firing-handoff.png)
 
 _The only way back from a firing is a candidate the worker accepts, or a fresh shortlist that gives it one._
 
-When the second consecutive losing unit closes, the worker marks the trader `FIRING`, cancels unsigned intents, applies the position policy (the default closes all copied positions before switching), records a 24 hour cooldown for the fired trader, and then walks the shortlist in the order ZCode gave. Fired, cooling down, disabled, stale, unsupported, or ambiguous candidates are skipped with recorded reasons. When nothing qualifies, the app state becomes **PAUSED_WAITING_FOR_ZCODE**. New entries stop; monitoring, mirrored exits, reconciliation, and the emergency controls keep working.
+Firing counts consecutive losing units, not total losses. With the default unit type, one fully closed position is one unit, and partial closes neither add to nor reset the count. A winning unit resets the count to zero; a breakeven unit leaves it unchanged by default. When the second consecutive losing unit closes, the worker marks the trader `FIRING`, cancels unsigned intents, applies the position policy (the default closes all copied positions before switching), records a 24 hour cooldown for the fired trader, and then walks the shortlist in the order ZCode gave. Fired, cooling down, disabled, stale, unsupported, or ambiguous candidates are skipped with recorded reasons. When nothing qualifies, the app state becomes **PAUSED_WAITING_FOR_ZCODE**. New entries stop; monitoring, mirrored exits, reconciliation, and the emergency controls keep working.
 
 Unknown execution outcomes never get retried blind. An order whose signed or submitted result is unknown becomes `REQUIRES_RECONCILIATION`, and the state machine has no path back to a quotable state. You resolve the case with on-chain evidence; the procedure is in `docs/RUNBOOK.md`.
 
