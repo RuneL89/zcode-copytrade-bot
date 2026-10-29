@@ -1,0 +1,94 @@
+import { z } from 'zod';
+import { modeSchema, riskConfigSchema, DEFAULT_RISK, type Mode, type RiskConfig } from './risk.js';
+
+const bool = z
+  .string()
+  .transform((v) => v.trim().toLowerCase())
+  .pipe(z.enum(['1', 'true', 'yes', '0', 'false', 'no']).transform((v) => ['1', 'true', 'yes'].includes(v)));
+
+const port = z.coerce.number().int().positive().max(65535);
+const intervalMs = z.coerce.number().int().positive();
+
+export const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  MODE: modeSchema.default('paper'),
+  PORT: port.default(8787),
+  HOST: z.string().default('127.0.0.1'),
+  DATA_DIR: z.string().default('./data'),
+  /** Paper-mode starting bankroll in USD (dashboard equity baseline). */
+  EQUITY_START_USD: z.coerce.number().positive().default(1000),
+  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
+  LIVE_TRADING_ACK: z.string().optional(),
+
+  HELIUS_API_KEY: z.string().default(''),
+  HELIUS_WEBHOOK_SECRET: z.string().default(''),
+  LEADER_POLL_INTERVAL_MS: intervalMs.default(8000),
+
+  JUPITER_BASE_URL: z.string().url().default('https://lite-api.jup.ag'),
+  JUPITER_API_KEY: z.string().default(''),
+
+  // Optional FOMO web discovery (read-only browser adapter). Unset = manual import only.
+  FOMO_LEADERBOARD_URL: z.string().optional(),
+  FOMO_ROBOTS_URL: z.string().optional(),
+  FOMO_PROFILE_ADDRESS_SELECTOR: z.string().optional(),
+  FOMO_BROWSER_CHANNEL: z.enum(['chrome', 'msedge']).optional(),
+  FOMO_SELECTORS_JSON: z.string().optional(),
+  FOMO_WEB_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
+  /** 'personal-copy': adapter runs on a copy of the desktop Chrome profile (no login ceremony). */
+  FOMO_PROFILE_MODE: z.enum(['dedicated', 'personal-copy']).default('personal-copy'),
+
+  // Optional Dawn (Telegram) trader lookup (read-only browser adapter over the
+  // operator's own Telegram Web session). Unset DAWN_BOT_USERNAME = disabled.
+  // Resolves fomo handles to the wallet addresses Dawn displays for them.
+  DAWN_BOT_USERNAME: z.string().optional(),
+  DAWN_WEB_URL: z.string().url().default('https://web.telegram.org/k/'),
+  DAWN_BROWSER_CHANNEL: z.enum(['chrome', 'msedge']).optional(),
+  DAWN_LOOKUP_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
+  DAWN_MAX_LOOKUPS_PER_RUN: z.coerce.number().int().positive().default(25),
+
+  // Helius activity refresh (day-trader ranking + pre-hire gate alignment).
+  ACTIVITY_REFRESH_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
+  ACTIVITY_MAX_PER_RUN: z.coerce.number().int().positive().default(30),
+
+  TELEGRAM_BOT_TOKEN: z.string().default(''),
+  TELEGRAM_CHAT_ID: z.string().default(''),
+
+  // Risk values come through as strings from .env and are merged with defaults.
+  RISK_JSON: z.string().optional(),
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+export interface AppConfig {
+  env: Env;
+  mode: Mode;
+  risk: RiskConfig;
+}
+
+/** Parse process.env-shaped input into a validated AppConfig. */
+export function loadConfig(input: Record<string, string | undefined>): AppConfig {
+  const env = envSchema.parse(input);
+  let riskOverrides: Record<string, unknown> = {};
+  if (env.RISK_JSON && env.RISK_JSON.trim()) {
+    try {
+      riskOverrides = JSON.parse(env.RISK_JSON) as Record<string, unknown>;
+    } catch {
+      throw new Error('RISK_JSON is not valid JSON');
+    }
+  }
+  const riskFromEnv: Record<string, string> = {};
+  for (const key of Object.keys(riskConfigSchema.shape)) {
+    const raw = input[key];
+    if (raw !== undefined && raw !== '') riskFromEnv[key] = raw;
+  }
+  const merged = { ...riskFromEnv, ...riskOverrides };
+  const coerced: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(merged)) {
+    coerced[k] = typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v)) ? Number(v) : v;
+  }
+  const risk = riskConfigSchema.parse({ ...DEFAULT_RISK, ...coerced });
+  return { env, mode: env.MODE, risk };
+}
+
+export { modeSchema, riskConfigSchema };
+export type { Mode, RiskConfig };

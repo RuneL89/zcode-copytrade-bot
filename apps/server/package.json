@@ -1,0 +1,41 @@
+{
+  "name": "@zcode-bot/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "wallet:create": "tsx src/cli/wallet-create.ts",
+    "wallet:send": "tsx src/cli/wallet-send.ts",
+    "user:token": "tsx src/cli/setup-token.ts",
+    "demo": "tsx src/cli/demo.ts",
+    "fixtures:generate": "tsx scripts/generate-demo-fixtures.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.12.0",
+    "@solana/web3.js": "^1.98.0",
+    "@zcode-bot/config": "workspace:*",
+    "@zcode-bot/core": "workspace:*",
+    "@zcode-bot/db": "workspace:*",
+    "@zcode-bot/providers": "workspace:*",
+    "better-sqlite3": "^12.2.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.6.0",
+    "tweetnacl": "^1.0.3",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "@types/better-sqlite3": "^7.6.0"
+  }
+}

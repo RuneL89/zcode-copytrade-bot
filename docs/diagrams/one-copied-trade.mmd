@@ -1,0 +1,27 @@
+%% Render: ~/.zcode/tools/mermaid-render/render.sh -i one-copied-trade.mmd -o ../images/one-copied-trade.png -b white -s 2 -w 1600
+sequenceDiagram
+    autonumber
+    participant L as Leader wallet
+    participant W as Worker
+    participant H as Helius
+    participant J as Jupiter
+    participant D as Dashboard
+
+    L-->>H: a buy lands on chain
+    W->>H: poll getTransactionsForAddress
+    H-->>W: the transaction
+    Note over W: classify and dedupe, drop events older than 90s<br/>size at 0.25x with caps<br/>risk gates on exposure, daily loss, price age
+    W->>J: request a quote
+    J-->>W: price and route
+    alt paper mode
+        W->>W: simulate the fill
+    else live and armed
+        W->>W: sign, submit, confirm
+    end
+    W->>D: position, fill, equity
+
+    L-->>H: a sell lands on chain
+    W->>H: poll
+    H-->>W: the sell
+    Note over W: sell the same fraction
+    W->>D: close, PnL, loss streak

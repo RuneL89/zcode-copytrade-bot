@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    ZCode Bot app icon: rounded-square tile, brand gradient, robot mark.
+    Structured generation prompt (for image models, if a raster version is
+    ever wanted): "Flat minimal app icon, 64px grid, rounded-square tile,
+    diagonal gradient #8b7ff0 to #5ea8e0, centered white robot head with two
+    round eyes, single antenna with dot, no text, soft inner glow, no shadow."
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b7ff0" />
+      <stop offset="1" stop-color="#5ea8e0" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#tile)" />
+  <rect x="14" y="22" width="36" height="26" rx="9" fill="#ffffff" opacity="0.95" />
+  <circle cx="25" cy="34" r="3.4" fill="#2a2740" />
+  <circle cx="39" cy="34" r="3.4" fill="#2a2740" />
+  <path d="M27 41h10" stroke="#2a2740" stroke-width="2.6" stroke-linecap="round" />
+  <path d="M32 22v-7" stroke="#ffffff" stroke-width="3.4" stroke-linecap="round" />
+  <circle cx="32" cy="13" r="3" fill="#fff6d8" />
+</svg>

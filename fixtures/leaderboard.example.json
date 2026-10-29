@@ -1,0 +1,42 @@
+[
+  {
+    "handle": "ape_vasco",
+    "weeklyRank": 1,
+    "displayedPnlUsd": 4380.5,
+    "profileUrl": "https://fomo.example/trader/ape_vasco",
+    "avatarUrl": null,
+    "solanaAddresses": ["LeaderA11111111111111111111111111111111111"],
+    "enabled": true,
+    "observedAt": "2026-10-25T09:00:00Z"
+  },
+  {
+    "handle": "luna_degen",
+    "weeklyRank": 2,
+    "displayedPnlUsd": 2960.0,
+    "profileUrl": "https://fomo.example/trader/luna_degen",
+    "avatarUrl": null,
+    "solanaAddresses": ["LeaderB11111111111111111111111111111111111"],
+    "enabled": true,
+    "observedAt": "2026-10-25T09:00:00Z"
+  },
+  {
+    "handle": "moonpie_max",
+    "weeklyRank": 3,
+    "displayedPnlUsd": 1810.25,
+    "profileUrl": "https://fomo.example/trader/moonpie_max",
+    "avatarUrl": null,
+    "solanaAddresses": ["LeaderC11111111111111111111111111111111111"],
+    "enabled": true,
+    "observedAt": "2026-10-25T09:00:00Z"
+  },
+  {
+    "handle": "no_address_nina",
+    "weeklyRank": 4,
+    "displayedPnlUsd": 640.0,
+    "profileUrl": "https://fomo.example/trader/no_address_nina",
+    "avatarUrl": null,
+    "solanaAddresses": [],
+    "enabled": true,
+    "observedAt": "2026-10-25T09:00:00Z"
+  }
+]

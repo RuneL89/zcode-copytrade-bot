@@ -1,0 +1,5 @@
+handle,weekly_rank,displayed_pnl_usd,profile_url,avatar_url,solana_addresses,enabled,observed_at
+ape_vasco,1,4380.50,https://fomo.example/trader/ape_vasco,,LeaderA11111111111111111111111111111111111,true,2026-10-25T09:00:00Z
+luna_degen,2,"+$2,960.00",https://fomo.example/trader/luna_degen,,LeaderB11111111111111111111111111111111111,true,2026-10-25T09:00:00Z
+moonpie_max,3,1810.25,https://fomo.example/trader/moonpie_max,,LeaderC11111111111111111111111111111111111,true,2026-10-25T09:00:00Z
+chain_zed,5,-120.00,https://fomo.example/trader/chain_zed,,0xNotARealSolanaAddress,true,2026-10-25T09:00:00Z

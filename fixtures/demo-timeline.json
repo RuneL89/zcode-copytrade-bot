@@ -1,0 +1,666 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "fictional": true,
+    "label": "FICTIONAL DEMO · NOT A PERFORMANCE CLAIM",
+    "durationSeconds": 28,
+    "handoff1Seconds": 6.14,
+    "handoff2Seconds": 16.24,
+    "inspiredByReference": true
+  },
+  "start": {
+    "equityUsdMicro": "52000000",
+    "handle": "ape_vasco",
+    "weeklyRank": 1
+  },
+  "traders": [
+    {
+      "handle": "ape_vasco",
+      "weeklyRank": 1,
+      "displayedPnl7dPct": 438
+    },
+    {
+      "handle": "moonpie_max",
+      "weeklyRank": 3,
+      "displayedPnl7dPct": 297
+    },
+    {
+      "handle": "lunadegen",
+      "weeklyRank": 2,
+      "displayedPnl7dPct": 512
+    }
+  ],
+  "events": [
+    {
+      "t": 1.02,
+      "type": "close",
+      "pnlUsdMicro": "8170000",
+      "equityAfterUsdMicro": "60170000",
+      "symbol": "MEOWX"
+    },
+    {
+      "t": 1.54,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "MEOWX",
+      "leaderUsd": 331,
+      "copyUsd": 82.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 1.84,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "MEOWX",
+      "leaderUsd": 331,
+      "copyUsd": 82.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 2.05,
+      "type": "close",
+      "pnlUsdMicro": "9180000",
+      "equityAfterUsdMicro": "69350000",
+      "symbol": "DOGWIF"
+    },
+    {
+      "t": 2.14,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "MEOWX",
+      "leaderUsd": 331,
+      "copyUsd": 82.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 2.44,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "MEOWX",
+      "leaderUsd": 331,
+      "copyUsd": 82.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 3.07,
+      "type": "close",
+      "pnlUsdMicro": "6450000",
+      "equityAfterUsdMicro": "75800000",
+      "symbol": "MEOWX"
+    },
+    {
+      "t": 3.59,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "MEOWX",
+      "leaderUsd": 331,
+      "copyUsd": 82.75,
+      "pnlUsd": 3.08
+    },
+    {
+      "t": 4.1,
+      "type": "close",
+      "pnlUsdMicro": "-1580000",
+      "equityAfterUsdMicro": "74220000",
+      "symbol": "DOGWIF"
+    },
+    {
+      "t": 4.61,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "DOGWIF",
+      "leaderUsd": 370,
+      "copyUsd": 92.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 4.91,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "DOGWIF",
+      "leaderUsd": 370,
+      "copyUsd": 92.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 5.12,
+      "type": "close",
+      "pnlUsdMicro": "-1220000",
+      "equityAfterUsdMicro": "73000000",
+      "symbol": "MEOWX"
+    },
+    {
+      "t": 5.21,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "DOGWIF",
+      "leaderUsd": 370,
+      "copyUsd": 92.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 5.51,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "DOGWIF",
+      "leaderUsd": 370,
+      "copyUsd": 92.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 6.14,
+      "type": "handoff",
+      "fromHandle": "ape_vasco",
+      "fromRank": 1,
+      "toHandle": "moonpie_max",
+      "toRank": 3,
+      "reason": "2 consecutive losses",
+      "equityAfterUsdMicro": "73000000"
+    },
+    {
+      "t": 6.66,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "DOGWIF",
+      "leaderUsd": 370,
+      "copyUsd": 92.5,
+      "pnlUsd": 91.09
+    },
+    {
+      "t": 6.71,
+      "type": "close",
+      "pnlUsdMicro": "28480000",
+      "equityAfterUsdMicro": "101480000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 7.27,
+      "type": "close",
+      "pnlUsdMicro": "36620000",
+      "equityAfterUsdMicro": "138100000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 7.83,
+      "type": "close",
+      "pnlUsdMicro": "25860000",
+      "equityAfterUsdMicro": "163960000",
+      "symbol": "SOLA"
+    },
+    {
+      "t": 8.39,
+      "type": "close",
+      "pnlUsdMicro": "31480000",
+      "equityAfterUsdMicro": "195440000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 8.67,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "PNUTZ",
+      "leaderUsd": 343,
+      "copyUsd": 85.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 8.95,
+      "type": "close",
+      "pnlUsdMicro": "28570000",
+      "equityAfterUsdMicro": "224010000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 8.97,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "PNUTZ",
+      "leaderUsd": 343,
+      "copyUsd": 85.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 9.27,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "PNUTZ",
+      "leaderUsd": 343,
+      "copyUsd": 85.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 9.51,
+      "type": "close",
+      "pnlUsdMicro": "32090000",
+      "equityAfterUsdMicro": "256100000",
+      "symbol": "SOLA"
+    },
+    {
+      "t": 9.57,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "PNUTZ",
+      "leaderUsd": 343,
+      "copyUsd": 85.75,
+      "pnlUsd": null
+    },
+    {
+      "t": 10.07,
+      "type": "close",
+      "pnlUsdMicro": "25350000",
+      "equityAfterUsdMicro": "281450000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 10.63,
+      "type": "close",
+      "pnlUsdMicro": "23610000",
+      "equityAfterUsdMicro": "305060000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 10.87,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "PNUTZ",
+      "leaderUsd": 343,
+      "copyUsd": 85.75,
+      "pnlUsd": 47.57
+    },
+    {
+      "t": 11.19,
+      "type": "close",
+      "pnlUsdMicro": "24260000",
+      "equityAfterUsdMicro": "329320000",
+      "symbol": "SOLA"
+    },
+    {
+      "t": 11.75,
+      "type": "close",
+      "pnlUsdMicro": "37070000",
+      "equityAfterUsdMicro": "366390000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 12.31,
+      "type": "close",
+      "pnlUsdMicro": "24090000",
+      "equityAfterUsdMicro": "390480000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 12.87,
+      "type": "close",
+      "pnlUsdMicro": "39010000",
+      "equityAfterUsdMicro": "429490000",
+      "symbol": "SOLA"
+    },
+    {
+      "t": 13.43,
+      "type": "close",
+      "pnlUsdMicro": "35710000",
+      "equityAfterUsdMicro": "465200000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 13.71,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "GIGA2",
+      "leaderUsd": 218,
+      "copyUsd": 54.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 13.99,
+      "type": "close",
+      "pnlUsdMicro": "27870000",
+      "equityAfterUsdMicro": "493070000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 14.01,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "GIGA2",
+      "leaderUsd": 218,
+      "copyUsd": 54.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 14.31,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "GIGA2",
+      "leaderUsd": 218,
+      "copyUsd": 54.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 14.55,
+      "type": "close",
+      "pnlUsdMicro": "34930000",
+      "equityAfterUsdMicro": "528000000",
+      "symbol": "SOLA"
+    },
+    {
+      "t": 14.61,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "GIGA2",
+      "leaderUsd": 218,
+      "copyUsd": 54.5,
+      "pnlUsd": null
+    },
+    {
+      "t": 15.11,
+      "type": "close",
+      "pnlUsdMicro": "-4720000",
+      "equityAfterUsdMicro": "523280000",
+      "symbol": "PNUTZ"
+    },
+    {
+      "t": 15.68,
+      "type": "close",
+      "pnlUsdMicro": "-3280000",
+      "equityAfterUsdMicro": "520000000",
+      "symbol": "GIGA2"
+    },
+    {
+      "t": 15.91,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "GIGA2",
+      "leaderUsd": 218,
+      "copyUsd": 54.5,
+      "pnlUsd": 34.5
+    },
+    {
+      "t": 16.24,
+      "type": "handoff",
+      "fromHandle": "moonpie_max",
+      "fromRank": 3,
+      "toHandle": "lunadegen",
+      "toRank": 2,
+      "reason": "2 consecutive losses",
+      "equityAfterUsdMicro": "520000000"
+    },
+    {
+      "t": 16.67,
+      "type": "close",
+      "pnlUsdMicro": "-8770000",
+      "equityAfterUsdMicro": "511230000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 17.11,
+      "type": "close",
+      "pnlUsdMicro": "210710000",
+      "equityAfterUsdMicro": "721940000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 17.54,
+      "type": "close",
+      "pnlUsdMicro": "293880000",
+      "equityAfterUsdMicro": "1015820000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 17.98,
+      "type": "close",
+      "pnlUsdMicro": "-7530000",
+      "equityAfterUsdMicro": "1008290000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 18.41,
+      "type": "close",
+      "pnlUsdMicro": "235210000",
+      "equityAfterUsdMicro": "1243500000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 18.85,
+      "type": "close",
+      "pnlUsdMicro": "-9530000",
+      "equityAfterUsdMicro": "1233970000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 19.18,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "WIFHM",
+      "leaderUsd": 157,
+      "copyUsd": 39.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 19.29,
+      "type": "close",
+      "pnlUsdMicro": "-8940000",
+      "equityAfterUsdMicro": "1225030000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 19.48,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "WIFHM",
+      "leaderUsd": 157,
+      "copyUsd": 39.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 19.72,
+      "type": "close",
+      "pnlUsdMicro": "218140000",
+      "equityAfterUsdMicro": "1443170000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 19.78,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "WIFHM",
+      "leaderUsd": 157,
+      "copyUsd": 39.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 20.08,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "WIFHM",
+      "leaderUsd": 157,
+      "copyUsd": 39.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 20.16,
+      "type": "close",
+      "pnlUsdMicro": "217500000",
+      "equityAfterUsdMicro": "1660670000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 20.59,
+      "type": "close",
+      "pnlUsdMicro": "283330000",
+      "equityAfterUsdMicro": "1944000000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 21.03,
+      "type": "close",
+      "pnlUsdMicro": "275110000",
+      "equityAfterUsdMicro": "2219110000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 21.38,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "WIFHM",
+      "leaderUsd": 157,
+      "copyUsd": 39.25,
+      "pnlUsd": 14.15
+    },
+    {
+      "t": 21.46,
+      "type": "close",
+      "pnlUsdMicro": "291680000",
+      "equityAfterUsdMicro": "2510790000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 21.9,
+      "type": "close",
+      "pnlUsdMicro": "272280000",
+      "equityAfterUsdMicro": "2783070000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 22.34,
+      "type": "close",
+      "pnlUsdMicro": "-9910000",
+      "equityAfterUsdMicro": "2773160000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 22.77,
+      "type": "close",
+      "pnlUsdMicro": "-8750000",
+      "equityAfterUsdMicro": "2764410000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 23.21,
+      "type": "close",
+      "pnlUsdMicro": "182170000",
+      "equityAfterUsdMicro": "2946580000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 23.64,
+      "type": "close",
+      "pnlUsdMicro": "236420000",
+      "equityAfterUsdMicro": "3183000000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 24.08,
+      "type": "close",
+      "pnlUsdMicro": "285120000",
+      "equityAfterUsdMicro": "3468120000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 24.51,
+      "type": "close",
+      "pnlUsdMicro": "217200000",
+      "equityAfterUsdMicro": "3685320000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 24.95,
+      "type": "close",
+      "pnlUsdMicro": "287430000",
+      "equityAfterUsdMicro": "3972750000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 25.06,
+      "type": "mirror",
+      "status": "WATCHING",
+      "symbol": "BONKX",
+      "leaderUsd": 449,
+      "copyUsd": 112.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 25.36,
+      "type": "mirror",
+      "status": "QUOTING",
+      "symbol": "BONKX",
+      "leaderUsd": 449,
+      "copyUsd": 112.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 25.39,
+      "type": "close",
+      "pnlUsdMicro": "250780000",
+      "equityAfterUsdMicro": "4223530000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 25.66,
+      "type": "mirror",
+      "status": "SUBMITTED",
+      "symbol": "BONKX",
+      "leaderUsd": 449,
+      "copyUsd": 112.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 25.82,
+      "type": "close",
+      "pnlUsdMicro": "262420000",
+      "equityAfterUsdMicro": "4485950000",
+      "symbol": "BONKX"
+    },
+    {
+      "t": 25.96,
+      "type": "mirror",
+      "status": "CONFIRMED",
+      "symbol": "BONKX",
+      "leaderUsd": 449,
+      "copyUsd": 112.25,
+      "pnlUsd": null
+    },
+    {
+      "t": 26.26,
+      "type": "close",
+      "pnlUsdMicro": "223400000",
+      "equityAfterUsdMicro": "4709350000",
+      "symbol": "TRUMPY"
+    },
+    {
+      "t": 26.69,
+      "type": "close",
+      "pnlUsdMicro": "248230000",
+      "equityAfterUsdMicro": "4957580000",
+      "symbol": "MYRO"
+    },
+    {
+      "t": 27.13,
+      "type": "close",
+      "pnlUsdMicro": "-9940000",
+      "equityAfterUsdMicro": "4947640000",
+      "symbol": "WIFHM"
+    },
+    {
+      "t": 27.26,
+      "type": "mirror",
+      "status": "CLOSED",
+      "symbol": "BONKX",
+      "leaderUsd": 449,
+      "copyUsd": 112.25,
+      "pnlUsd": -21.56
+    },
+    {
+      "t": 27.56,
+      "type": "close",
+      "pnlUsdMicro": "-8640000",
+      "equityAfterUsdMicro": "4939000000",
+      "symbol": "BONKX"
+    }
+  ],
+  "end": {
+    "equityUsdMicro": "4939000000",
+    "trades": 48,
+    "winners": 36
+  }
+}

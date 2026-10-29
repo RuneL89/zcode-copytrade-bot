@@ -1,0 +1,115 @@
+import { useEffect, useState } from 'react';
+import type { DashboardState } from '../types';
+import { Avatar } from './charts';
+
+/**
+ * Fired-trader handoff animation:
+ *   1. dim the background        (scrim)
+ *   2. raise the outgoing card   (anim-raise)
+ *   3. UNFOLLOWED state          (label)
+ *   4. rotated red FIRED stamp   (anim-stamp)
+ *   5. downward execution arrow  (anim-arrow)
+ *   6. NOW COPYING reveal        (anim-reveal)
+ *   7. no replacement -> WAITING FOR ZCODE (never an invented trader)
+ * prefers-reduced-motion: all animation disabled via CSS, content still shown.
+ */
+export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardState['handoff']> }) {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    setVisible(true);
+    const timer = setTimeout(() => setVisible(false), 4600);
+    return () => clearTimeout(timer);
+  }, [handoff.atIso, handoff.fromHandle, handoff.toHandle]);
+
+  if (!visible) return null;
+  const waiting = handoff.phase === 'WAITING_FOR_ZCODE' || handoff.toHandle === null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-5 anim-scrim"
+      style={{ background: 'rgba(24, 20, 44, 0.45)', backdropFilter: 'blur(4px)' }}
+      role="alert"
+      aria-live="assertive"
+      data-testid="handoff-overlay"
+    >
+      <div className="w-full max-w-[400px]">
+        <div className="card !bg-white/85 p-5 anim-raise relative overflow-hidden" data-testid="handoff-card">
+          <p className="label !text-rose-600">UNFOLLOWED</p>
+          <div className="mt-2 flex items-center gap-3">
+            <Avatar name={handoff.fromHandle} size={44} />
+            <div>
+              <p className="text-[16px] font-bold">@{handoff.fromHandle}</p>
+              <p className="text-[11px] text-[#7d78a0]">
+                {handoff.fromRank !== null ? `#${handoff.fromRank} weekly · ` : ''}
+                {handoff.fromPnlText ?? 'PnL —'}
+              </p>
+            </div>
+          </div>
+          <p className="label mt-2 !text-[9px]">2 CONSECUTIVE LOSSES → NEXT CANDIDATE</p>
+
+          {/* rotated red stamp */}
+          <div
+            className="anim-stamp absolute right-4 top-9 select-none"
+            data-testid="fired-stamp"
+            aria-label="trader fired"
+          >
+            <span
+              className="inline-block border-[3px] border-rose-600 text-rose-600 rounded-md px-3 py-1 text-[20px] font-black tracking-[0.2em]"
+              style={{ transform: 'rotate(-14deg)', background: 'rgba(255,235,235,0.7)' }}
+            >
+              FIRED
+            </span>
+          </div>
+
+          {/* downward execution arrow */}
+          <div className="anim-arrow flex justify-center my-2" aria-hidden="true">
+            <svg width="26" height="34" viewBox="0 0 26 34">
+              <path d="M13 2v24" stroke="#2a2740" strokeWidth="2.5" strokeLinecap="round" />
+              <path
+                d="M6 22l7 8 7-8"
+                fill="none"
+                stroke="#2a2740"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
+
+          {waiting ? (
+            <div
+              className="anim-reveal rounded-[18px] bg-orange-50 border border-orange-200 p-4"
+              data-testid="waiting-zcode"
+            >
+              <p className="label !text-orange-700">WAITING FOR ZCODE</p>
+              <p className="text-[12px] text-[#7d78a0] mt-1">
+                No eligible replacement in the latest recommendation. Monitoring, mirrored exits,
+                reconciliation, and emergency controls continue. Use the ZCode scheduled task’s “Run now” or
+                import a fresh recommendation.
+              </p>
+            </div>
+          ) : (
+            <div
+              className="anim-reveal rounded-[18px] bg-white/80 border border-white p-4 flex items-center gap-3"
+              data-testid="now-copying"
+            >
+              <Avatar name={handoff.toHandle!} size={40} />
+              <div>
+                <p className="label !text-emerald-700">NOW COPYING</p>
+                <p className="text-[15px] font-bold">@{handoff.toHandle}</p>
+                <p className="text-[11px] text-[#7d78a0]">
+                  {handoff.toRank !== null ? `#${handoff.toRank} weekly · ` : ''}copy 0.25x · exits when he
+                  sells
+                </p>
+              </div>
+            </div>
+          )}
+
+          <p className="label !text-[8.5px] mt-3 text-center">
+            {handoff.demo ? 'FICTIONAL DEMO · NOT A PERFORMANCE CLAIM' : 'EXECUTED BY ZCODE BOT WORKER'}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

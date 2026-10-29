@@ -1,0 +1,37 @@
+{
+  "name": "zcode-bot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted Solana copy-trading bot with ZCode candidate research, deterministic 0.25x copy engine, and animated dashboard",
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm build && pnpm -r --if-present run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @zcode-bot/db run db:generate",
+    "db:migrate": "pnpm --filter @zcode-bot/db run db:migrate",
+    "db:seed": "pnpm --filter @zcode-bot/db run db:seed",
+    "dev:server": "pnpm --filter @zcode-bot/server run dev",
+    "dev:web": "pnpm --filter @zcode-bot/web run dev",
+    "demo": "pnpm --filter @zcode-bot/server run demo",
+    "start": "pnpm --filter @zcode-bot/server run start",
+    "wallet:create": "pnpm --filter @zcode-bot/server run wallet:create",
+    "wallet:send": "pnpm --filter @zcode-bot/server run wallet:send",
+    "user:token": "pnpm --filter @zcode-bot/server run user:token",
+    "mcp:start": "pnpm --filter @zcode-bot/zcode-mcp run start",
+    "e2e": "pnpm --filter @zcode-bot/web run e2e",
+    "e2e:install": "pnpm --filter @zcode-bot/web run e2e:install"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.6.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
