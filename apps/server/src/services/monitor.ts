@@ -2,7 +2,7 @@ import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 import { HeliusProvider as HeliusStatic } from '@zcode-bot/providers';
-import { isIdleOver, timeExitDecision } from '@zcode-bot/core';
+import { isIdleOver, timeExitDecision, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { TraderLifecycle } from './lifecycle.js';
 import type { RiskConfig } from '@zcode-bot/config';
@@ -22,6 +22,9 @@ import type { RiskConfig } from '@zcode-bot/config';
  * - Idle fire: an activation with zero open positions for IDLE_FIRE_HOURS
  *   (measured from the hire or the last held position) is fired — a day
  *   trader who gives us nothing to copy loses the slot.
+ * - Stall watcher: a hired leader whose wallet shows no on-chain activity for
+ *   LEADER_STALL_FIRE_HOURS while we hold is fired and replaced, even with
+ *   open positions. Judged only when the Helius activity stamp is fresh.
  */
 export class LeaderMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -131,6 +134,35 @@ export class LeaderMonitor {
       });
       repo.kvSet(this.db, graceKey, ''); // cleanup
       this.onStateChange();
+    }
+
+    // Stall watcher: a hired leader whose wallet goes silent for
+    // LEADER_STALL_FIRE_HOURS while we hold is fired and replaced — regardless
+    // of open-position winners. Judged only on fresh evidence: if the last
+    // Helius check itself is stale, we do not know the leader stalled.
+    const activation = repo.getActivation(this.db, activationId);
+    const candidate = activation ? repo.getCandidate(this.db, activation.candidateId) : null;
+    if (
+      candidate?.activityCheckedAt &&
+      candidate.lastSwapAt &&
+      nowMs - Date.parse(candidate.activityCheckedAt) <= ACTIVITY_FRESH_MS
+    ) {
+      const silentMs = nowMs - Date.parse(candidate.lastSwapAt);
+      const fireMs = this.risk.LEADER_STALL_FIRE_HOURS * 3_600_000;
+      if (silentMs > fireMs) {
+        const hours = (silentMs / 3_600_000).toFixed(1);
+        repo.audit(this.db, 'monitor', `stall watcher: leader wallet silent ${hours}h — firing`, {
+          activationId,
+          candidateId: candidate.candidateId,
+        });
+        await this.lifecycle
+          .fire(activationId, `stall: leader inactive ${hours}h`)
+          .then(() => this.onStateChange())
+          .catch((e: Error) => {
+            repo.audit(this.db, 'monitor', `stall fire failed: ${e.message}`, {});
+          });
+        return;
+      }
     }
 
     const lastOpenKey = `monitor.lastOpenAt:${activationId}`;

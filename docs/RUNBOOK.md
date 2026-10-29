@@ -84,10 +84,12 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 
 ### Automatic rotation after a refresh
 
-When research is produced from a fresher board than the current hire, the
-recommendation carries `rotateIfFlat: true`. On ingest the engine fires the
-active trader **only if** it holds no open position, no reconciliation case and no
-in-flight entry intent, and **only if** some candidate on the new ordering is
+Rotation is evaluated only in the sweep that follows a board refresh (the engine
+requires a `board.refreshed_at` marker written within the last 45 minutes), and it
+keeps the incumbent when the fresh ordering still ranks them first. Within that
+window, the recommendation carries `rotateIfFlat: true`; on ingest the engine fires
+the active trader **only if** it holds no open position, no reconciliation case and
+no in-flight entry intent, and **only if** some candidate on the new ordering is
 hireable. Otherwise it skips and writes `rotation skipped: …` to the audit trail.
 
 Guards worth knowing:
@@ -97,13 +99,23 @@ Guards worth knowing:
 - A fresh board with no resolved wallets (Dawn not yet run) can never rotate: the
   hireable check fails and the current trader stays.
 - The fired candidate enters the 24h `FIRED_TRADER_COOLDOWN_MS` bucket.
-- **Live mode is off by default.** Rotation runs freely in paper/demo; in live an
-  armed session only rotates when `ROTATE_ON_REFRESH=true` is set in `.env`
-  (restart required). Without it, a `rotateIfFlat` intent is ignored and audited as
+- **Live rotation is ENABLED as of 2026-10-29** (`ROTATE_ON_REFRESH=true` in
+  `.env`, restart required after any change). Remove that line to return to
+  paper-only rotation; an ignored intent is audited as
   `rotation ignored: live mode requires ROTATE_ON_REFRESH=true`.
 - To stop rotation entirely, remove the rotation paragraph from
-  `.zcode/agents/zcode-research.md` (it is the only producer of the intent), or
-  leave `ROTATE_ON_REFRESH` unset in live.
+  `.zcode/agents/zcode-research.md` (it is the only producer of the intent).
+
+### Stall watcher (wired 2026-10-29)
+
+The hourly discipline sweep fires the hired leader when their wallet has shown no
+on-chain activity for `LEADER_STALL_FIRE_HOURS` (default 8h, tunable in Settings)
+**while we hold**, and only when the Helius activity stamp itself is fresh (≤6h —
+staleness is never judged from stale evidence). The audit line reads
+`stall watcher: leader wallet silent Nh — firing`; the normal position policy
+closes any open positions and the replacement takes the slot. This is what makes
+"traders are discarded after no activity" literally true; the pre-hire gate
+(`MAX_LEADER_STALL_HOURS`, 20h) is a separate decision about who may be hired.
 
 ### Wallet resolution runs itself — except one state
 

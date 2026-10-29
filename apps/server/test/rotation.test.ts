@@ -137,6 +137,11 @@ function openPosition(activationId: string, status = 'open') {
   });
 }
 
+/** Rotation acts only within the post-refresh window; tests opt in explicitly. */
+function markBoardRefreshed() {
+  repo.kvSet(handle.db, 'board.refreshed_at', new Date().toISOString());
+}
+
 function inFlightEntry(activationId: string) {
   repo.insertIntent(handle.db, {
     intentId: 'int_' + crypto.randomUUID(),
@@ -166,6 +171,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
   it('rotates a flat trader to the fresh ordering', async () => {
     const snap = seed();
     const oldId = activateDirect('cand_ape');
+    markBoardRefreshed();
     const rec = recommendation(snap, [
       { candidateId: 'cand_moon', rank: 1 },
       { candidateId: 'cand_star', rank: 2 },
@@ -178,10 +184,45 @@ describe('flat-only rotation after a leaderboard refresh', () => {
     expect(repo.activeActivation(handle.db)?.candidateId).toBe('cand_moon');
   });
 
+  it('skips when no board refresh is in the post-refresh window', async () => {
+    const snap = seed();
+    const activeId = activateDirect('cand_ape');
+    const rec = recommendation(snap, [{ candidateId: 'cand_star', rank: 1 }]);
+
+    // No board.refreshed_at marker at all.
+    const absent = await lifecycle.rotateIfFlat(rec);
+    expect(absent.rotated).toBe(false);
+    expect(absent.reason).toBe('no fresh board refresh');
+
+    // A marker older than the 45-minute window is equally stale.
+    repo.kvSet(handle.db, 'board.refreshed_at', new Date(Date.now() - 60 * 60_000).toISOString());
+    const expired = await lifecycle.rotateIfFlat(rec);
+    expect(expired.rotated).toBe(false);
+    expect(expired.reason).toBe('no fresh board refresh');
+    expect(repo.getActivation(handle.db, activeId)?.state).toBe('ACTIVE');
+  });
+
+  it('keeps the incumbent when the fresh ordering still ranks it first', async () => {
+    const snap = seed();
+    const activeId = activateDirect('cand_ape');
+    markBoardRefreshed();
+    const rec = recommendation(snap, [
+      { candidateId: 'cand_ape', rank: 1 },
+      { candidateId: 'cand_star', rank: 2 },
+    ]);
+
+    const result = await lifecycle.rotateIfFlat(rec);
+
+    expect(result.rotated).toBe(false);
+    expect(result.reason).toBe('incumbent still ranks first');
+    expect(repo.getActivation(handle.db, activeId)?.state).toBe('ACTIVE');
+  });
+
   it('refuses to rotate while a position is open', async () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
     openPosition(activeId, 'open');
+    markBoardRefreshed();
 
     const rec = recommendation(snap, [{ candidateId: 'cand_star', rank: 1 }]);
     const result = await lifecycle.rotateIfFlat(rec);
@@ -195,6 +236,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
     openPosition(activeId, 'requires_reconciliation');
+    markBoardRefreshed();
 
     const rec = recommendation(snap, [{ candidateId: 'cand_star', rank: 1 }]);
     const result = await lifecycle.rotateIfFlat(rec);
@@ -207,6 +249,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
     inFlightEntry(activeId);
+    markBoardRefreshed();
 
     const rec = recommendation(snap, [{ candidateId: 'cand_star', rank: 1 }]);
     const result = await lifecycle.rotateIfFlat(rec);
@@ -218,6 +261,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
   it('refuses to fire when no candidate on the fresh ordering is hireable', async () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
+    markBoardRefreshed();
     const rec = recommendation(snap, [{ candidateId: 'cand_missing', rank: 1 }]);
     const result = await lifecycle.rotateIfFlat(rec);
 
@@ -229,6 +273,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
   it('is idempotent per recommendationId', async () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
+    markBoardRefreshed();
     const rec = recommendation(snap, [{ candidateId: 'cand_star', rank: 1 }]);
 
     const first = await lifecycle.rotateIfFlat(rec);
@@ -243,6 +288,7 @@ describe('flat-only rotation after a leaderboard refresh', () => {
   it('falls through to the next candidate when the first one cannot be activated', async () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
+    markBoardRefreshed();
     // cand_moon is put in the 24h cooldown, so activation must skip it and use cand_star.
     lifecycle.cooldowns.set('cand_moon', Date.now() + 3600_000);
     const rec = recommendation(snap, [

@@ -112,6 +112,25 @@ export class SnapshotService {
       staleCandidateCount,
       candidates: sanitized,
     };
+    // Mark a genuine board refresh: when the freshest observation advances,
+    // rotation becomes eligible for the sweep that reads this snapshot.
+    const previous = repo.latestSnapshot(this.db);
+    if (previous && freshestObserved !== null) {
+      try {
+        const prevPayload = JSON.parse(previous.payloadJson) as {
+          candidates?: Array<{ observedAt: string }>;
+        };
+        const prevFreshest = (prevPayload.candidates ?? [])
+          .map((c) => Date.parse(c.observedAt))
+          .filter((t) => Number.isFinite(t))
+          .reduce((acc, t) => Math.max(acc, t), 0);
+        if (freshestObserved > prevFreshest) {
+          repo.kvSet(this.db, 'board.refreshed_at', now.toISOString());
+        }
+      } catch {
+        /* marker is best-effort; never block the publish */
+      }
+    }
     const hash = snapshotHash(snapshot);
     repo.saveSnapshot(this.db, {
       snapshotId: snapshot.snapshotId,

@@ -26,6 +26,7 @@ import { SnapshotService, RecommendationService } from './services/research.js';
 import { CopyEngine, SOL_MINT, USDC_MINT } from './services/engine.js';
 import { TraderLifecycle } from './services/lifecycle.js';
 import { LeaderMonitor, reconcileOpenIntents } from './services/monitor.js';
+import { selectDawnTargets } from './services/dawn-targets.js';
 import { WithdrawalService, createSolanaBroadcaster, heliusRpcUrl } from './services/withdraw.js';
 import { StateBuilder } from './services/builder.js';
 import { readinessReport } from './services/readiness.js';
@@ -91,6 +92,7 @@ export class Runtime {
   private inboxTimer: ReturnType<typeof setInterval> | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private snapshotDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
   private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private lastFeeScanAt = 0;
@@ -542,6 +544,7 @@ export class Runtime {
     if (this.inboxTimer) clearInterval(this.inboxTimer);
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+    if (this.snapshotDebounceTimer) clearTimeout(this.snapshotDebounceTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);
@@ -561,6 +564,23 @@ export class Runtime {
   rebuildSnapshot(): void {
     this.snapshots.build();
     this.rebuildState();
+  }
+
+  /**
+   * Debounced snapshot rebuild after Dawn/Helius changed candidate rows, so
+   * research reads current wallets and activity stamps within a minute instead
+   * of waiting for the 30-minute publish timer.
+   */
+  scheduleSnapshotRebuild(): void {
+    if (this.snapshotDebounceTimer) clearTimeout(this.snapshotDebounceTimer);
+    this.snapshotDebounceTimer = setTimeout(() => {
+      this.snapshotDebounceTimer = null;
+      try {
+        this.rebuildSnapshot();
+      } catch (e) {
+        repo.audit(this.db.db, 'research', 'debounced snapshot rebuild failed: ' + (e as Error).message, {});
+      }
+    }, 60_000);
   }
 
   private coldStartBusy = false;
@@ -885,6 +905,9 @@ export class Runtime {
     warnings: string[];
   }> {
     // Two queues: discovery first (no wallet yet), then freshness (stats stale).
+    // selectDawnTargets sorts each queue — freshest board rows get wallets
+    // first, and the stale-stats tail refreshes oldest-first so no candidate's
+    // PnL marks can freeze out past the cap.
     const nowIso = new Date().toISOString();
     const staleCutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const candidates = repo.listCandidates(this.db.db).filter((c) => c.enabled);
@@ -894,11 +917,7 @@ export class Runtime {
         .filter((a) => a.chain === 'solana')
         .map((a) => a.candidateId),
     );
-    const walletless = candidates.filter((c) => !wallets.has(c.candidateId));
-    const staleStats = candidates.filter(
-      (c) => wallets.has(c.candidateId) && (c.statsCheckedAt == null || c.statsCheckedAt < staleCutoff),
-    );
-    const targets = [...walletless, ...staleStats].slice(0, limit);
+    const targets = selectDawnTargets(candidates, wallets, staleCutoff, limit);
     if (targets.length === 0) {
       repo.audit(
         this.db.db,
@@ -911,7 +930,10 @@ export class Runtime {
     repo.audit(
       this.db.db,
       'dawn-lookup',
-      `lookup run starting: ${walletless.length} walletless, ${staleStats.length} stale-stats (capped to ${targets.length})`,
+      `lookup run starting: ${targets.length} target(s), oldest stats first: ${targets
+        .slice(0, 3)
+        .map((t) => t.handle)
+        .join(', ')}`,
       {},
     );
 
@@ -972,7 +994,10 @@ export class Runtime {
         warnings: warnings.slice(0, 10),
       },
     );
-    if (resolved > 0) this.rebuildState();
+    if (resolved > 0) {
+      this.rebuildState();
+      this.scheduleSnapshotRebuild();
+    }
     return { resolved, failed, warnings };
   }
 
@@ -1038,7 +1063,10 @@ export class Runtime {
       'activity refresh: ' + checked + ' checked, ' + verified + ' verified, ' + failed + ' failed',
       {},
     );
-    if (checked > 0) this.rebuildState();
+    if (checked > 0) {
+      this.rebuildState();
+      if (verified > 0) this.scheduleSnapshotRebuild();
+    }
     return { checked, verified, failed };
   }
 

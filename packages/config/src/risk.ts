@@ -54,6 +54,8 @@ export const riskConfigSchema = z.object({
   LEADERBOARD_MAX_AGE_SECONDS: positiveInt('LEADERBOARD_MAX_AGE_SECONDS'),
   /** Fire the active trader when his last on-chain swap is older than this. */
   MAX_LEADER_STALL_HOURS: positiveInt('MAX_LEADER_STALL_HOURS'),
+  /** Fire the active trader when his wallet goes silent this long while we hold (stall watcher). */
+  LEADER_STALL_FIRE_HOURS: positiveInt('LEADER_STALL_FIRE_HOURS'),
   /** Pre-hire gate: minimum on-chain swaps in the leader wallet's last 24h. */
   MIN_LEADER_SWAPS_24H: positiveInt('MIN_LEADER_SWAPS_24H'),
   PRICE_MAX_AGE_SECONDS: positiveInt('PRICE_MAX_AGE_SECONDS'),
@@ -80,8 +82,13 @@ export const DEFAULT_RISK: RiskConfig = {
   MAX_SLIPPAGE_BPS: 300,
   MAX_PRICE_IMPACT_BPS: 300,
   MAX_COPY_EVENT_AGE_SECONDS: 90,
-  LEADERBOARD_MAX_AGE_SECONDS: 86400,
+  // 12h: the 24h board rotates daily and the sweep re-reads it at least every
+  // 4h — a candidate not re-seen within 12h is no longer part of today's game.
+  LEADERBOARD_MAX_AGE_SECONDS: 43200,
   MAX_LEADER_STALL_HOURS: 20,
+  // Fired when a HIRED leader's wallet goes silent this long while we hold
+  // (the pre-hire gate above still uses MAX_LEADER_STALL_HOURS).
+  LEADER_STALL_FIRE_HOURS: 8,
   MIN_LEADER_SWAPS_24H: 5,
   PRICE_MAX_AGE_SECONDS: 45,
   RECOMMENDATION_TTL_MS: 10800000,
@@ -108,6 +115,7 @@ export const settingsPatchSchema = z
     MAX_COPY_EVENT_AGE_SECONDS: z.number().int().positive().optional(),
     LEADERBOARD_MAX_AGE_SECONDS: z.number().int().positive().optional(),
     MAX_LEADER_STALL_HOURS: z.number().int().positive().optional(),
+    LEADER_STALL_FIRE_HOURS: z.number().int().positive().optional(),
     MIN_LEADER_SWAPS_24H: z.number().int().positive().optional(),
     PRICE_MAX_AGE_SECONDS: z.number().int().positive().optional(),
     RECOMMENDATION_TTL_MS: z.number().int().positive().optional(),

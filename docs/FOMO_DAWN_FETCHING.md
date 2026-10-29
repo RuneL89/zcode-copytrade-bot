@@ -130,16 +130,16 @@ recreate from there). It spawns the pinned `zcode-research` subagent which
 submits recommendations via the restricted research MCP — see `AGENTS.md`
 for the subagent-exclusivity rule.
 
-## Day-trader mode (operator-ratified 2026-10-27)
+## Day-trader mode (operator-ratified 2026-10-27; sort re-ratified 2026-10-29)
 
-The pool is restricted to **day traders**: fast, currently-active, realized-profitable. Decisions:
+The pool is restricted to **day traders**: fast, currently-active, positive today. Decisions:
 
-- **Daily capture** (main session, GUI): the always-visible top rows of the 24H board — no scrolling. Per candidate: clipboard URL (Stage 0) + clipboard stats line (avg. hold, trades 7D) + swap-feed timestamps. The board rotates daily, so ~a week of captures covers 100+ distinct traders.
-- **Stage-1 gate (Fomo-only, free):** avg. hold ≤48h · trades ≥10 in 7D · last swap ≤24h. Fail here → never sent to Dawn.
-- **Stage 2 (Dawn, survivors only):** one polite message per survivor → wallet + realized on-chain + win rate stored. Batches ≤25 lookups; split across the 6h timer if more.
-- **Stage 3 (Helius, finalists):** ≥5 swaps in the last 24h on-chain, confirmed before hire.
-- **Stall watcher:** a hired trader whose wallet shows no on-chain activity for MAX_LEADER_STALL_HOURS (20h) is fired — regardless of open-position winners — and replaced from the shortlist. The replacement passes the same pre-hire activity gate; if every candidate fails it, the engine pauses (PAUSED_WAITING_FOR_ZCODE) and Telegram alerts.
-- **Ranking:** the researcher orders day-trader-first (activity then PnL); once hires exist, our own realized PnL per candidate dominates the ordering.
+- **Capture** (the sweep, automated): the always-visible top rows of the 24H board — no scrolling. Clipboard URL per row, imported by `fomo-import`, snapshot rebuilt by `snapshot-rebuild`. Manual capture follows the same shape.
+- **Activity gate (Helius, hard):** ≥5 swaps in the last 24h on-chain, last swap ≤20h — confirmed before every hire.
+- **Momentum gate (researcher, hard):** `pnl24hUsd > 0` with `statsCheckedAt` within 12h. A trader with a non-positive or unknown day is not qualified, however good the week looks — the system holds ≤16h, so only the current window is copyable.
+- **Wallet resolution (Dawn):** runs automatically — boot +2 min, then every 6h, oldest stats first. One polite message per candidate → wallet + paper PnL marks + win rate stored (realized PnL is null for everyone: the rich card is unreachable).
+- **Stall watcher (wired 2026-10-29):** a hired leader whose wallet shows no on-chain activity for `LEADER_STALL_FIRE_HOURS` (8h, tunable in Settings) while we hold is fired — regardless of open-position winners — and replaced from the shortlist. Judged only when the Helius activity stamp is fresh.
+- **Ranking (researcher):** qualify on the activity gate + positive fresh day, then order by 24h PnL descending (tie-break: fresher activity check, then more swaps). Divergence concerns (all-time >> 30d, day-hot/week-cold) are recorded, not enforced — the engine's reactive controls (2-loss fire, 12h idle fire, 16h time exit, 8h stall fire) are the real protection.
 - Known trade-off: the 24H PnL board under-represents pure scalpers — if the gate yields too few, scan deeper (ranks 10–50) rather than loosening the activity requirements.
 
 ## Day-trader data pipeline (implemented 2026-10-28)
@@ -148,31 +148,35 @@ Order of operations, each stage feeding the next. Every identifier comes from
 the clipboard; numbers come from the row or the profile page, never from OCR.
 
 1. `tools/gui/board-pass.ps1` - visible leaderboard rows -> `board.json`
-   (rank + canonical profile URL).
-2. `tools/gui/profile-stats.ps1 -Board board.json` - per profile: avg. hold +
-   7D trade count -> `entries.json`.
-3. `apps/server: pnpm exec tsx src/cli/fomo-import.ts entries.json` - pool upsert.
+   (rank + canonical profile URL). (The automated sweep performs the equivalent
+   in-line; this script is the manual equivalent.)
+2. `apps/server: pnpm exec tsx src/cli/fomo-import.ts entries.json` - pool upsert.
    Omitted stats are preserved, not cleared; duplicate ranks produce a warning.
-4. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts --limit 30` - Helius
+   (`tools/gui/profile-stats.ps1` and the `avg_hold_hours`/`trades_count_7d`
+   columns it filled are retired — the Stage-1 gate they fed was never enforced
+   and was removed 2026-10-29; the columns remain in the DB, unused.)
+3. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts --limit 30` - Helius
    `walletActivity24h` per wallet -> `swaps_24h`, `last_swap_at` + stamp
    `activity_checked_at` (the activity-freshness evidence); addresses that
    pass the pre-hire gate are upgraded to verification "verified".
    Also runs on a 6h server timer and via the Ops action "Refresh candidate activity now".
-5. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` -
+4. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` -
    Dawn compact card -> PnL 24h/7d/30d/all-time + ranks, lifetime trades, volume,
    recent buys/sells, coins, last-trade age; win rate/realized when present.
    The runtime also runs this automatically: once 2 minutes after every boot and
-   then every 6h, with an audit line for every outcome (`lookup run starting`,
-   `resolved N address(es)`, `Telegram session needs login; QR login window
-opened`, or `lookup skipped: another run already in progress`). A dead
-   Telegram session is the one state that needs a human: scan the QR code once.
-   Research never runs Dawn itself; the research subagent is forbidden from it.
-6. Snapshot rebuild (30 min timer, after each import via `snapshot-rebuild`, or
-   clear `research_snapshots` + restart) ->
+   then every 6h, oldest stats first, with an audit line for every outcome
+   (`lookup run starting`, `resolved N address(es)`, `Telegram session needs
+login; QR login window opened`, or `lookup skipped: another run already in
+progress`). A dead Telegram session is the one state that needs a human: scan
+   the QR code once. Research never runs Dawn itself; the research subagent is
+   forbidden from it.
+5. Snapshot rebuild (30 min timer, debounced ~60s after a Dawn/Helius run that
+   changed rows, after each import via `snapshot-rebuild`, or clear
+   `research_snapshots` + restart) ->
    `publicStats` carries all of it to the researcher, including both freshness
-   stamps: `activityCheckedAt` (step 4, Helius) and `statsCheckedAt` (step 5,
+   stamps: `activityCheckedAt` (step 3, Helius) and `statsCheckedAt` (step 4,
    Dawn card). A candidate is treated as stale only when BOTH stamps are old —
-   `observedAt` older than 24h AND `activityCheckedAt` older than 6h. A stale
+   `observedAt` older than 12h AND `activityCheckedAt` older than 6h. A stale
    observation with a recently verified wallet stays usable (the board rotates
    daily; a resolved wallet is permanent), and the researcher flags the stale
    PnL marks as a concern rather than dropping the candidate.
@@ -201,15 +205,18 @@ the only adjacent action is "Copytrade", which is forbidden (it starts a task;
 ours stopped at the chain prompt and `/copytrade` confirmed 0/50 slots). So
 realized/win stay null on our path; profitability ranking uses the PnL periods.
 
-### Ranking rule (researcher)
+### Ranking rule (researcher, re-ratified 2026-10-29)
 
 Qualify on activity (`swaps24h` >= 5 and last swap <= 20h, or the compact-card
-equivalents `lastTradeAgeHours` / `recentBuys + recentSells`), then order by
-`pnl7dUsd` desc, tie-break `tradesTotal`, then `pnl24hUsd`. Judge how fresh the
+equivalents `lastTradeAgeHours` / `recentBuys + recentSells`) AND a positive
+fresh day: `pnl24hUsd > 0` with `statsCheckedAt` within 12h. Then order by
+`pnl24hUsd` desc, tie-break fresher `activityCheckedAt`, then higher `swaps24h`.
+The system holds <=16h, so the day is the only window that gets copied; 7d/30d
+figures are context. Judge how fresh the
 activity numbers are by `activityCheckedAt` (6h Helius timer); `statsCheckedAt`
-only advances on Dawn GUI fetches and says nothing about the activity fields.
-Divergence between
-all-time/30d PnL and 7d PnL is flagged as point-farm suspicion.
+only advances on Dawn fetches and says nothing about the activity fields.
+Divergence (all-time >> 30d, day-hot/week-cold) is flagged as point-farm
+suspicion in `concerns` — never a silent filter.
 
 ## Two traps worth remembering
 

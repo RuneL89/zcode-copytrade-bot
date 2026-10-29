@@ -17,12 +17,12 @@ Every-30-minutes ZCode Bot research sweep (event-driven with this 30-minute chec
    (b) Any firing_events rows in the last 26 hours (fired_at)?
    (c) How many enabled trader_candidates have a resolved solana address (join candidate_addresses)?
    (d) POOL FRESHNESS: max(trader_candidates.observed_at), the latest successful leaderboard import (audit category fomo-web-manual), and the latest control_events row with type 'leaderboard_refresh_request'.
-2. LEADERBOARD REFRESH (Procedure A stage 0, in the operator's desktop Chrome — never Playwright): needed if max(observed_at) is older than 6 hours, or an unfulfilled leaderboard_refresh_request is newer than the last import. Run at most once per 4 hours.
+2. LEADERBOARD REFRESH (Procedure A stage 0, in the operator's desktop Chrome — never Playwright): needed if max(observed_at) is older than 4 hours, or an unfulfilled leaderboard_refresh_request is newer than the last import. Run at most once per 4 hours.
    Steps: open https://fomo.family/leaderboard?range=24h in desktop Chrome; bring it to the front with WScript.Shell.AppActivate (the computer-use API cannot front a background window) and abort if it is not frontmost; screenshot; for each visible row click it, press Ctrl+L then Ctrl+C, read the clipboard with Get-Clipboard, strip any ?r= parameter. NEVER OCR and NEVER guess a slug. Abort WITHOUT importing if fewer than 5 rows were captured, if any URL is not https://fomo.family/profile/<slug>, or if the range chip is not 24H.
    Then write entries.json [{handle, rank, pnlUsd, profileUrl}] and run, from C:\Users\atavi\Documents\projects\zcode-bot\apps\server: pnpm exec tsx src/cli/fomo-import.ts <entries.json>, followed by pnpm exec tsx src/cli/snapshot-rebuild.ts. Verify max(observed_at) advanced, record the result in the audit trail, and close desktop Chrome. Do NOT disable candidates absent from the fresh list (they would be stranded until Dawn resolves wallets). If the refresh fails, report it and skip research this run.
 3. Research is NEEDED only if: no valid unexpired recommendation exists, OR a firing event lacks a replacement, OR the pool of address-resolved candidates grew by 3+ since the last submission.
 4. If NEEDED: spawn the subagent with the Agent tool, subagent_type "zcode-research", passing the trigger reason and the current UTC time. NEVER call the mcp__zcode-bot-research__* tools from the main session (all research spend flows through the pinned subagent). The subagent abstains with a POOL_STALE reason when the pool is stale; that abstention is what requested the refresh in step 2.
-5. If NOT needed: reply exactly "no-op: research not needed (<one-line reason>)" and end — but if max(observed_at) is older than 6 hours, append the pool age to the reason.
+5. If NOT needed: reply exactly "no-op: research not needed (<one-line reason>)" and end — but if max(observed_at) is older than 4 hours, append the pool age to the reason.
 6. Budget: this check plus at most ONE subagent run per sweep. If the database is unreadable or the server is down, reply with the error and end.
 ```
 
@@ -40,12 +40,16 @@ that needs a human (scan the QR once).
 
 ## Rotation after a refresh
 
-When a recommendation is produced from a fresher pool than the current hire, the
-researcher sets `rotateIfFlat: true`. On ingest the engine checks the active
+Rotation is only evaluated in the sweep that follows a board refresh: the engine
+requires a `board.refreshed_at` marker written within the last 45 minutes, and
+skips when the fresh ordering still ranks the incumbent first. Within that window,
+when the researcher sets `rotateIfFlat: true`, the engine checks the active
 trader: if it holds no open position, no reconciliation case and no in-flight entry
 intent, and at least one candidate on the new ordering is actually hireable, it
 fires the trader and hires from that ordering. Any other state is skipped and
-audited. See `PLAN-leaderboard-refresh-and-rotation.md`.
+audited. Since 2026-10-29 this is enabled in live mode (`ROTATE_ON_REFRESH=true`);
+remove that line to return to paper-only. See
+`PLAN-leaderboard-refresh-and-rotation.md`.
 
 ## Operational notes
 

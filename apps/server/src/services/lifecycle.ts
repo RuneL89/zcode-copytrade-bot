@@ -27,6 +27,11 @@ import type { SnapshotService } from './research.js';
 export const DAYTRADER_MIN_SWAPS_24H_DEFAULT = 5;
 /** Fire the hired trader when his last on-chain swap is older than this (hours). */
 export const DAYTRADER_MAX_STALL_HOURS_DEFAULT = 20;
+/**
+ * Rotation may act only within this window after a board refresh (the sweep
+ * runs every 30 min, so exactly the sweep following a refresh qualifies).
+ */
+export const ROTATION_WINDOW_MS = 45 * 60 * 1000;
 
 export interface ActivityGateInput {
   lastSwapAgeHours: number | null;
@@ -523,6 +528,23 @@ export class TraderLifecycle {
     }
     const active = repo.activeActivation(this.db);
     if (!active) return { rotated: false, reason: 'no active trader' };
+    // Rotation is meaningful only right after a board refresh: the ordering must
+    // be built from a snapshot whose freshest observation advanced past the hire.
+    const refreshedAt = repo.kvGet(this.db, 'board.refreshed_at');
+    const refreshedMs = refreshedAt ? Date.parse(refreshedAt) : NaN;
+    if (!Number.isFinite(refreshedMs) || Date.now() - refreshedMs > ROTATION_WINDOW_MS) {
+      return { rotated: false, reason: 'no fresh board refresh' };
+    }
+    // Never rotate off a board the incumbent still leads: firing the rank-1
+    // pick to hire rank 2 is a pure downgrade and burns a cooldown.
+    const top = [...recommendation.orderedCandidates].sort((a, b) => a.rank - b.rank)[0];
+    if (top && top.candidateId === active.candidateId) {
+      repo.audit(this.db, 'rotation', 'rotation skipped: incumbent still ranks first', {
+        activationId: active.activationId,
+        recommendationId: recommendation.recommendationId,
+      });
+      return { rotated: false, reason: 'incumbent still ranks first' };
+    }
     if (!this.isFlatForActivation(active.activationId)) {
       repo.audit(this.db, 'rotation', 'rotation skipped: open positions or in-flight entry', {
         activationId: active.activationId,
