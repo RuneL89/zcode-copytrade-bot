@@ -24,6 +24,7 @@ import {
 import type { Runtime } from '../runtime.js';
 import { PAPER_ASSUMPTIONS } from '../services/executors.js';
 import { loadWalletSecret, walletPublicKey } from '../wallet.js';
+import { rememberWalletPassphrase } from '../wallet-unlock.js';
 import { LiveExecutor } from '../services/executors.js';
 
 export function buildApp(rt: Runtime): Hono<AppEnv> {
@@ -491,11 +492,33 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     } catch (e) {
       return c.json({ error: `wallet unlock failed: ${(e as Error).message}` }, 400);
     }
+    // Seal the passphrase to this Windows account so a restart can restore
+    // live arming without operator input. A failure here does not block
+    // arming; it only means the next restart will disarm as before.
+    let survivesRestart = false;
+    try {
+      survivesRestart = rememberWalletPassphrase(rt.config.env.DATA_DIR, body.walletSecret ?? '');
+      if (!survivesRestart) {
+        repo.audit(
+          db,
+          'control',
+          'wallet passphrase not sealed (unsupported platform) — restart will disarm',
+        );
+      }
+    } catch (e) {
+      repo.audit(db, 'control', 'wallet passphrase could not be sealed — restart will disarm', {
+        error: (e as Error).message,
+      });
+    }
     const pk = walletPublicKey(rt.config.env.DATA_DIR)!;
     rt.mountLiveExecutor(new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk));
     rt.control.armLive();
     rt.rebuildState();
-    return c.json({ ok: true, note: 'LIVE armed. Labels now display LIVE.' });
+    return c.json({
+      ok: true,
+      note: 'LIVE armed. Labels now display LIVE.',
+      survivesRestart,
+    });
   });
 
   controlRoute('/api/control/disarm', () => {

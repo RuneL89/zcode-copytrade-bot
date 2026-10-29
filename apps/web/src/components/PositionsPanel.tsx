@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react';
 import type { DashboardState } from '../types';
 import { signedUsd, timeAgo, usd } from '../types';
 
+/** Lamports as a compact SOL string; em dash when the chain has not been read. */
+function solAmount(lamports: number | null): string {
+  if (lamports === null) return '—';
+  return (lamports / 1e9).toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function posChip(status: string): { label: string; cls: string } {
   switch (status) {
     case 'open':
@@ -158,7 +164,8 @@ export function PositionsPanel({ state }: { state: DashboardState }) {
                   </div>
                 </div>
                 <p className="label !text-[8px] mt-1.5 text-[#a29dbf]">
-                  OPENED {timeAgo(p.openedIso)} AGO · ENTRY FEE ${usd(p.feesUsdMicro)}
+                  OPENED {timeAgo(p.openedIso)} AGO · FEE {solAmount(p.entryFeeLamports)} SOL · RENT{' '}
+                  {solAmount(p.entryRentLamports)} SOL
                 </p>
               </li>
             );

@@ -62,6 +62,32 @@ export class StateBuilder {
     this.feeWallet = { solLamports, solUsdMicro };
   }
 
+  /**
+   * Chain-priced SOL spend, refreshed by the runtime's fee ledger. Null until
+   * the first scan — the dashboard then shows "—" instead of a fake $0.00.
+   */
+  private feeLedger: {
+    totals: {
+      feeLamports: number;
+      rentLamports: number;
+      accountsOpened: number;
+      accountsClosed: number;
+      txs: number;
+    };
+    tx: Record<string, { feeLamports: number; rentLamports: number }>;
+    solUsdMicro: bigint | null;
+  } | null = null;
+
+  setFeeLedger(input: StateBuilder['feeLedger']): void {
+    this.feeLedger = input;
+  }
+
+  private lamportsToUsdMicro(lamports: number): bigint | null {
+    const price = this.feeLedger?.solUsdMicro;
+    if (price === null || price === undefined) return null;
+    return (BigInt(Math.max(0, Math.round(lamports))) * price) / 10n ** 9n;
+  }
+
   /** Wallet USDC balance (base units) at the last health sample. */
   private walletUsdcBase: bigint | null = null;
 
@@ -96,6 +122,7 @@ export class StateBuilder {
     }
 
     // --- equity + closes ---------------------------------------------------
+    const positions = repo.listPositions(this.db, 200);
     const lots = repo.listPnlLots(this.db, 500);
     const equityStart = this.equityStartUsdMicro;
     let equityNow = equityStart;
@@ -120,14 +147,28 @@ export class StateBuilder {
       t: lot.closedAt,
       pnlUsdMicro: lot.pnlUsdMicro,
       traderHandle: this.handleForPosition(lot.positionId),
-      symbol: null,
+      // Same symbol the open row showed: resolved once on the position.
+      symbol: positions.find((p) => p.positionId === lot.positionId)?.mintSymbol ?? null,
     }));
 
     // --- positions panel (every non-closed position, with live mark) --------
-    const positions = repo.listPositions(this.db, 200);
     const openPositionRows = positions.filter(
       (p) => p.status === 'open' || p.status === 'partially_closed' || p.status === 'requires_reconciliation',
     );
+    // Entry signature per position, so each row can show the real on-chain
+    // cost of the transaction that opened it rather than a fixed estimate.
+    const entrySpendByPosition = new Map<string, { feeLamports: number; rentLamports: number }>();
+    if (this.feeLedger) {
+      const fillsOldestFirst = repo
+        .listFills(this.db, 500)
+        .slice()
+        .sort((a, b) => Date.parse(a.confirmedAt) - Date.parse(b.confirmedAt));
+      for (const fill of fillsOldestFirst) {
+        if (!fill.positionId || entrySpendByPosition.has(fill.positionId)) continue;
+        const spend = fill.txSignature ? this.feeLedger.tx[fill.txSignature] : null;
+        if (spend) entrySpendByPosition.set(fill.positionId, spend);
+      }
+    }
     const positionsPanel: DashboardState['positions'] = openPositionRows.map((p) => {
       const mark = this.marks.get(p.positionId);
       const markAgeSeconds = mark ? Math.max(0, Math.round((now - mark.observedAt) / 1000)) : null;
@@ -136,6 +177,7 @@ export class StateBuilder {
           ? mark
           : null;
       const markUsdMicro = fresh ? fresh.valueUsdMicro.toString() : null;
+      const entrySpend = entrySpendByPosition.get(p.positionId) ?? null;
       return {
         positionId: p.positionId,
         mintShort: mintShort(p.mint),
@@ -143,6 +185,8 @@ export class StateBuilder {
         status: p.status,
         copyUsdMicro: p.inputUsdMicro,
         feesUsdMicro: p.feesUsdMicro,
+        entryFeeLamports: entrySpend ? entrySpend.feeLamports : null,
+        entryRentLamports: entrySpend ? entrySpend.rentLamports : null,
         realizedPnlUsdMicro: p.realizedPnlUsdMicro,
         markUsdMicro,
         unrealizedPnlUsdMicro: fresh ? (fresh.valueUsdMicro - BigInt(p.inputUsdMicro)).toString() : null,
@@ -241,6 +285,16 @@ export class StateBuilder {
         );
       }
     }
+    // Chain-priced SOL spend. Every figure below is read from transaction
+    // evidence; nothing here is a guess. Null until the first ledger scan so
+    // the dashboard can say "pending" instead of printing a fake zero.
+    const feeLedgerTotals = this.feeLedger?.totals ?? null;
+    const networkFeesUsdMicro = feeLedgerTotals ? this.lamportsToUsdMicro(feeLedgerTotals.feeLamports) : null;
+    const rentUsdMicro = feeLedgerTotals ? this.lamportsToUsdMicro(feeLedgerTotals.rentLamports) : null;
+    const openTokenAccounts = feeLedgerTotals
+      ? Math.max(0, feeLedgerTotals.accountsOpened - feeLedgerTotals.accountsClosed)
+      : null;
+
     const counters: DashboardState['counters'] = {
       copiedToday: intentsOfToday.filter((i) => i.state === 'confirmed').length,
       skippedToday:
@@ -256,12 +310,13 @@ export class StateBuilder {
       maxPositionAgeHours: this.config.risk.MAX_POSITION_AGE_HOURS,
       positionGraceHours: this.config.risk.POSITION_GRACE_HOURS,
       idleFireHoursLeft,
-      feesPaidUsdMicro: [
-        ...openPositionRows.map((p) => BigInt(p.feesUsdMicro)),
-        ...lots.map((l) => BigInt(l.feesUsdMicro)),
-      ]
-        .reduce((acc, v) => acc + v, 0n)
-        .toString(),
+      feesPaidUsdMicro: networkFeesUsdMicro?.toString() ?? null,
+      feesLamports: feeLedgerTotals?.feeLamports ?? null,
+      rentUsdMicro: rentUsdMicro?.toString() ?? null,
+      rentLamports: feeLedgerTotals?.rentLamports ?? null,
+      openTokenAccounts,
+      solUsdMicro: this.feeLedger?.solUsdMicro?.toString() ?? null,
+      ledgerTxs: feeLedgerTotals?.txs ?? null,
     };
 
     // --- candidates panel ---------------------------------------------------

@@ -56,7 +56,7 @@ When it works you land on the TRADE tab with a flat equity line and a **WAITING 
 
 ## The loop at a glance
 
-![The ZCode Bot loop: you import the weekly board, candidates gain Solana wallets, ZCode researches a shortlist, the bot hires a trader and watches their wallet, copies buys at 0.25x, mirrors exits, fires the trader after two losing closes in a row, then hires the next candidate or pauses until a fresh shortlist arrives](docs/images/copy-loop-overview.png)
+![The ZCode Bot loop: the sweep refreshes the 24h board or you import one, candidates gain Solana wallets, ZCode researches a shortlist, the bot hires a trader and watches their wallet, copies buys at 0.25x, mirrors exits, and fires the trader after two losing closes in a row or when a fresh board arrives while it holds nothing, then hires the next candidate or pauses until a fresh shortlist arrives](docs/images/copy-loop-overview.png)
 
 _One hire at a time: the middle of the loop repeats for every leader swap, and the only exits are the next hire or a deliberate pause._
 
@@ -89,11 +89,13 @@ Paper fills use documented assumptions. A fill is simulated at the Jupiter quote
 
 ## Getting candidates in
 
-There are two routes, and neither one lets the bot browse the leaderboard site.
+There are three routes. The trading runtime never opens the leaderboard site; the only automated reader is the scheduled research sweep, which drives your own desktop Chrome through GUI automation and imports what it reads.
 
 **Manual import.** SETTINGS accepts JSON or CSV in the shape of `fixtures/leaderboard.example.json`: handle, weekly rank, displayed PnL, profile and avatar URLs, one or more Solana addresses, an enabled flag, and an observation time. Every row is validated, duplicates are reported, and the import is audited.
 
-**The assisted route.** You read the leaderboard in your own desktop Chrome, with a human at the keyboard, and copy identifiers through the clipboard rather than reading them from screenshots. Two PowerShell helpers in `tools/gui` capture the visible rows and the profile stats line, and the server CLI imports the result:
+**The automated route.** A scheduled sweep checks pool freshness every 30 minutes. When the newest candidate observation is more than 6 hours old, or the researcher has asked for a refresh, it opens the 24-hour board in your desktop Chrome, clicks each visible row, copies the profile URL through the clipboard — never OCR, never a guessed slug — imports the rows with `fomo-import`, and republishes the snapshot with `snapshot-rebuild`. It refreshes at most once every 4 hours, takes the browser window for a minute while it runs, and aborts without importing if fewer than five rows were captured or any copied URL is not a profile.
+
+**The manual route.** You read the leaderboard yourself and copy identifiers through the clipboard. Two PowerShell helpers in `tools/gui` capture the visible rows and the profile stats line, and the server CLI imports the result:
 
 ```powershell
 cd zcode-bot\apps\server
@@ -114,17 +116,19 @@ Before a trader is hired, two activity checks apply. The wallet must show at lea
 
 ZCode is the researcher, never the runtime. It ranks replacement candidates from a sanitized snapshot; the worker makes every trading decision.
 
-The worker writes a snapshot of the candidate pool to `data/research/snapshot/` after boot, after each import, and every 30 minutes. ZCode reads it through a restricted local MCP server that exposes exactly three tools:
+The worker writes a snapshot of the candidate pool to `data/research/snapshot/` after boot, every 30 minutes, and immediately after a leaderboard import (the sweep runs `snapshot-rebuild` for that). ZCode reads it through a restricted local MCP server that exposes exactly three tools:
 
 - `get_research_snapshot`
 - `get_replacement_context`
 - `submit_candidate_recommendation`
 
-The submission is one ordered shortlist, tied to the snapshot's id and hash, valid for 3 hours. The worker validates it before storing it, and rejects stale, replayed, malformed, or mismatched submissions with an explicit code (`EXPIRED`, `REPLAYED_RECOMMENDATION_ID`, `SNAPSHOT_MISMATCH`, and others). ZCode can also abstain, which offers no replacement at all.
+The submission is one ordered shortlist, tied to the snapshot's id and hash, valid for 3 hours. The worker validates it before storing it, and rejects stale, replayed, malformed, or mismatched submissions with an explicit code (`EXPIRED`, `REPLAYED_RECOMMENDATION_ID`, `SNAPSHOT_MISMATCH`, and others). ZCode can also abstain, which offers no replacement at all. When it abstains because the pool itself is stale it says so with a `POOL_STALE` reason, and the worker records that as a leaderboard-refresh request.
+
+An ordering may also carry a rotation intent. If the board is fresher than the current hire and that hire holds no open position, no reconciliation case and no entry in flight, the worker fires it and hires from the new ordering — but only when some candidate on that ordering is actually hireable. The researcher never fires or hires anything itself. In live mode this is off unless you set `ROTATE_ON_REFRESH=true`.
 
 The MCP process gets only the two research directories, plus optionally a local submit URL and token. It has no `.env`, no wallet, no database, and no order, config, or pause tools by construction.
 
-An hourly task is the design cadence, with **Run now** for an on-demand refresh after a firing. Setup, the exact task prompt, the permission guidance, and the manual JSON fallback are in `docs/ZCODE_AUTOMATION.md`.
+A 30-minute task is the design cadence, with **Run now** for an on-demand refresh after a firing. That task also owns the leaderboard refresh described above. Setup, the exact task prompt, the permission guidance, and the manual JSON fallback are in `docs/ZCODE_AUTOMATION.md`.
 
 ## Going live
 
@@ -159,7 +163,7 @@ Execution is a single boundary. The paper executor simulates and never signs. Th
 
 Firing is atomic and ordered:
 
-![A state diagram of the firing handoff: watching the trader, firing after two losing closes in a row, cancelling unsigned intents, closing positions per policy and cooling the trader down for 24 hours, then either hiring the next eligible candidate or pausing until a fresh shortlist or manual pick](docs/images/firing-handoff.png)
+![A state diagram of the firing handoff: watching the trader, then firing either after two losing closes in a row or when a fresh board arrives with nothing open, cancelling unsigned intents, closing positions per policy and cooling the trader down for 24 hours, then either hiring the next eligible candidate or pausing until a fresh shortlist or manual pick](docs/images/firing-handoff.png)
 
 _The only way back from a firing is a candidate the worker accepts, or a fresh shortlist that gives it one._
 
@@ -182,7 +186,7 @@ Money is stored as integer micro-USD, never as floating point. One worker holds 
 - **Live mode is unproven by the test suite.** Every automated test and demo path uses paper or demo execution. Live is reachable only by manual arming, and you carry that risk yourself.
 - **Your PC is the bot.** If the machine sleeps, loses network, or shuts down, monitoring stops. A phone client is a remote view, not a remote runtime.
 - **Displayed leaderboard PnL is unverified.** The snapshot ranks on evidence quality, activity, and data completeness; the displayed weekly PnL is treated as a claim, not a result.
-- **The leaderboard is read by you, not the bot.** The bot never opens fomo.family, and there is no supported automated path to that site. You read the leaderboard in your own desktop Chrome, and a slug that cannot be verified is skipped.
+- **The leaderboard is read by your Chrome, never by the runtime.** The bot process never opens fomo.family and there is no Playwright path to it. The scheduled sweep can drive your own desktop Chrome through GUI automation to refresh the board, which takes the window for about a minute; a slug that cannot be verified is skipped, never guessed.
 - **Dawn lookups are slow and can fail.** They are paced at roughly 20 seconds plus jitter, depend on a live Telegram web session, and stop when that session dies.
 - **Provider budgets are finite.** Helius credits and the Jupiter free tier are metered. The runbook estimates the Helius free plan lasts about 36 days at its current 36-second poll, and Jupiter's free keyed plan allows about 1 request per second and 60 per minute in one shared bucket.
 - **Paper fills are assumptions, not fills.** A quote-based simulation and a cached price with 30 bps slippage and 5 bps fees are both approximations, and neither is a real execution.

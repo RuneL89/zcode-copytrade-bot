@@ -119,6 +119,37 @@ describe('recommendation validation', () => {
     if (!res.ok) expect(res.code).toBe('SCHEMA_INVALID');
   });
 
+  it('accepts the rotateIfFlat rotation intent', () => {
+    const snap = snapshotFixture();
+    const res = validateRecommendation(payloadFixture(snap, { rotateIfFlat: true }), {
+      snapshot: snap,
+      now: new Date(),
+      seenRecommendationIds: new Set(),
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.recommendation.rotateIfFlat).toBe(true);
+  });
+
+  it('defaults rotateIfFlat to undefined when omitted', () => {
+    const snap = snapshotFixture();
+    const res = validateRecommendation(payloadFixture(snap), {
+      snapshot: snap,
+      now: new Date(),
+      seenRecommendationIds: new Set(),
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.recommendation.rotateIfFlat).toBeUndefined();
+  });
+
+  it('rejects a non-boolean rotateIfFlat', () => {
+    const snap = snapshotFixture();
+    const res = validateRecommendation(
+      { ...payloadFixture(snap), rotateIfFlat: 'yes' },
+      { snapshot: snap, now: new Date(), seenRecommendationIds: new Set() },
+    );
+    expect(res).toMatchObject({ ok: false, code: 'SCHEMA_INVALID' });
+  });
+
   it('rejects duplicate ranks', () => {
     const snap = snapshotFixture();
     const p = payloadFixture(snap);

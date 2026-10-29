@@ -1,5 +1,6 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
+import { forgetWalletPassphrase } from '../wallet-unlock.js';
 
 /**
  * Runtime control flags. Emergency stop immediately prevents new entries and
@@ -35,20 +36,36 @@ export class ControlService {
    */
   withdrawInFlight = false;
 
-  constructor(private db: AppDatabase) {
+  constructor(
+    private db: AppDatabase,
+    private dataDir: string | null = null,
+  ) {
     this.flags.newEntriesPaused = repo.kvGet(db, CONTROL_KEYS.pause) === '1';
     this.flags.emergencyStopped = repo.kvGet(db, CONTROL_KEYS.emergency) === '1';
     this.flags.armed = repo.kvGet(db, CONTROL_KEYS.armed) === '1';
     this.flags.pausedReason = repo.kvGet(db, CONTROL_KEYS.pausedReason) ?? null;
-    // Fail-closed across restarts: arming requires the wallet secret in
-    // memory, which never survives a restart — so a boot always disarms and
-    // the operator re-arms explicitly (dashboard, secret, ARM LIVE).
-    if (this.flags.armed) {
-      this.flags.armed = false;
-      this.persist();
-      repo.controlEvent(db, 'boot_disarm');
-      repo.audit(db, 'control', 'boot: armed state cleared — re-arm required after restart');
-    }
+    // Arming records the operator's intent and survives a restart. Runtime
+    // start() then tries to restore it by unsealing the wallet passphrase;
+    // only that failure path calls bootDisarm(), so a restart no longer stops
+    // trading on its own.
+  }
+
+  /**
+   * Boot disarm: the process restarted and the wallet could not be unlocked
+   * unattended (no sealed passphrase, or it no longer unseals). Fail closed —
+   * entries stay blocked until the operator re-arms. The sealed passphrase is
+   * deliberately left alone: only an explicit disarm discards it.
+   */
+  bootDisarm(reason: string): void {
+    this.flags.armed = false;
+    this.persist();
+    repo.controlEvent(this.db, 'boot_disarm', reason);
+    repo.audit(
+      this.db,
+      'control',
+      'boot: live disarmed — wallet could not be unlocked unattended, re-arm required',
+      { reason },
+    );
   }
 
   private persist(): void {
@@ -78,6 +95,7 @@ export class ControlService {
     this.flags.emergencyStopped = true;
     this.flags.armed = false;
     this.persist();
+    forgetWalletPassphrase(this.dataDir);
     repo.controlEvent(this.db, 'emergency_stop', 'new entries blocked; non-risk-reducing signing blocked');
     repo.audit(this.db, 'control', 'EMERGENCY STOP engaged');
   }
@@ -99,6 +117,9 @@ export class ControlService {
   disarm(): void {
     this.flags.armed = false;
     this.persist();
+    // An explicit disarm outranks the sealed passphrase: a later restart must
+    // not bring live trading back on its own.
+    forgetWalletPassphrase(this.dataDir);
     repo.controlEvent(this.db, 'disarm');
     repo.audit(this.db, 'control', 'live disarmed');
   }

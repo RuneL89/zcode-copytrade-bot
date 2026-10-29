@@ -129,6 +129,10 @@ async function main() {
       .max(10),
     abstain: z.boolean(),
     abstainReason: z.string().max(1000).nullable(),
+    // Ask the engine to rotate the active trader when it is flat (no open
+    // positions) after a fresh leaderboard refresh. Declared here because this
+    // schema strips unknown keys before the payload reaches the inbox.
+    rotateIfFlat: z.boolean().optional(),
   });
 
   server.tool(

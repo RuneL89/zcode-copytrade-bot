@@ -18,6 +18,20 @@ export function EquityHero({ state }: { state: DashboardState }) {
   const parts = splitEquity(eq.rollingUsdMicro);
   const points = eq.series.map((p) => Number(BigInt(p.usdMicro) / 1000n));
 
+  // Sub-cent amounts are common here (a network fee is ~$0.0006), so show
+  // enough decimals for the number to mean something instead of "$0.00".
+  const money = (micro: string | null): string => {
+    if (micro === null) return '—';
+    const n = Number(micro);
+    if (n === 0) return '0.00';
+    return n < 10_000 ? usd(micro, 4) : usd(micro);
+  };
+  const sol = (lamports: number | null): string => {
+    if (lamports === null) return '—';
+    return (lamports / 1e9).toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+  };
+  const counters = state.counters;
+
   return (
     <section className="card p-5 mb-4" aria-label="equity">
       <div className="flex items-start justify-between">
@@ -55,7 +69,17 @@ export function EquityHero({ state }: { state: DashboardState }) {
                 : 'FEE WALLET: '}
               {state.health.feeSolBalance} SOL
               {state.health.feeSolUsdMicro !== null ? ` (≈ $${usd(state.health.feeSolUsdMicro)})` : ''}
-              {` · FEES PAID SO FAR $${usd(state.counters.feesPaidUsdMicro)}`}
+            </p>
+          )}
+          {state.health.feeSolBalance !== null && (
+            <p className="label !text-[8.5px] mt-0.5 text-[#7d78a0]" data-testid="sol-spend">
+              {counters.ledgerTxs === null ? (
+                'SOL SPEND: SCANNING CHAIN…'
+              ) : (
+                <>
+                  {`FEES ${sol(counters.feesLamports)} SOL ($${money(counters.feesPaidUsdMicro)}) · RENT ${sol(counters.rentLamports)} SOL ($${money(counters.rentUsdMicro)}) IN ${counters.openTokenAccounts ?? 0} TOKEN ACCOUNTS`}
+                </>
+              )}
             </p>
           )}
         </div>

@@ -70,8 +70,10 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 
 ## 2. Daily operation
 
-1. Import the weekly FOMO leaderboard (Settings → MANUAL IMPORT, JSON or CSV —
-   see `fixtures/leaderboard.example.*`). Every import is audited.
+1. The 30-minute sweep refreshes the 24h FOMO board when the pool is older than 6h
+   (Procedure A stage 0, desktop Chrome) and rebuilds the snapshot. To refresh by
+   hand, follow `docs/FOMO_DAWN_FETCHING.md` (Settings → MANUAL IMPORT is still a
+   valid fallback). Every import is audited.
 2. Ensure the ZCode scheduled research task is active (docs/ZCODE_AUTOMATION.md)
    and confirm a `VALID` recommendation appears in **Audit**.
 3. Activate the first candidate (Settings → activate, or the worker does it
@@ -79,6 +81,29 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
    cursor at activation — activity before activation is never copied.
 4. Watch the dashboard: equity, active trader (COPY 0.25x · FIRE AT 2 L),
    live mirror card, closes chart, WHO WE COPY, health row.
+
+### Automatic rotation after a refresh
+
+When research is produced from a fresher board than the current hire, the
+recommendation carries `rotateIfFlat: true`. On ingest the engine fires the
+active trader **only if** it holds no open position, no reconciliation case and no
+in-flight entry intent, and **only if** some candidate on the new ordering is
+hireable. Otherwise it skips and writes `rotation skipped: …` to the audit trail.
+
+Guards worth knowing:
+
+- Rotation never closes positions — a non-flat trader is simply kept, so there is
+  no market action from a rotation.
+- A fresh board with no resolved wallets (Dawn not yet run) can never rotate: the
+  hireable check fails and the current trader stays.
+- The fired candidate enters the 24h `FIRED_TRADER_COOLDOWN_MS` bucket.
+- **Live mode is off by default.** Rotation runs freely in paper/demo; in live an
+  armed session only rotates when `ROTATE_ON_REFRESH=true` is set in `.env`
+  (restart required). Without it, a `rotateIfFlat` intent is ignored and audited as
+  `rotation ignored: live mode requires ROTATE_ON_REFRESH=true`.
+- To stop rotation entirely, remove the rotation paragraph from
+  `.zcode/agents/zcode-research.md` (it is the only producer of the intent), or
+  leave `ROTATE_ON_REFRESH` unset in live.
 
 ## 3. Pause / resume
 

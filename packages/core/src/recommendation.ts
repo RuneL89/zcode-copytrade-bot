@@ -63,6 +63,10 @@ export interface ResearchSnapshot {
   expiresAt: string;
   /** Age of the freshest underlying leaderboard observation, seconds. */
   sourceFreshnessSeconds: number;
+  /** Oldest underlying leaderboard observation; null when the pool is empty. */
+  oldestObservedAt?: string | null;
+  /** Candidates whose observedAt is older than 24h — the pool may be partially stale. */
+  staleCandidateCount?: number;
   candidates: SanitizedCandidate[];
 }
 
@@ -108,6 +112,12 @@ export const recommendationPayloadSchema = z
     orderedCandidates: z.array(orderedCandidateSchema).max(10),
     abstain: z.boolean(),
     abstainReason: z.string().max(1000).nullable(),
+    /**
+     * Ask the engine to rotate the active trader when it is flat: fire it and
+     * hire the best candidate from this (fresh) ordering. The engine only acts
+     * when no position is open, and only when a candidate is actually hireable.
+     */
+    rotateIfFlat: z.boolean().optional(),
   })
   .strict();
 

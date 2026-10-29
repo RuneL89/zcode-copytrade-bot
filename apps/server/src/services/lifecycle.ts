@@ -7,6 +7,7 @@ import {
   checkEligibility,
   consumeShortlist,
   rankCandidatesDeterministically,
+  type RecommendationPayload,
   type ResearchSnapshot,
   type SanitizedCandidate,
 } from '@zcode-bot/core';
@@ -83,7 +84,8 @@ export function isLeaderStalled(
 
 export type HandoffOutcome =
   | { status: 'ACTIVATED'; candidateId: string; source: string }
-  | { status: 'PAUSED_WAITING_FOR_ZCODE'; skipped: Array<{ candidateId: string; reason: string }> };
+  | { status: 'PAUSED_WAITING_FOR_ZCODE'; skipped: Array<{ candidateId: string; reason: string }> }
+  | { status: 'SKIPPED_NOT_FLAT'; skipped: [] };
 
 export class TraderLifecycle {
   /** candidateId -> cooldown expiry ms (mirrored from DB at startup). */
@@ -97,6 +99,8 @@ export class TraderLifecycle {
   } | null = null;
 
   private helius: HeliusProvider | null = null;
+  /** Recommendation whose rotation request was already handled (idempotency). */
+  private lastRotationRecommendationId: string | null = null;
 
   constructor(
     private db: AppDatabase,
@@ -246,20 +250,39 @@ export class TraderLifecycle {
    * 5. consume the ordered shortlist -> activate next or PAUSED_WAITING_FOR_ZCODE
    * Unknown close outcomes -> REQUIRES_RECONCILIATION (no retry, no handoff).
    */
-  async fire(activationId: string, reason: string): Promise<HandoffOutcome> {
+  async fire(
+    activationId: string,
+    reason: string,
+    opts: { requireFlat?: boolean } = {},
+  ): Promise<HandoffOutcome> {
     const activation = repo.getActivation(this.db, activationId);
     if (!activation || activation.state === 'FIRED') {
       return { status: 'PAUSED_WAITING_FOR_ZCODE', skipped: [] };
     }
     const nowIso = new Date().toISOString();
 
+    // The flatness check runs INSIDE the mark-FIRING transaction: a leader buy
+    // that lands between an outside check and this write would otherwise be
+    // orphaned on a FIRING activation.
+    let refusedNotFlat = false;
     const atomicMarkAndCancel = this.sqlite().transaction(() => {
+      if (opts.requireFlat && !this.isFlatForActivation(activationId)) {
+        refusedNotFlat = true;
+        return;
+      }
       repo.updateActivation(this.db, activationId, { state: 'FIRING', firedReason: reason });
       for (const intent of repo.pendingUnsignedIntentsForActivation(this.db, activationId)) {
         repo.updateIntent(this.db, intent.intentId, { state: 'cancelled', reason: 'cancelled by firing' });
       }
     });
     atomicMarkAndCancel();
+    if (refusedNotFlat) {
+      repo.audit(this.db, 'firing', 'fire skipped: not flat (open position or in-flight entry)', {
+        activationId,
+        reason,
+      });
+      return { status: 'SKIPPED_NOT_FLAT', skipped: [] };
+    }
 
     // Position policy.
     let closeCompletedAt: string | null = null;
@@ -394,12 +417,33 @@ export class TraderLifecycle {
       });
     }
 
-    if (outcome.result === 'ACTIVATE' && outcome.activatedCandidateId) {
-      const candidateId = outcome.activatedCandidateId;
-      const act = await this.activate(candidateId, 'zcode_shortlist', true);
+    // Walk the whole ordering, not just the first eligible candidate: activate()
+    // can still reject an eligible candidate (activity gate, missing wallet), and
+    // stopping there would strand a firing that ranks 2..N could have covered.
+    const skipped: Array<{ candidateId: string; reason: string }> = outcome.skipped.map((s) => ({
+      candidateId: s.candidateId,
+      reason: s.reason,
+    }));
+    const byId = new Map(snapshotCandidates.map((c) => [c.candidateId, c]));
+    const ordered = latest ? [...latest.payload.orderedCandidates].sort((a, b) => a.rank - b.rank) : [];
+    for (const entry of ordered) {
+      const candidate = byId.get(entry.candidateId);
+      if (!candidate) continue;
+      const eligibility = checkEligibility(candidate, {
+        now: Date.now(),
+        cooldownUntilMs: this.cooldowns,
+        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
+      });
+      if (!eligibility.eligible) continue;
+      if (outcome.skipped.some((s) => s.candidateId === entry.candidateId)) continue;
+      const act = await this.activate(entry.candidateId, 'zcode_shortlist', true);
+      if (!act.ok) {
+        skipped.push({ candidateId: entry.candidateId, reason: act.reason ?? 'ACTIVATION_FAILED' });
+        continue;
+      }
       repo.insertHandoffEvent(this.db, {
         fromCandidateId: firedCandidateId,
-        toCandidateId: candidateId,
+        toCandidateId: entry.candidateId,
         status: 'activated',
         recommendationId: latest?.payload.recommendationId ?? null,
         source: 'zcode_shortlist',
@@ -408,12 +452,12 @@ export class TraderLifecycle {
       });
       repo.recordChoice(this.db, {
         recommendationId: latest?.payload.recommendationId ?? null,
-        chosenCandidateId: candidateId,
+        chosenCandidateId: entry.candidateId,
         firedFromCandidateId: firedCandidateId,
         result: 'ACTIVATE',
-        skippedJson: JSON.stringify(outcome.skipped),
+        skippedJson: JSON.stringify(skipped),
       });
-      if (act.ok) return { status: 'ACTIVATED', candidateId, source: 'zcode_shortlist' };
+      return { status: 'ACTIVATED', candidateId: entry.candidateId, source: 'zcode_shortlist' };
     }
 
     repo.insertHandoffEvent(this.db, {
@@ -430,13 +474,130 @@ export class TraderLifecycle {
       chosenCandidateId: null,
       firedFromCandidateId: firedCandidateId,
       result: 'PAUSED_WAITING_FOR_ZCODE',
-      skippedJson: JSON.stringify(outcome.skipped),
+      skippedJson: JSON.stringify(skipped),
     });
-    return { status: 'PAUSED_WAITING_FOR_ZCODE', skipped: outcome.skipped };
+    return { status: 'PAUSED_WAITING_FOR_ZCODE', skipped };
   }
 
   private snapshotCandidate(candidateId: string): SanitizedCandidate | null {
     return this.snapshots.currentSnapshot()?.candidates.find((c) => c.candidateId === candidateId) ?? null;
+  }
+
+  // --- rotation -------------------------------------------------------------
+
+  /**
+   * True when the activation holds nothing that could become a position: no
+   * open/partial position, no reconciliation case, and no entry intent in flight.
+   * `repo.openPositions()` deliberately excludes `requires_reconciliation`, so
+   * that status is checked separately -- a stuck reconciling position must not
+   * look flat.
+   */
+  isFlatForActivation(activationId: string): boolean {
+    const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    if (open.length > 0) return false;
+    const reconciling = repo
+      .listPositions(this.db, 500)
+      .filter((p) => p.activationId === activationId && p.status === 'requires_reconciliation');
+    if (reconciling.length > 0) return false;
+    const inFlight = repo
+      .intentsInStates(this.db, ['pending_quote', 'quoted', 'pending_sign', 'submitted', 'confirmed'])
+      .filter((i) => i.activationId === activationId && i.kind === 'entry');
+    return inFlight.length === 0;
+  }
+
+  /**
+   * Rotate the active trader after a fresh leaderboard ordering arrives: fire it
+   * when it is flat, then hire from that ordering. Two hard guards:
+   * - never fire unless a candidate on the new ordering is actually hireable
+   *   (fresh stage-0 rows have no wallet, and firing into an empty chair would
+   *   strand the bot in PAUSED_WAITING_FOR_ZCODE);
+   * - one rotation per recommendationId.
+   */
+  async rotateIfFlat(recommendation: RecommendationPayload): Promise<{
+    rotated: boolean;
+    reason: string;
+  }> {
+    if (recommendation.rotateIfFlat !== true) return { rotated: false, reason: 'no rotation intent' };
+    if (this.lastRotationRecommendationId === recommendation.recommendationId) {
+      return { rotated: false, reason: 'already handled' };
+    }
+    const active = repo.activeActivation(this.db);
+    if (!active) return { rotated: false, reason: 'no active trader' };
+    if (!this.isFlatForActivation(active.activationId)) {
+      repo.audit(this.db, 'rotation', 'rotation skipped: open positions or in-flight entry', {
+        activationId: active.activationId,
+        recommendationId: recommendation.recommendationId,
+      });
+      return { rotated: false, reason: 'not flat' };
+    }
+
+    const candidates = this.snapshots.currentSnapshot()?.candidates ?? [];
+    const hireable = await this.firstHireable(recommendation, candidates);
+    if (!hireable) {
+      repo.audit(this.db, 'rotation', 'rotation skipped: no hireable candidate on the fresh roster', {
+        activationId: active.activationId,
+        recommendationId: recommendation.recommendationId,
+      });
+      return { rotated: false, reason: 'no hireable candidate' };
+    }
+
+    this.lastRotationRecommendationId = recommendation.recommendationId;
+    // Resolve the hire from THIS ordering, not from whatever the runtime cached.
+    this.latestValidRecommendation = {
+      payload: {
+        recommendationId: recommendation.recommendationId,
+        orderedCandidates: recommendation.orderedCandidates.map((c) => ({
+          candidateId: c.candidateId,
+          rank: c.rank,
+        })),
+        expiresAt: recommendation.expiresAt,
+      },
+    };
+    const outcome = await this.fire(active.activationId, 'rotation: leaderboard refreshed while flat', {
+      requireFlat: true,
+    });
+    repo.audit(
+      this.db,
+      'rotation',
+      `rotation ${outcome.status === 'ACTIVATED' ? 'completed' : 'did not hire'}`,
+      {
+        fromCandidateId: active.candidateId,
+        toCandidateId: outcome.status === 'ACTIVATED' ? outcome.candidateId : null,
+        recommendationId: recommendation.recommendationId,
+        outcome: outcome.status,
+      },
+    );
+    return { rotated: outcome.status === 'ACTIVATED', reason: outcome.status };
+  }
+
+  /** First candidate on the ordering that would pass eligibility AND the activity gate. */
+  private async firstHireable(
+    recommendation: RecommendationPayload,
+    candidates: readonly SanitizedCandidate[],
+  ): Promise<string | null> {
+    const byId = new Map(candidates.map((c) => [c.candidateId, c]));
+    const ordered = [...recommendation.orderedCandidates].sort((a, b) => a.rank - b.rank);
+    for (const entry of ordered) {
+      const candidate = byId.get(entry.candidateId);
+      if (!candidate) continue;
+      const eligibility = checkEligibility(candidate, {
+        now: Date.now(),
+        cooldownUntilMs: this.cooldowns,
+        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
+      });
+      if (!eligibility.eligible) continue;
+      if (this.helius?.configured) {
+        const sol = repo.listCandidateAddresses(this.db, entry.candidateId).find((a) => a.chain === 'solana');
+        const activity = sol ? await this.helius.walletActivity24h(sol.address) : null;
+        const gate = evaluateActivityGate(activity ?? null, {
+          maxStallHours: this.risk.MAX_LEADER_STALL_HOURS,
+          minSwaps24h: this.risk.MIN_LEADER_SWAPS_24H,
+        });
+        if (!gate.ok) continue;
+      }
+      return entry.candidateId;
+    }
+    return null;
   }
 
   /** Last-six markers for the active trader card. */

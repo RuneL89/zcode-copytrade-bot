@@ -1,6 +1,6 @@
 %% Render: ~/.zcode/tools/mermaid-render/render.sh -i copy-loop-overview.mmd -o ../images/copy-loop-overview.png -b white -s 2 -w 1600
 flowchart TD
-    A["You import the weekly board"] --> B["Candidates with Solana wallets"]
+    A["Sweep refreshes the 24h board (or you import one)"] --> B["Candidates with Solana wallets"]
     B --> C["ZCode researches a shortlist"]
     C --> D["Hire one trader"]
     D --> E["Worker watches their wallet"]
@@ -9,6 +9,7 @@ flowchart TD
     G --> H{"Two losing closes in a row?"}
     H -->|no| E
     H -->|yes| I["Fire and hand off"]
+    D -.->|fresh board while flat| I
     I --> J{"Next candidate eligible?"}
     J -->|yes| D
     J -->|no| K["Paused, waiting for ZCode"]

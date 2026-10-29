@@ -43,6 +43,10 @@ export interface DashboardState {
     status: string;
     copyUsdMicro: string;
     feesUsdMicro: string;
+    /** Real network fee of the entry transaction (lamports), from the chain. */
+    entryFeeLamports: number | null;
+    /** Rent locked into token accounts opened by the entry transaction. */
+    entryRentLamports: number | null;
     realizedPnlUsdMicro: string;
     markUsdMicro: string | null;
     unrealizedPnlUsdMicro: string | null;
@@ -74,7 +78,15 @@ export interface DashboardState {
     maxPositionAgeHours: number;
     positionGraceHours: number;
     idleFireHoursLeft: number | null;
-    feesPaidUsdMicro: string;
+    /** Real network fees paid (chain-priced). Null until the ledger has scanned. */
+    feesPaidUsdMicro: string | null;
+    feesLamports: number | null;
+    /** Rent locked in the wallet's SPL token accounts. */
+    rentUsdMicro: string | null;
+    rentLamports: number | null;
+    openTokenAccounts: number | null;
+    solUsdMicro: string | null;
+    ledgerTxs: number | null;
   };
   stats: { copiedTrades: number; winners: number; winRatePct: number | null };
   candidates: {

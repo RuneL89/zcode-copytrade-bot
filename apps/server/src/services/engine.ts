@@ -278,8 +278,10 @@ export class CopyEngine {
     }
 
     // Entry gates: pause/emergency, and in live mode the explicit ARM.
-    // Pre-arm (or post-restart) live never trades — not even simulated.
-    if (this.liveMode && !this.control.flags.armed) {
+    // Pre-arm (or post-restart) live never trades — not even simulated. The
+    // executor check is belt-and-braces: an armed flag without a mounted live
+    // executor would otherwise fall through to the paper simulator.
+    if (this.liveMode && (!this.control.flags.armed || this.executor.mode !== 'live')) {
       repo.insertIntent(this.db, {
         intentId,
         kind: 'entry',
@@ -293,7 +295,7 @@ export class CopyEngine {
         inputUsdMicro: sizing.finalUsdMicro!.toString(),
         state: 'skipped',
         idempotencyKey,
-        reason: 'live mode not armed',
+        reason: this.control.flags.armed ? 'wallet locked: live executor not mounted' : 'live mode not armed',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -674,6 +676,37 @@ export class CopyEngine {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
+
+    // Live mode with the paper executor mounted means the wallet is locked
+    // (armed flag set but the key is not in memory). Simulating the sale here
+    // would settle the lot and mark the position closed while the tokens are
+    // still in the wallet — the dashboard would show an exit that never
+    // happened. Refuse, and surface it for reconciliation instead.
+    if (this.liveMode && this.executor.mode !== 'live') {
+      const detail = 'wallet locked: live executor not mounted — exit was NOT sent, position left open';
+      repo.updateIntent(this.db, intentId, { state: 'requires_reconciliation', reason: detail });
+      repo.insertReconciliationCase(this.db, {
+        kind: 'wallet_locked',
+        intentId,
+        positionId,
+        signature: null,
+        status: 'open',
+        detail,
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+      });
+      repo.updatePosition(this.db, positionId, { status: 'requires_reconciliation' });
+      repo.audit(this.db, 'monitor', `exit blocked — ${detail}`, {
+        positionId,
+        mint: position.mint,
+      });
+      void this.notifier
+        .notify(
+          `⚠️ ZCode Bot: exit blocked for ${position.mint} — wallet locked, position left OPEN. Re-arm, then close it manually.`,
+        )
+        .catch(() => {});
+      return { kind: 'unknown', detail };
+    }
 
     // Exits are risk-reducing: run them even under pause; skip quote gates for
     // mirrored exits (leader already sold; our job is to mirror, fast).

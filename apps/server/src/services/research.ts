@@ -12,6 +12,11 @@ import {
 } from '@zcode-bot/core';
 import type { RiskConfig } from '@zcode-bot/config';
 
+/** A candidate whose leaderboard observation is older than this is "stale". */
+const STALE_CANDIDATE_AGE_MS = 24 * 60 * 60 * 1000;
+/** Machine-readable prefix the researcher uses to request a leaderboard refresh. */
+export const POOL_STALE_PREFIX = 'POOL_STALE';
+
 /**
  * Research plumbing between the worker and the restricted ZCode MCP server:
  * - writes a SANITIZED snapshot to DATA_DIR/research/snapshot/snapshot.json
@@ -79,17 +84,24 @@ export class SnapshotService {
       };
     });
 
-    const oldestObserved = candidates.reduce(
-      (acc, c) => Math.min(acc, Date.parse(c.observedAt) || Infinity),
-      Infinity,
-    );
+    const observedTimes = candidates.map((c) => Date.parse(c.observedAt)).filter((t) => Number.isFinite(t));
+    const freshestObserved = observedTimes.length ? Math.max(...observedTimes) : null;
+    const oldestObserved = observedTimes.length ? Math.min(...observedTimes) : null;
+    const staleCutoff = now.getTime() - STALE_CANDIDATE_AGE_MS;
+    const staleCandidateCount = candidates.filter((c) => {
+      const t = Date.parse(c.observedAt);
+      return !Number.isFinite(t) || t < staleCutoff;
+    }).length;
     const snapshot: ResearchSnapshot = {
       snapshotId: 'snap_' + randomUUID(),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + this.risk.RECOMMENDATION_TTL_MS).toISOString(),
-      sourceFreshnessSeconds: Number.isFinite(oldestObserved)
-        ? Math.max(0, Math.round((now.getTime() - oldestObserved) / 1000))
-        : 0,
+      // Age of the NEWEST leaderboard observation: a freshly imported board makes
+      // this small even while older rows are still in the pool.
+      sourceFreshnessSeconds:
+        freshestObserved !== null ? Math.max(0, Math.round((now.getTime() - freshestObserved) / 1000)) : 0,
+      oldestObservedAt: oldestObserved !== null ? new Date(oldestObserved).toISOString() : null,
+      staleCandidateCount,
       candidates: sanitized,
     };
     const hash = snapshotHash(snapshot);
@@ -218,8 +230,37 @@ export class RecommendationService {
         ordered: rec.orderedCandidates.map((c) => ({ rank: c.rank, candidateId: c.candidateId })),
       },
     );
+
+    // The researcher asks for a fresh leaderboard by abstaining with a POOL_STALE
+    // reason. Record it durably so the sweep can see an unfulfilled request.
+    if (rec.abstain && (rec.abstainReason ?? '').trimStart().toUpperCase().startsWith(POOL_STALE_PREFIX)) {
+      repo.controlEvent(
+        this.db,
+        'leaderboard_refresh_request',
+        rec.abstainReason ?? POOL_STALE_PREFIX,
+        'research',
+      );
+      repo.audit(this.db, 'research', 'leaderboard refresh requested (POOL_STALE)', {
+        recommendationId: rec.recommendationId,
+        sourceFreshnessSeconds: snapshot.sourceFreshnessSeconds,
+        staleCandidateCount: snapshot.staleCandidateCount ?? null,
+      });
+    }
+
+    // A fresh ordering may ask the engine to rotate the active trader when it is
+    // flat. The handler decides; nothing here can fire or activate on its own.
+    if (!rec.abstain && rec.rotateIfFlat) {
+      this.onRotationRequest?.(rec);
+    }
+
     return { ok: true, recommendationId: rec.recommendationId };
   }
+
+  /**
+   * Wired by the runtime to TraderLifecycle.rotateIfFlat. Kept as a callback so the
+   * research service never holds a reference to the trading engine.
+   */
+  onRotationRequest: ((rec: RecommendationPayload) => void) | null = null;
 
   latestValid(): { payload: RecommendationPayload; receivedAt: string } | null {
     const rows = repo.listRecommendations(this.db, 50);

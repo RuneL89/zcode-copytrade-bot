@@ -2,12 +2,13 @@
 stateDiagram-v2
     [*] --> Watching
     Watching --> Firing: two losing closes in a row
+    Watching --> Firing: fresh board, no open position
     Firing --> Handoff: unsigned intents cancelled
     Handoff --> Watching: next candidate hired
     Handoff --> Paused: no acceptable candidate
     Paused --> Watching: fresh shortlist or manual pick
     note right of Watching : a winning unit resets the count, a breakeven leaves it unchanged
-    note right of Firing : positions close per policy, then the fired trader cools down for 24h
+    note right of Firing : a rotation only fires when nothing is open. Other fires close per policy, then the trader cools down for 24h
     state "Watching the trader" as Watching
     state "Firing, atomically" as Firing
     state "Handoff" as Handoff

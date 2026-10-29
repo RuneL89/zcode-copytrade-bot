@@ -146,12 +146,22 @@ Research ZCode Bot replacement candidates.
    the largest displayed weekly PnL — displayed PnL is unverified.
 5. If, and only if, no candidate is supportable, submit an abstention:
    abstain=true with a one-sentence abstainReason.
+   - When the reason is a stale pool (fewer than 3 candidates observed within the
+     last 24 hours), the reason MUST start with the machine-readable prefix
+     `POOL_STALE:` followed by one sentence. The worker records that as a
+     leaderboard-refresh request and the sweep runs the refresh. A plain
+     abstention must not use the prefix.
 6. Otherwise call `submit_candidate_recommendation` EXACTLY ONCE with an
    ordered shortlist (2-5 candidates, rank 1..N, no duplicates). Use candidate
    IDs exactly as they appear in the snapshot, and the snapshot's id and
    sha256 hash. Set createdAt/expiresAt (expiresAt = createdAt + 3 hours).
    Confidence is informational; it can never override the worker's
    eligibility and risk checks.
+   - Optional `rotateIfFlat: true` may be set on an ordering when the pool is
+     fresher than the current hire: the worker then fires that trader only if it
+     holds no open position (and only if some candidate on the ordering is
+     hireable) and hires from the new ordering. The researcher never fires or
+     activates anything itself.
 7. STOP after one submission. Do not submit twice, do not retry, do not
    activate any trader, do not change configuration, risk limits, copy scale,
    exits, or firing rules, and do not attempt to access wallets, keys,

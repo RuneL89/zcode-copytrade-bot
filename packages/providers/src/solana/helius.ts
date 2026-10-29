@@ -61,7 +61,7 @@ export class HeliusProvider {
     return `${this.baseUrl}/?api-key=${encodeURIComponent(this.apiKey)}`;
   }
 
-  private async rpc<T>(method: string, params: unknown[]): Promise<T> {
+  private async rpc<T>(method: string, params: unknown): Promise<T> {
     if (!this.configured) throw new Error('helius: API key not configured');
     const res = await fetch(this.url(), {
       method: 'POST',
@@ -94,6 +94,110 @@ export class HeliusProvider {
     try {
       const result = await this.rpc<{ context: unknown; value: number }>('getBalance', [address]);
       return result.value;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Token name + symbol from the Helius metadata index (DAS getAsset).
+   * Null when the mint has no metadata or the call fails — callers fall back
+   * to the shortened mint address rather than inventing a ticker.
+   */
+  async tokenMetadata(mint: string): Promise<{ name: string | null; symbol: string | null } | null> {
+    try {
+      const asset = await this.rpc<{
+        content?: { metadata?: { name?: string; symbol?: string } };
+      }>('getAsset', { id: mint });
+      const metadata = asset?.content?.metadata;
+      if (!metadata) return null;
+      const symbol = (metadata.symbol ?? '').trim();
+      const name = (metadata.name ?? '').trim();
+      if (!symbol && !name) return null;
+      return { name: name || null, symbol: symbol || null };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Newest signatures touching an address, most recent first. */
+  async recentSignatures(
+    address: string,
+    limit = 100,
+  ): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    try {
+      const rows = await this.rpc<Array<{ signature: string; blockTime: number | null }>>(
+        'getSignaturesForAddress',
+        [address, { limit }],
+      );
+      return rows ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * What one transaction actually cost a wallet in SOL: the network fee plus
+   * rent locked into (or released from) SPL token accounts opened or closed by
+   * that transaction. Rent comes from the account balances themselves, so
+   * Token-2022 accounts with extensions are measured correctly too.
+   *
+   * Null on any failure — the fee ledger then skips that signature rather than
+   * inventing a number.
+   */
+  async solSpend(
+    signature: string,
+    owner: string,
+  ): Promise<{
+    feeLamports: number;
+    rentLamports: number;
+    accountsOpened: number;
+    accountsClosed: number;
+    blockTime: number | null;
+  } | null> {
+    try {
+      const tx = await this.rpc<{
+        blockTime: number | null;
+        meta: {
+          fee?: number;
+          preBalances?: number[];
+          postBalances?: number[];
+          preTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
+          postTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
+        } | null;
+      }>('getTransaction', [
+        signature,
+        { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' },
+      ]);
+      const meta = tx?.meta;
+      if (!meta) return null;
+
+      const pre = new Map<number, string | undefined>();
+      for (const b of meta.preTokenBalances ?? []) pre.set(b.accountIndex, b.owner);
+      const post = new Map<number, string | undefined>();
+      for (const b of meta.postTokenBalances ?? []) post.set(b.accountIndex, b.owner);
+
+      let rentLamports = 0;
+      let accountsOpened = 0;
+      let accountsClosed = 0;
+      for (const [index, accountOwner] of post) {
+        if (accountOwner !== owner || pre.has(index)) continue;
+        rentLamports += meta.postBalances?.[index] ?? 0;
+        accountsOpened++;
+      }
+      for (const [index, accountOwner] of pre) {
+        if (accountOwner !== owner || post.has(index)) continue;
+        rentLamports -= meta.preBalances?.[index] ?? 0;
+        accountsClosed++;
+      }
+
+      return {
+        feeLamports: meta.fee ?? 0,
+        rentLamports,
+        accountsOpened,
+        accountsClosed,
+        blockTime: tx?.blockTime ?? null,
+      };
     } catch {
       return null;
     }

@@ -686,11 +686,23 @@ describe('day-trader discipline: time exits + idle firing', () => {
 
 describe('live mode: no trading before ARM', () => {
   it('skips entries with live-not-armed while pre-arm, copies after armLive', async () => {
+    // Live mode must never fall through to the paper simulator, so the engine
+    // is handed an executor that reports itself as live while reusing the
+    // paper fill logic (there is no real wallet in a unit test).
+    const paper = new PaperExecutor(
+      null,
+      async (mint, decimals) => (await prices.priceOf(mint, decimals)).priceUsdMicro,
+    );
+    const liveStub = {
+      mode: 'live' as const,
+      quote: paper.quote.bind(paper),
+      execute: paper.execute.bind(paper),
+    };
     const liveEngine = new CopyEngine(
       handle.db,
       { ...risk },
       prices,
-      new PaperExecutor(null, async (mint, decimals) => (await prices.priceOf(mint, decimals)).priceUsdMicro),
+      liveStub,
       control,
       new NoopNotifier(),
       { onFired: () => {}, onStateChanged: () => {} },

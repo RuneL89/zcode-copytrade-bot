@@ -25,8 +25,16 @@ and browser security blocks. Do not deviate; do not "optimize" against these ste
 
 ## Procedure A — FOMO leaderboard refresh (GUI + clipboard)
 
+**Who runs it.** The 30-minute research sweep owns this procedure now: when the pool
+is older than 6h (or the researcher raised a `POOL_STALE` request), the sweep executes
+the stage-0 steps below in the operator's desktop Chrome, imports the rows, and
+rebuilds the snapshot. A human can still run it by hand. Nothing here may be done by
+the research subagent or by the MCP server.
+
 1. Launch desktop Chrome: `https://fomo.family/leaderboard?range=24h`.
-   Dismiss the "Restore pages?" bubble if present.
+   Dismiss the "Restore pages?" bubble if present. An automated run must then raise
+   the window (`WScript.Shell.AppActivate`) — the computer-use API cannot front a
+   background window on Windows — and abort if Chrome is not frontmost.
 2. Identify the current top N (usually 10) by rank number on the rows.
 3. For EACH row, get the canonical profile URL — **clipboard, never vision**
    (OCR misreads handles: econcar/econoar, monke365/monke3655 were both
@@ -47,13 +55,22 @@ and browser security blocks. Do not deviate; do not "optimize" against these ste
    verified row, `pnlUsd` = the row's displayed value).
 6. Import (WAL-safe while the server runs), from `zcode-bot/apps/server`:
    `pnpm exec tsx src/cli/fomo-import.ts <entries.json>`
-7. Disable candidates that are NOT in the fresh list (they age out of the
-   board; querying them wastes Dawn quota on dead profiles):
+7. Do **not** disable candidates that are absent from the fresh list when running the
+   automated stage-0 pass. Fresh board rows have no Solana address until Procedure B
+   resolves them, so pruning would strand the pool at the few candidates that already
+   have wallets. Manual runs may still prune deliberately:
    `update trader_candidates set enabled=0 where enabled=1 and handle not in (...)`.
-8. Invalidate the derived snapshot and restart:
-   `delete from research_snapshots;` then run `launch.bat` (the server rebuilds
-   the snapshot on boot). Verify `data/research/snapshot/snapshot.json`.
+8. Rebuild the derived snapshot **without restarting the server**:
+   from `zcode-bot/apps/server`, `pnpm exec tsx src/cli/snapshot-rebuild.ts`.
+   (The old "delete `research_snapshots` + `launch.bat`" recipe is still valid for a
+   manual run, but an unattended loop must not bounce the server.)
+   Verify `data/research/snapshot/snapshot.json`: `sourceFreshnessSeconds` is the age
+   of the NEWEST row, `oldestObservedAt` / `staleCandidateCount` describe the tail.
 9. Close desktop Chrome when finished.
+10. If the new ordering is fresher than the current hire and the hire has no open
+    position, the researcher marks the recommendation `rotateIfFlat: true` and the
+    engine fires + re-hires from that ordering. This is automatic; see
+    `PLAN-leaderboard-refresh-and-rotation.md`.
 
 ## Procedure B — Dawn wallet resolution (sequential, response-driven)
 

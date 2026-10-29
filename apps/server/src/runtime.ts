@@ -32,8 +32,11 @@ import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { ReportsService } from './services/reports.js';
+import { FeeLedgerService } from './services/fee-ledger.js';
+import { TokenMetaService } from './services/token-meta.js';
 import { PaperExecutor, LiveExecutor } from './services/executors.js';
-import { walletPublicKey } from './wallet.js';
+import { loadWalletSecret, walletPublicKey } from './wallet.js';
+import { readRememberedPassphrase } from './wallet-unlock.js';
 import { REPO_ROOT, migrationsFolder } from './bootstrap.js';
 
 const repoRoot = REPO_ROOT;
@@ -56,6 +59,8 @@ export class Runtime {
   helius: HeliusProvider;
   jupiter: JupiterProvider;
   notifier: Notifier;
+  feeLedger: FeeLedgerService;
+  tokenMeta: TokenMetaService;
   snapshots: SnapshotService;
   recommendations: RecommendationService;
   engine: CopyEngine;
@@ -84,6 +89,10 @@ export class Runtime {
   private inboxTimer: ReturnType<typeof setInterval> | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private symbolTimer: ReturnType<typeof setTimeout> | null = null;
+  private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private lastFeeScanAt = 0;
+  private solPriceUsdMicro: bigint | null = null;
 
   private equityStartUsdMicro: bigint;
 
@@ -125,10 +134,12 @@ export class Runtime {
         );
       }
     }
-    this.control = new ControlService(this.db.db);
+    this.control = new ControlService(this.db.db, config.env.DATA_DIR);
     this.helius = new HeliusProvider(config.env.HELIUS_API_KEY);
     this.jupiter = new JupiterProvider(config.env.JUPITER_BASE_URL, config.env.JUPITER_API_KEY);
     this.notifier = notifierFromEnv(config.env.TELEGRAM_BOT_TOKEN, config.env.TELEGRAM_CHAT_ID);
+    this.feeLedger = new FeeLedgerService(this.db.db, this.helius);
+    this.tokenMeta = new TokenMetaService(this.db.db, this.helius);
     this.snapshots = new SnapshotService(this.db.db, config.env.DATA_DIR, config.risk);
     this.recommendations = new RecommendationService(this.db.db, this.snapshots, config.risk);
 
@@ -157,7 +168,15 @@ export class Runtime {
         onFired: (activationId, _candidateId, reason) => {
           void this.lifecycle.fire(activationId, reason).then(() => this.rebuildState());
         },
-        onStateChanged: () => this.rebuildState(),
+        onStateChanged: () => {
+          this.rebuildState();
+          // A new position lands here first: resolve its ticker off the hot
+          // path so the dashboard shows a symbol instead of a mint fragment.
+          this.scheduleSymbolResolve();
+          // Re-price SOL spend right after a trade, but never more than once
+          // every five minutes (history calls are billed).
+          void this.refreshFeeLedger(5 * 60_000).catch(() => undefined);
+        },
       },
       walletPublicKey(config.env.DATA_DIR),
       this.equityStartUsdMicro,
@@ -274,15 +293,43 @@ export class Runtime {
     // Expose lifecycle last-valid recommendation each time it is needed.
     const refreshRec = () => this.refreshLifecycleRecommendation();
     const origFire = this.lifecycle.fire.bind(this.lifecycle);
-    this.lifecycle.fire = async (activationId: string, reason: string) => {
+    this.lifecycle.fire = async (activationId: string, reason: string, opts?: { requireFlat?: boolean }) => {
       refreshRec();
-      return origFire(activationId, reason);
+      return origFire(activationId, reason, opts);
     };
     const origResolve = this.lifecycle.resolveReplacement.bind(this.lifecycle);
     this.lifecycle.resolveReplacement = (firedCandidateId: string) => {
       refreshRec();
       return origResolve(firedCandidateId);
     };
+
+    // A recommendation may ask for a rotation after a fresh leaderboard. The
+    // ingest path is synchronous, so hand the async decision to the lifecycle
+    // and never block the inbox watcher.
+    //
+    // Live mode is opt-in: an armed live session must set ROTATE_ON_REFRESH=true
+    // before the engine may swap traders on its own initiative. Paper/demo rotate
+    // freely, which is where the behaviour is exercised safely.
+    this.recommendations.onRotationRequest = (rec) => {
+      if (this.config.mode === 'live' && !this.config.env.ROTATE_ON_REFRESH) {
+        repo.audit(this.db.db, 'rotation', 'rotation ignored: live mode requires ROTATE_ON_REFRESH=true', {
+          recommendationId: rec.recommendationId,
+        });
+        return;
+      }
+      refreshRec();
+      void this.lifecycle.rotateIfFlat(rec).catch((e: Error) => {
+        this.recommendationsAuditRotationError(rec.recommendationId, e);
+      });
+    };
+  }
+
+  private recommendationsAuditRotationError(recommendationId: string, e: Error): void {
+    try {
+      repo.audit(this.db.db, 'rotation', 'rotation failed: ' + e.message, { recommendationId });
+    } catch {
+      /* audit is best-effort */
+    }
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -304,6 +351,40 @@ export class Runtime {
       : null;
   }
 
+  /**
+   * Restore live arming after a restart.
+   *
+   * Arming persists as operator intent, but signing needs the decrypted wallet
+   * key. The passphrase is never stored in plaintext — it is sealed with DPAPI
+   * to this Windows account — so a restart unseals it, mounts the live
+   * executor and keeps trading. Only when that is impossible does the boot
+   * disarm, loudly: an alert plus an audit record, never a silent stop.
+   */
+  private async restoreLiveArming(): Promise<void> {
+    if (this.config.mode !== 'live') return;
+    if (!this.control.flags.armed) return; // explicit disarm — nothing to restore
+    try {
+      const passphrase = readRememberedPassphrase(this.config.env.DATA_DIR);
+      if (!passphrase) {
+        throw new Error('no sealed wallet passphrase on disk — arm once from the dashboard');
+      }
+      const secret = loadWalletSecret(this.config.env.DATA_DIR, passphrase);
+      const publicKey = walletPublicKey(this.config.env.DATA_DIR);
+      if (!publicKey) throw new Error('wallet public key missing');
+      this.mountLiveExecutor(new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey));
+      repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
+      void this.notifier
+        .notify('ZCode Bot restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
+        .catch(() => {});
+    } catch (e) {
+      const reason = (e as Error).message;
+      this.control.bootDisarm(reason);
+      void this.notifier
+        .notify(`⚠️ ZCode Bot restarted and is DISARMED: ${reason}. Re-arm in the dashboard.`)
+        .catch(() => {});
+    }
+  }
+
   async start(): Promise<void> {
     this.lock = acquireWorkerLock(this.config.env.DATA_DIR);
     repo.audit(this.db.db, 'system', `runtime starting (mode=${this.config.mode})`);
@@ -317,6 +398,9 @@ export class Runtime {
         recon,
       );
     }
+    await this.restoreLiveArming();
+    void this.resolveTokenSymbols().catch(() => undefined);
+    void this.refreshFeeLedger().catch(() => undefined);
     this.lifecycle.loadCooldownsFromDb();
 
     if (this.snapshots.currentSnapshot() === null && repo.listCandidates(this.db.db).length > 0) {
@@ -362,6 +446,11 @@ export class Runtime {
     // Provider health sampler.
     this.healthTimer = setInterval(() => void this.sampleHealth(), 60_000);
     void this.sampleHealth();
+
+    // Fee ledger scan cadence. Wallet history is a billed call, so this stays
+    // well off the one-minute health loop: boot, every 10 minutes, and once
+    // shortly after a trade.
+    this.feeLedgerTimer = setInterval(() => void this.refreshFeeLedger(), 10 * 60_000);
 
     // Periodic snapshot refresh (keeps sanitized data + hash fresh).
     this.snapshotTimer = setInterval(() => {
@@ -444,6 +533,8 @@ export class Runtime {
     if (this.inboxTimer) clearInterval(this.inboxTimer);
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+    if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
+    if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);
     void this.fomoWeb?.close();
     if (this.dawnTimer) clearInterval(this.dawnTimer);
@@ -525,20 +616,85 @@ export class Runtime {
     // Fee wallet runway: SOL pays every network fee, so surface its balance.
     const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
     const solLamports = feeAddress ? await this.helius.solBalanceLamports(feeAddress) : null;
-    let solUsdMicro: bigint | null = null;
-    if (solLamports !== null && solLamports > 0) {
-      try {
-        const solPrice = await this.priceProvider.priceOf(SOL_MINT, 9);
-        solUsdMicro = (BigInt(solLamports) * solPrice.priceUsdMicro) / 10n ** 9n;
-      } catch {
-        solUsdMicro = null;
-      }
+    let solPriceUsdMicro: bigint | null = null;
+    try {
+      solPriceUsdMicro = (await this.priceProvider.priceOf(SOL_MINT, 9)).priceUsdMicro;
+    } catch {
+      solPriceUsdMicro = null;
     }
+    this.solPriceUsdMicro = solPriceUsdMicro;
+    const solUsdMicro =
+      solLamports !== null && solPriceUsdMicro !== null
+        ? (BigInt(solLamports) * solPriceUsdMicro) / 10n ** 9n
+        : null;
     this.builder.setFeeWallet(solLamports, solUsdMicro);
+    // SOL spend is NOT rescanned here: this loop runs every minute and each
+    // history call is billed. The ledger refreshes on boot, every 10 minutes,
+    // and shortly after a trade instead (see refreshFeeLedger).
+    const ledger = this.feeLedger.snapshot();
+    this.builder.setFeeLedger({ totals: ledger.totals, tx: ledger.tx, solUsdMicro: solPriceUsdMicro });
     // USDC wallet balance: the withdrawable-cap cross-check for the OPS card.
     const usdcBase = feeAddress ? await this.helius.tokenBalanceBase(USDC_MINT, feeAddress) : null;
     this.builder.setWalletUsdc(usdcBase);
+    // Symbols can appear later (a token gains metadata after launch), so keep
+    // retrying the ones still missing on the health cadence.
+    await this.resolveTokenSymbols().catch(() => undefined);
     this.rebuildState();
+  }
+
+  /**
+   * Price any wallet transactions the ledger has not seen yet.
+   *
+   * Wallet history is a billed Helius call, so this deliberately does NOT run
+   * on the one-minute health loop: it runs at boot, every ten minutes, and
+   * once shortly after a trade (throttled). A trade's true fee therefore
+   * appears within seconds when there is something new, and the idle steady
+   * state costs a few calls per hour instead of 1,440.
+   */
+  private async refreshFeeLedger(throttleMs = 0): Promise<void> {
+    if (this.config.mode === 'demo') return;
+    if (throttleMs > 0 && Date.now() - this.lastFeeScanAt < throttleMs) return;
+    const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
+    if (!feeAddress) return;
+    this.lastFeeScanAt = Date.now();
+    await this.feeLedger.refresh(feeAddress).catch(() => undefined);
+    const snapshot = this.feeLedger.snapshot();
+    this.builder.setFeeLedger({
+      totals: snapshot.totals,
+      tx: snapshot.tx,
+      solUsdMicro: this.solPriceUsdMicro,
+    });
+    this.rebuildState();
+  }
+
+  /** Debounced ticker resolution: never blocks an order, never storms the index. */
+  private scheduleSymbolResolve(): void {
+    if (this.symbolTimer) return;
+    this.symbolTimer = setTimeout(() => {
+      this.symbolTimer = null;
+      void this.resolveTokenSymbols().catch(() => undefined);
+    }, 1_500);
+  }
+
+  /**
+   * Fill in missing token symbols (open and closed positions) from the
+   * metadata index. Stores the symbol on the position row so every panel —
+   * including the closed-positions list — reads the same value.
+   */
+  private async resolveTokenSymbols(): Promise<void> {
+    if (this.config.mode === 'demo') return;
+    const missing = repo.listPositions(this.db.db, 200).filter((p) => !p.mintSymbol);
+    if (missing.length === 0) return;
+    const mints = [...new Set(missing.map((p) => p.mint))].slice(0, 5);
+    await this.tokenMeta.resolve(mints, 3);
+    let changed = false;
+    for (const position of missing) {
+      const symbol = this.tokenMeta.symbolFor(position.mint);
+      if (!symbol || symbol === position.mintSymbol) continue;
+      repo.updatePosition(this.db.db, position.positionId, { mintSymbol: symbol });
+      changed = true;
+    }
+    if (changed) this.rebuildState();
   }
 
   /**

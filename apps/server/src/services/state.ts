@@ -66,6 +66,10 @@ export interface DashboardState {
     copyUsdMicro: string;
     /** Entry fee recorded on the position (paper: 5 bps; live: flat network fee). */
     feesUsdMicro: string;
+    /** Real network fee of the entry transaction, read from the chain. */
+    entryFeeLamports: number | null;
+    /** Rent that transaction locked into newly opened token accounts. */
+    entryRentLamports: number | null;
     realizedPnlUsdMicro: string;
     /** Live value of the remaining tokens (Jupiter quote); null until priced. */
     markUsdMicro: string | null;
@@ -107,8 +111,19 @@ export interface DashboardState {
     positionGraceHours: number;
     /** Hours until the idle fire, counting only while flat; null when holding. */
     idleFireHoursLeft: number | null;
-    /** Lifetime fees: open-position entry fees + closed-lot fees. */
-    feesPaidUsdMicro: string;
+    /**
+     * Real network fees paid, priced from chain transaction fees. Null until
+     * the fee ledger has scanned (never a fabricated zero).
+     */
+    feesPaidUsdMicro: string | null;
+    feesLamports: number | null;
+    /** Rent currently locked in the wallet's SPL token accounts. */
+    rentUsdMicro: string | null;
+    rentLamports: number | null;
+    openTokenAccounts: number | null;
+    solUsdMicro: string | null;
+    /** Transactions the ledger has priced. */
+    ledgerTxs: number | null;
   };
   stats: {
     copiedTrades: number;

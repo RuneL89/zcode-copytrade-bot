@@ -175,6 +175,8 @@ export class DemoEngine {
       status: m.status,
       copyUsdMicro: BigInt(Math.round(m.copyUsd * 1e6)).toString(),
       feesUsdMicro: BigInt(Math.round(m.copyUsd * 1e6 * 0.0005)).toString(),
+      entryFeeLamports: null,
+      entryRentLamports: null,
       realizedPnlUsdMicro: m.pnlUsd === null ? '0' : BigInt(Math.round(m.pnlUsd * 1e6)).toString(),
       markUsdMicro: null,
       unrealizedPnlUsdMicro: null,
@@ -230,6 +232,12 @@ export class DemoEngine {
         positionGraceHours: 3,
         idleFireHoursLeft: null,
         feesPaidUsdMicro: '0',
+        feesLamports: null,
+        rentUsdMicro: null,
+        rentLamports: null,
+        openTokenAccounts: null,
+        solUsdMicro: null,
+        ledgerTxs: null,
       };
     })();
 

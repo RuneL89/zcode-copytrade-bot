@@ -53,6 +53,16 @@ export const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   TELEGRAM_CHAT_ID: z.string().default(''),
 
+  /**
+   * Allow the automatic flat-only trader rotation in LIVE mode. Off by default:
+   * paper/demo rotate regardless, but an armed live session must opt in
+   * explicitly before the engine may swap traders on its own.
+   */
+  ROTATE_ON_REFRESH: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Risk values come through as strings from .env and are merged with defaults.
   RISK_JSON: z.string().optional(),
 });
