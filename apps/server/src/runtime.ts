@@ -79,6 +79,8 @@ export class Runtime {
   /** Read-only Dawn (Telegram) trader-lookup adapter; null until DAWN_BOT_USERNAME is set. */
   dawnLookup: DawnTraderLookupProvider | null = null;
   private dawnTimer: ReturnType<typeof setInterval> | null = null;
+  private dawnBootTimer: ReturnType<typeof setTimeout> | null = null;
+  private dawnRunBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
   private activityBootTimer: ReturnType<typeof setTimeout> | null = null;
   private setupToken: SetupToken | null = null;
@@ -483,16 +485,23 @@ export class Runtime {
     }
 
     // Scheduled Dawn address resolution for candidates still missing one.
+    // Boot run + interval: an interval alone restarts with every server bounce
+    // and never reaches zero (13 restarts once meant it never fired at all).
     if (this.dawnLookup) {
       this.dawnTimer = setInterval(() => {
         void this.dawnLookupNow().catch((e: Error) => {
           repo.audit(this.db.db, 'dawn-lookup', `scheduled lookup failed (fail closed): ${e.message}`, {});
         });
       }, this.config.env.DAWN_LOOKUP_POLL_MS);
+      this.dawnBootTimer = setTimeout(() => {
+        void this.dawnLookupNow().catch((e: Error) => {
+          repo.audit(this.db.db, 'dawn-lookup', `boot lookup failed (fail closed): ${e.message}`, {});
+        });
+      }, 120_000);
       repo.audit(
         this.db.db,
         'dawn-lookup',
-        `scheduled trader lookup enabled (every ${Math.round(this.config.env.DAWN_LOOKUP_POLL_MS / 60000)} min)`,
+        `scheduled trader lookup enabled (every ${Math.round(this.config.env.DAWN_LOOKUP_POLL_MS / 60000)} min, boot run in 2 min)`,
         {},
       );
     }
@@ -538,6 +547,7 @@ export class Runtime {
     if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);
     void this.fomoWeb?.close();
     if (this.dawnTimer) clearInterval(this.dawnTimer);
+    if (this.dawnBootTimer) clearTimeout(this.dawnBootTimer);
     void this.dawnLookup?.close();
     if (this.activityTimer) clearInterval(this.activityTimer);
     if (this.activityBootTimer) clearTimeout(this.activityBootTimer);
@@ -852,7 +862,28 @@ export class Runtime {
     warnings: string[];
   }> {
     if (!this.dawnLookup) throw new Error('Dawn lookup is not configured (set DAWN_BOT_USERNAME in .env)');
+    // Boot run, 6h timer and the Ops action share no common lock; serialize here
+    // so two triggers can never double-message the Telegram bot.
+    if (this.dawnRunBusy) {
+      repo.audit(this.db.db, 'dawn-lookup', 'lookup skipped: another run already in progress', {});
+      return { resolved: 0, failed: 0, warnings: ['another lookup run is already in progress'] };
+    }
+    this.dawnRunBusy = true;
+    try {
+      return await this.dawnLookupNowInner(this.dawnLookup, limit);
+    } finally {
+      this.dawnRunBusy = false;
+    }
+  }
 
+  private async dawnLookupNowInner(
+    provider: NonNullable<Runtime['dawnLookup']>,
+    limit: number,
+  ): Promise<{
+    resolved: number;
+    failed: number;
+    warnings: string[];
+  }> {
     // Two queues: discovery first (no wallet yet), then freshness (stats stale).
     const nowIso = new Date().toISOString();
     const staleCutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -868,10 +899,25 @@ export class Runtime {
       (c) => wallets.has(c.candidateId) && (c.statsCheckedAt == null || c.statsCheckedAt < staleCutoff),
     );
     const targets = [...walletless, ...staleStats].slice(0, limit);
-    if (targets.length === 0) return { resolved: 0, failed: 0, warnings: [] };
+    if (targets.length === 0) {
+      repo.audit(
+        this.db.db,
+        'dawn-lookup',
+        'lookup run: no targets (every enabled candidate has a wallet and fresh stats)',
+        {},
+      );
+      return { resolved: 0, failed: 0, warnings: [] };
+    }
+    repo.audit(
+      this.db.db,
+      'dawn-lookup',
+      `lookup run starting: ${walletless.length} walletless, ${staleStats.length} stale-stats (capped to ${targets.length})`,
+      {},
+    );
 
-    const state = await this.dawnLookup.sessionState();
+    const state = await provider.sessionState();
     if (state === 'needs-login') {
+      repo.audit(this.db.db, 'dawn-lookup', 'Telegram session needs login; QR login window opened', {});
       await this.dawnOpenLogin();
       throw new DawnNeedsLoginError();
     }
@@ -881,7 +927,7 @@ export class Runtime {
     const warnings: string[] = [];
     for (const cand of targets) {
       try {
-        const info = await this.dawnLookup.lookupHandle(
+        const info = await provider.lookupHandle(
           cand.handle,
           (cand as { profileUrl?: string | null }).profileUrl ?? undefined,
         );

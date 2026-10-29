@@ -1,6 +1,13 @@
 import type { SanitizedCandidate } from './recommendation.js';
 import { SUPPORTED_CHAINS } from './recommendation.js';
 
+/**
+ * How fresh the candidate's on-chain activity check must be for the candidate
+ * to stay usable when its leaderboard observation has gone stale. Matches the
+ * Helius activity refresh cadence (6h server timer).
+ */
+export const ACTIVITY_FRESH_MS = 6 * 60 * 60 * 1000;
+
 export type EligibilityReason =
   | 'ELIGIBLE'
   | 'DISABLED'
@@ -18,6 +25,8 @@ export interface EligibilityContext {
   cooldownUntilMs: ReadonlyMap<string, number>;
   /** Max age of the candidate's observation, seconds. */
   leaderboardMaxAgeSeconds: number;
+  /** Max age of the candidate's last on-chain activity check, seconds. Default 6h. */
+  activityFreshSeconds?: number;
 }
 
 export interface EligibilityResult {
@@ -45,12 +54,29 @@ export function checkEligibility(candidate: SanitizedCandidate, ctx: Eligibility
   if (candidate.recentlyFired) {
     return { eligible: false, reason: 'RECENTLY_FIRED', detail: 'fired in the current session' };
   }
+  // Two independent clocks: the leaderboard observation and the on-chain
+  // activity check. A stale observation alone must not disqualify a candidate
+  // whose wallet activity was verified recently — the board rotates daily,
+  // while a resolved wallet is permanent and Helius re-verifies activity every
+  // few hours.
   const observedAt = Date.parse(candidate.observedAt);
-  if (Number.isNaN(observedAt) || ctx.now - observedAt > ctx.leaderboardMaxAgeSeconds * 1000) {
+  const observationStale =
+    Number.isNaN(observedAt) || ctx.now - observedAt > ctx.leaderboardMaxAgeSeconds * 1000;
+  const activityFreshSeconds = (ctx.activityFreshSeconds ?? ACTIVITY_FRESH_MS / 1000) * 1000;
+  const activityCheckedAt = candidate.publicStats.activityCheckedAt
+    ? Date.parse(candidate.publicStats.activityCheckedAt)
+    : NaN;
+  const activityFresh =
+    Number.isFinite(activityCheckedAt) && ctx.now - activityCheckedAt <= activityFreshSeconds;
+  if (observationStale && !activityFresh) {
     return {
       eligible: false,
       reason: 'STALE_DATA',
-      detail: 'leaderboard observation older than LEADERBOARD_MAX_AGE_SECONDS',
+      detail:
+        'both stamps stale: leaderboard observation older than LEADERBOARD_MAX_AGE_SECONDS' +
+        (Number.isFinite(activityCheckedAt)
+          ? ' and on-chain activity check older than the freshness window'
+          : ' and no fresh on-chain activity check'),
     };
   }
   if (candidate.recentEligibilityFailures.length >= 3) {

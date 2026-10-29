@@ -105,6 +105,25 @@ Guards worth knowing:
   `.zcode/agents/zcode-research.md` (it is the only producer of the intent), or
   leave `ROTATE_ON_REFRESH` unset in live.
 
+### Wallet resolution runs itself — except one state
+
+The runtime resolves missing wallets through Dawn once 2 minutes after every boot
+and then every 6 hours. Every run is audited: `lookup run starting (N walletless,
+M stale-stats)`, `resolved N address(es), M unresolved`, or
+`lookup skipped: another run already in progress`. The one state that needs you:
+
+> `Telegram session needs login; QR login window opened`
+
+The Telegram Web session in `data/browser-profile-dawn` has died. A QR login window
+is already open on the desktop — scan it with the phone once and the next scheduled
+run proceeds on its own. If you miss the window, run the dashboard action
+"Open Telegram (Dawn) browser for login".
+
+Candidate usability follows two independent clocks: a candidate needs a wallet and
+freshness on at least one of them — leaderboard observation within 24h **or**
+on-chain activity check within 6h. A stale observation with a freshly verified
+wallet stays usable; the researcher flags its outdated PnL marks as a concern.
+
 ## 3. Pause / resume
 
 - **Pause new entries** (Settings → CONTROLS): no new copied entries; leader

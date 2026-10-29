@@ -134,4 +134,53 @@ describe('snapshot freshness semantics', () => {
     expect(snap.staleCandidateCount).toBe(1);
     expect(Date.parse(snap.oldestObservedAt ?? '')).toBe(Date.parse(old));
   });
+
+  it('does not count a stale-observation candidate as stale when its wallet activity is fresh', () => {
+    const old = new Date(Date.now() - 30 * 3600_000).toISOString();
+    const fresh = new Date(Date.now() - 60_000).toISOString();
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_old',
+      handle: 'old_one',
+      weeklyRank: 1,
+      displayedWeeklyPnlUsdMicro: '1000000',
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: old,
+    });
+    // Helius re-verified this wallet an hour ago: the candidate stays usable
+    // even though its leaderboard observation is 30h old.
+    repo.updateCandidateActivity(handle.db, 'cand_old', {
+      swaps24h: 12,
+      lastSwapAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+      checkedAt: new Date(Date.now() - 3600_000).toISOString(),
+    });
+    repo.upsertCandidateAddress(handle.db, 'cand_old', {
+      chain: 'solana',
+      address: 'LeaderB11111111111111111111111111111111111',
+      verification: 'reported',
+    });
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_new',
+      handle: 'new_one',
+      weeklyRank: 2,
+      displayedWeeklyPnlUsdMicro: '1000000',
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: fresh,
+    });
+    repo.upsertCandidateAddress(handle.db, 'cand_new', {
+      chain: 'solana',
+      address: 'LeaderC11111111111111111111111111111111111',
+      verification: 'reported',
+    });
+
+    const snap = snapshots.build();
+
+    expect(snap.staleCandidateCount).toBe(0);
+    expect(snap.oldestObservedAt).toBe(old);
+  });
 });

@@ -392,4 +392,35 @@ describe('eligibility', () => {
     };
     expect(checkEligibility(failing, ctx).reason).toBe('RECURRING_ELIGIBILITY_FAILURE');
   });
+
+  it('keeps a stale-observation candidate usable when its wallet activity is freshly verified', () => {
+    const snap = snapshotFixture();
+    const staleObservedAt = new Date(ctx.now - 30 * 3600_000).toISOString();
+
+    // Fresh activity rescues a stale observation (the board rotates daily;
+    // a resolved wallet is permanent and Helius re-verifies every few hours).
+    const rescued = {
+      ...snap.candidates[0]!,
+      observedAt: staleObservedAt,
+      publicStats: {
+        ...snap.candidates[0]!.publicStats,
+        activityCheckedAt: new Date(ctx.now - 3600_000).toISOString(),
+      },
+    };
+    expect(checkEligibility(rescued, ctx).reason).toBe('ELIGIBLE');
+
+    // An activity check beyond the freshness window does not rescue it.
+    const staleBoth = {
+      ...snap.candidates[0]!,
+      observedAt: staleObservedAt,
+      publicStats: {
+        ...snap.candidates[0]!.publicStats,
+        activityCheckedAt: new Date(ctx.now - 8 * 3600_000).toISOString(),
+      },
+    };
+    expect(checkEligibility(staleBoth, ctx).reason).toBe('STALE_DATA');
+
+    // A fresh observation needs no activity stamp at all.
+    expect(checkEligibility(snap.candidates[0]!, ctx).reason).toBe('ELIGIBLE');
+  });
 });

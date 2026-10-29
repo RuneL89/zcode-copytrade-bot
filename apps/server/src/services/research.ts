@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
+  ACTIVITY_FRESH_MS,
   snapshotHash,
   validateRecommendation,
   type ResearchSnapshot,
@@ -88,9 +89,16 @@ export class SnapshotService {
     const freshestObserved = observedTimes.length ? Math.max(...observedTimes) : null;
     const oldestObserved = observedTimes.length ? Math.min(...observedTimes) : null;
     const staleCutoff = now.getTime() - STALE_CANDIDATE_AGE_MS;
+    // A candidate is stale only when BOTH stamps are old: a stale leaderboard
+    // observation with a recently verified wallet (Helius) is still usable, so
+    // counting it stale would misreport the pool to the researcher.
+    const activityCutoff = now.getTime() - ACTIVITY_FRESH_MS;
     const staleCandidateCount = candidates.filter((c) => {
       const t = Date.parse(c.observedAt);
-      return !Number.isFinite(t) || t < staleCutoff;
+      const observationStale = !Number.isFinite(t) || t < staleCutoff;
+      if (!observationStale) return false;
+      const a = c.activityCheckedAt ? Date.parse(c.activityCheckedAt) : NaN;
+      return !Number.isFinite(a) || a < activityCutoff;
     }).length;
     const snapshot: ResearchSnapshot = {
       snapshotId: 'snap_' + randomUUID(),

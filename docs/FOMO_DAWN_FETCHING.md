@@ -161,11 +161,21 @@ the clipboard; numbers come from the row or the profile page, never from OCR.
 5. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` -
    Dawn compact card -> PnL 24h/7d/30d/all-time + ranks, lifetime trades, volume,
    recent buys/sells, coins, last-trade age; win rate/realized when present.
-   The scheduled runtime run performs the same 24h freshness wave.
-6. Snapshot rebuild (30 min timer, or clear `research_snapshots` + restart) ->
+   The runtime also runs this automatically: once 2 minutes after every boot and
+   then every 6h, with an audit line for every outcome (`lookup run starting`,
+   `resolved N address(es)`, `Telegram session needs login; QR login window
+opened`, or `lookup skipped: another run already in progress`). A dead
+   Telegram session is the one state that needs a human: scan the QR code once.
+   Research never runs Dawn itself; the research subagent is forbidden from it.
+6. Snapshot rebuild (30 min timer, after each import via `snapshot-rebuild`, or
+   clear `research_snapshots` + restart) ->
    `publicStats` carries all of it to the researcher, including both freshness
    stamps: `activityCheckedAt` (step 4, Helius) and `statsCheckedAt` (step 5,
-   Dawn card).
+   Dawn card). A candidate is treated as stale only when BOTH stamps are old —
+   `observedAt` older than 24h AND `activityCheckedAt` older than 6h. A stale
+   observation with a recently verified wallet stays usable (the board rotates
+   daily; a resolved wallet is permanent), and the researcher flags the stale
+   PnL marks as a concern rather than dropping the candidate.
 
 ### Dawn card layouts (measured)
 

@@ -32,7 +32,11 @@ The MCP server and the research subagent are deliberately unable to collect data
 the MCP is a least-privilege file bridge with exactly three tools, and the
 subagent's contract forbids running fetching CLIs or GUI automation. The sweep runs
 in the main-session model, which has computer-use and is allowed to drive the
-operator's Chrome — so it is the only actor that can execute Procedure A.
+operator's Chrome — so it is the only actor that can execute Procedure A (the board
+refresh). Wallet resolution needs no sweep involvement: the runtime runs Dawn once
+2 minutes after every boot and then every 6 hours, with an audit line for every
+outcome, so it self-heals after restarts. A dead Telegram session is the one state
+that needs a human (scan the QR once).
 
 ## Rotation after a refresh
 
@@ -56,5 +60,7 @@ audited. See `PLAN-leaderboard-refresh-and-rotation.md`.
 
 ## What else runs server-side (no LLM spend)
 
-- Dawn address lookup (6h), Helius activity refresh (6h), snapshot rebuild (30 min),
+- Dawn address lookup (boot +2 min, then 6h; every run audited — `lookup run
+starting`, `resolved N address(es)`, or `Telegram session needs login; QR login
+window opened`), Helius activity refresh (6h + boot), snapshot rebuild (30 min),
   anomaly/daily-PnL Telegram reporter (no-op until `TELEGRAM_*` is filled in).
