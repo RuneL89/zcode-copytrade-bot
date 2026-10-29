@@ -1,16 +1,16 @@
 %% Render: ~/.zcode/tools/mermaid-render/render.sh -i copy-loop-overview.mmd -o ../images/copy-loop-overview.png -b white -s 2 -w 1600
 flowchart TD
-    A["Sweep refreshes the 24h board (or you import one)"] --> B["Candidates with Solana wallets"]
-    B --> C["ZCode researches a shortlist"]
-    C --> D["Hire one trader"]
-    D --> E["Worker watches their wallet"]
-    E --> F["Copies buys at 0.25x"]
-    F --> G["Mirrors their exits"]
-    G --> H{"Two losing closes in a row?"}
+    A["Sweep reads the 24h board (or you import one)"] --> B["Dawn resolves the wallets"]
+    B --> C["Researcher ranks by today's PnL"]
+    C --> D["Hire the top eligible trader"]
+    D --> E["Watch the leader's wallet"]
+    E --> F["Copy buys at 0.25x"]
+    F --> G["Mirror their sells"]
+    G --> H{"Fire trigger?<br/>2 losses, 8h silence, 12h idle"}
     H -->|no| E
-    H -->|yes| I["Fire and hand off"]
-    D -.->|fresh board while flat| I
+    H -->|yes| I["Close per policy, cool down 24h"]
+    A -.->|fresh board while flat| I
     I --> J{"Next candidate eligible?"}
     J -->|yes| D
-    J -->|no| K["Paused, waiting for ZCode"]
+    J -->|no| K["Paused, waiting for research"]
     K -->|fresh shortlist| D

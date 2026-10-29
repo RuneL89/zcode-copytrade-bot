@@ -1,272 +1,161 @@
 # ZCode Bot
 
-**Copy one Solana trader. A quarter of their size. Fire them after two losing closes in a row.**
+**A day-trading bot for Solana, run from your own machine.** It hires today's leader, copies their buys, and fires them when the day turns.
 
 ## What this is
 
-ZCode Bot runs on your own Windows PC. You import a trader from a leaderboard, or add one by hand. The bot watches that person's Solana wallet, repeats their buys in your wallet at a quarter of the size they put in, and mirrors their sells. Two losing closes in a row end the relationship, since a winning close resets the count; the bot stops copying, closes what it opened, and hires the next name from a shortlist ZCode researched beforehand. If no acceptable name is left, it pauses and says why.
+ZCode Bot reads the 24-hour leaderboard on fomo.family, hires one trader at a time, and copies that trader's Solana buys at a quarter of the leader's measured input. It mirrors their sells, and it exits anything still open at 16 hours. When the trader loses twice in a row, goes quiet for 8 hours, or leaves you with nothing to copy for 12 hours, it fires them and hires the next name from a researched shortlist. If nothing qualifies, it pauses and says why.
+
+It runs on your PC with your keys. Paper trading is the default, and live signing needs a separate arming step.
 
 What you end up with:
 
-- a dashboard built for a phone, showing equity, the trader being copied, open positions, the closes chart, and every decision the bot made
-- a paper track record before any real money: real market data, simulated fills, nothing signed
-- automatic replacement, with the firing and the next hire visible on the dashboard
-- a deliberate pause when the shortlist is empty, stale, or exhausted, with the next action named on screen
-- an audit trail of imports, recommendations and their rejection codes, risk blocks, fills, firings, handoffs, and reconciliation cases
-- a 28-second fictional demo you can watch before connecting anything
-- a dedicated Solana wallet, encrypted on your disk, that the research side never sees
-
-None of this predicts a profit. Demo results are invented, paper results are simulated, and the tests never exercise live signing.
+- one active trader, chosen because they are trading today and up on the day, not because they had a good month
+- buys copied at 0.25x of the leader's measured input, capped per buy (default $10 to $250)
+- sells mirrored from the leader, plus automatic time exits
+- automatic replacement from the shortlist, or a visible paused state when no candidate qualifies
+- a dashboard with equity, open positions, the closes chart, the candidate strip, and an audit trail
+- a research loop that reads the board in your own Chrome and keeps its own values current
 
 ## Getting started
 
-**The double-click path.** Double-click `install.bat` in the repository folder. It installs a portable Node LTS if you do not have one (no admin rights), sets up pnpm, installs dependencies, builds every package, and creates `.env` from the example with a freshly generated session secret. Then it creates the SQLite database, offers to load example candidates, adds a Start Menu and Desktop shortcut, and asks whether to start the app. An existing `.env` is never overwritten.
+**The double-click path.** Run `install.bat` from the repository folder. It installs a portable Node LTS if you do not have one, sets up pnpm, installs dependencies, builds every package, creates `.env` from the example with a generated session secret, creates the SQLite database, offers to load example candidates, and adds Start Menu and Desktop shortcuts. An existing `.env` is never overwritten. At the end it asks whether to start the app.
 
-After that, use the **ZCode Bot** shortcut or `launch.bat`. It starts the server in a minimized window and waits for the port. Open **http://127.0.0.1:8787** yourself; the launcher does not open a browser.
+`launch.bat` starts the server if it is not already running. It does not open a browser itself, so open [http://127.0.0.1:8787](http://127.0.0.1:8787) yourself.
 
-The first run prints a one-time setup token in the server window. Open the dashboard, create your user (password at least 10 characters), and the token is consumed. Login, settings, arming, pause, close-all, and the ops console all require the authenticated session.
+On first login the app asks for a one-time setup token. The server prints it at startup and writes it to `data/setup-token.txt`. `pnpm user:token` reprints it. You choose the username and password at that point; passwords are hashed locally with scrypt.
 
-**The terminal path.** The same setup, by hand:
+**The terminal path.**
 
-```powershell
-# put the repository in a folder named zcode-bot, then:
-cd zcode-bot
+```bash
 pnpm install
-copy .env.example .env     # set SESSION_SECRET to 32 or more random characters
+cp .env.example .env        # then set SESSION_SECRET
 pnpm build
 pnpm db:migrate
+pnpm db:seed                # optional: example candidates from fixtures/
 pnpm start
 ```
 
-You need Node.js 22 or newer and pnpm. `install.bat` installs both.
+Before any live trading you also need a wallet: `pnpm wallet:create` generates and encrypts the dedicated Solana wallet.
 
-**Your phone.** Run `enable-phone-access.bat` and approve the one administrator prompt. It adds a firewall rule for the port, sets `HOST=0.0.0.0` in `.env`, restarts the app, and prints an address such as `http://192.168.10.131:8787`. The connection is plain HTTP on your own network, so do not forward the port to the internet. On iOS or Android, use the browser's "Add to Home Screen" option so it opens like an app.
+When it works you land on the TRADE page in paper mode, with a PAPER badge and, once the shortlist has someone eligible, an active trader card.
 
-When it works you land on the TRADE tab with a flat equity line and a **WAITING FOR CANDIDATE** state. That is the intended default. With no candidates and no keys, the bot has nothing it is willing to copy, and it says so.
+## The day-trading rhythm
 
-## The four tabs
+The whole design assumes short holds. That is why selection looks at the last 24 hours, why positions expire at 16 hours, and why a trader can lose the slot for going quiet rather than for losing money.
 
-**TRADE.** The dashboard. Equity and its change, the active trader card (COPY 0.25x, FIRE AT 2 L, the last six closes as wins, losses, and breakevens), open positions valued at live marks, the closes chart, the WHO WE COPY strip with each candidate's contribution and whether they are active, fired, or idle, and a health row for Helius and Jupiter. In demo mode the same page replays the fictional timeline, with a **REPLAY 28s** button.
+![The day-trader loop: the sweep reads the 24h board, Dawn resolves wallets, the researcher ranks by today's PnL, the bot hires one trader, copies buys at 0.25x, mirrors sells, and fires on two losses, 8 hours of leader silence, or 12 hours idle, then hires the next candidate or pauses](docs/images/copy-loop-overview.png)
 
-**SETTINGS.** Manual leaderboard import (JSON or CSV), provider keys, editable risk limits, pause new entries, emergency stop, close all positions (type `CLOSE-ALL`), the live readiness report, live arming, and a JSON fallback for importing a recommendation. Provider keys entered here are write-only: a stored key is never displayed again, so keep your own copy.
+_Read it clockwise: candidate sourcing at the top, the copying loop in the middle, and the fire-and-replace cycle at the bottom._
 
-**AUDIT.** Every decision in order: imports, recommendations with their validation result, risk rejections with the rule name, fills, firings, handoffs, reconciliation cases, and control events.
+There are four ways to lose the slot:
 
-**OPS.** The jobs that normally need a terminal: install dependencies, build, migrate, seed, format, run the unit tests, run the browser tests, typecheck, restart, shut down, open the data folder, replay the demo, back up the data folder, reset the database (type `RESET`; it deletes the database and rebuilds it), create the wallet, send funds out, and refresh candidate activity. Commands are a fixed server-side whitelist, they run one at a time, and every run is audited. The browser can pick an operation by id; it cannot compose a command.
+- **Two losing closes in a row.** A winning close resets the count; a breakeven leaves it unchanged.
+- **Leader silence.** The leader's wallet shows no on-chain activity for 8 hours while you hold. This is judged only when the on-chain check itself is fresh, so a broken data source cannot fire a healthy trader.
+- **Idle.** Twelve hours pass with no position open, measured from the hire or the last position held.
+- **A fresh board while flat.** The scheduled refresh produces an ordering that outranks the current hire, and that hire holds nothing.
 
-## The loop at a glance
+A fire is not a market action by itself. Positions close under the configured policy first (the default closes everything), the trader enters a 24-hour cooldown, and the next eligible candidate takes over. If none does, the bot moves to PAUSED_WAITING_FOR_ZCODE and the dashboard says so.
 
-![The ZCode Bot loop: the sweep refreshes the 24h board or you import one, candidates gain Solana wallets, ZCode researches a shortlist, the bot hires a trader and watches their wallet, copies buys at 0.25x, mirrors exits, and fires the trader after two losing closes in a row or when a fresh board arrives while it holds nothing, then hires the next candidate or pauses until a fresh shortlist arrives](docs/images/copy-loop-overview.png)
+## Where candidates come from
 
-_One hire at a time: the middle of the loop repeats for every leader swap, and the only exits are the next hire or a deliberate pause._
+![The research pipeline with its tools: a 30 minute sweep reads the newest observation age, a stale board is read in desktop Chrome with click and clipboard capture, fomo-import upserts the roster, the Dawn lookup resolves wallets and paper PnL marks, snapshot-rebuild writes snapshot.json, the researcher reads it through the three-tool MCP bridge, submits an atomic inbox file, and the worker validates the snapshot id and hash before hiring](docs/images/research-pipeline.png)
 
-## Watch it run first: the 28-second demo
+_Each box is a real command or tool in the repo. The dashed arrow is the researcher abstaining with POOL_STALE, which becomes a request for the next board read._
 
-The demo needs no keys and no candidates. Set `MODE=demo` in `.env` and restart from OPS, or run `pnpm demo` in a terminal. The TRADE tab replays a fictional timeline over 28 seconds:
+| Step              | Tool or command                                                                                            | What it writes                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Freshness check   | the sweep automation, `0,30 * * * *`, SQLite read-only                                                     | nothing, it only decides                                          |
+| Board read        | desktop Chrome, `Ctrl+L` / `Ctrl+C` / `Get-Clipboard`                                                      | `entries.json`                                                    |
+| Roster upsert     | `pnpm exec tsx src/cli/fomo-import.ts entries.json`                                                        | `trader_candidates`, audit `fomo-web-manual`                      |
+| Wallets and marks | `pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25`, also boot +2 min and every 6h             | `candidate_addresses`, PnL and trade columns, audit `dawn-lookup` |
+| On-chain activity | `pnpm exec tsx src/cli/candidate-activity.ts --limit 30`, also every 6h                                    | `swaps_24h`, `last_swap_at`, `activity_checked_at`                |
+| Snapshot          | `pnpm exec tsx src/cli/snapshot-rebuild.ts`, also every 30 min and about 60s after a Dawn or Helius change | `research_snapshots`, `data/research/snapshot/snapshot.json`      |
+| Research input    | MCP `get_research_snapshot`                                                                                | nothing, read only                                                |
+| Submission        | MCP `submit_candidate_recommendation`                                                                      | one atomic file in `data/research/inbox/`                         |
 
-- equity runs from $52.00 to $4,939.00
-- 48 copied closes, 36 of them winners
-- two firings, at 6.1 seconds (`ape_vasco` to `moonpie_max`) and 16.2 seconds (`moonpie_max` to `lunadegen`)
+**1. The sweep decides whether to look.** The automation in `docs/research-sweep-automation.md` runs every 30 minutes and opens the database read-only. It refreshes the board when the newest candidate observation (`max(trader_candidates.observed_at)`) is more than 4 hours old, or when a `POOL_STALE` request is newer than the last import. It never refreshes more than once per 4 hours, so a broken read cannot loop.
 
-Every number in that list is invented fixture data. The banner **FICTIONAL DEMO · NOT A PERFORMANCE CLAIM** stays on screen throughout. The replay is in memory: it never reads your balances and never writes to the trading tables.
+**2. The board read happens in your Chrome.** The sweep opens `https://fomo.family/leaderboard?range=24h` in your normal desktop Chrome and raises the window with `WScript.Shell.AppActivate`, because the automation API cannot front a background window on Windows. It screenshots to find the row positions, then for each visible row clicks the row, presses `Ctrl+L` then `Ctrl+C`, and reads the exact profile URL with `Get-Clipboard`, stripping the `?r=` referral parameter. It aborts without importing when fewer than five rows are captured, when any URL is not `https://fomo.family/profile/<slug>`, or when the range chip is not 24H. It never OCRs a handle and never guesses a slug. The manual equivalent is `tools/gui/board-pass.ps1`. There is no Playwright path to the site.
 
-Switch back with `MODE=paper` when you want real data.
+**3. Four tools fill the roster and its evidence.**
 
-## Paper trading with real data
+- `fomo-import` upserts `trader_candidates` keyed by handle, preserving statistics it did not capture (a board import never wipes Dawn or Helius values), and audits under `fomo-web-manual`.
+- `dawn-lookup` asks Dawn, the Telegram bot, for each candidate's wallet and card: PnL for 24h, 7d, 30d and all time, trade count, recent buys and sells. It runs two minutes after boot and then every 6 hours, serving the oldest statistics first and capped at 25 lookups per run (`DAWN_MAX_LOOKUPS_PER_RUN`). Wallets land in `candidate_addresses` with verification `reported`. If the Telegram session has expired the run audits `Telegram session needs login; QR login window opened` and waits for you.
+- `candidate-activity` calls Helius `walletActivity24h` for each wallet and writes `swaps_24h`, `last_swap_at` and the `activity_checked_at` stamp that eligibility depends on. Addresses that pass the pre-hire gate are upgraded to `verified`.
+- `snapshot-rebuild` publishes the derived snapshot without restarting the server. The runtime also publishes on a 30-minute timer and about 60 seconds after any Dawn or Helius run that changed rows, so research never reads wallet data that is minutes old.
 
-Paper is the default mode. The bot follows real trader activity from Helius and real prices from Jupiter, then simulates the fills. It never signs or submits a transaction, and every result is labeled `PAPER`.
+**4. The snapshot is the researcher's entire world.** It is written to `data/research/snapshot/snapshot.json` and to a `research_snapshots` row, and it carries `snapshotId`, `snapshotHash`, `sourceFreshnessSeconds` (the age of the newest observation), `oldestObservedAt`, `staleCandidateCount`, and per candidate the two stamps `activityCheckedAt` (Helius) and `statsCheckedAt` (Dawn). When the freshest observation advances, the server also writes a `board.refreshed_at` marker, which is what later allows rotation. The MCP process receives only `ZCODE_MCP_SNAPSHOT_DIR` and `ZCODE_MCP_INBOX_DIR`, and exposes exactly three tools: `get_research_snapshot`, `get_replacement_context`, `submit_candidate_recommendation`. A submission is an atomic tmp-then-rename file in `data/research/inbox/`; the worker ingests it through `fs.watch` plus a 5 second poll and rejects bad payloads with explicit codes such as `SCHEMA_INVALID`, `SNAPSHOT_MISMATCH`, `EXPIRED` or `REPLAYED_RECOMMENDATION_ID`.
 
-To get to a first copied trade:
+**5. The ranking rule is written down and testable.** A candidate must be enabled, not recently fired, carry exactly one Solana address, and be fresh on at least one clock: `observedAt` within 12 hours, or `activityCheckedAt` within 6 hours. It then needs at least 5 swaps in 24 hours with a swap inside 20 hours, plus a positive fresh day: `pnl24hUsd > 0` and `statsCheckedAt` within 12 hours. Qualified names sort by `pnl24hUsd` descending, then fresher `activityCheckedAt`, then higher `swaps24h`, capped at ten. Fewer than three usable candidates, or none with a wallet, means an abstention; when the pool itself cannot support the ordering the reason starts with `POOL_STALE:`, which the worker records as a `control_events` row of type `leaderboard_refresh_request`.
 
-1. Add a Helius API key. Get one from https://dashboard.helius.dev, then paste it into SETTINGS under provider keys and save. It applies immediately, with no restart. Keys are entered on your own machine only.
-2. Import at least one candidate with a Solana address. The next section covers both routes.
-3. Activate one candidate from SETTINGS. The monitor sets its starting point at activation, so activity from before that moment is never copied.
-4. Optionally set up the ZCode research task so firings replace themselves. Without it, a fired trader leaves the bot paused until you pick the next one by hand.
+## How one copy happens
 
-The address is the part that matters. The bot watches the Solana chain directly; the leaderboard is only where names and addresses come from. You can follow any wallet you have an address for.
+![A sequence diagram of a copied trade: a leader buy lands on chain, the worker polls Helius, classifies and deduplicates the event, sizes it at 0.25x, applies risk gates, requests a Jupiter quote, fills in paper mode or signs when live and armed, and later mirrors the leader's sell](docs/images/one-copied-trade.png)
 
-Paper fills use documented assumptions. A fill is simulated at the Jupiter quote when a quote is available; otherwise it uses the cached price with 30 bps of adverse slippage and 5 bps of fees. Those assumptions appear with the fills.
+_One leader event, from chain to dashboard. The lower block is the mirrored exit and the automatic 16-hour time exit._
 
-## Getting candidates in
+The worker polls the leader's wallet with Helius every 8 seconds. Events older than 90 seconds are dropped, duplicates are discarded, and swaps it cannot classify are skipped rather than guessed at. Sizing is 0.25x of the leader's measured input, clamped to the per-buy minimum and maximum, and the risk gates run before a quote is requested: deployed capital percentage, the day's realized loss cap, price age, slippage and price impact.
 
-There are three routes. The trading runtime never opens the leaderboard site; the only automated reader is the scheduled research sweep, which drives your own desktop Chrome through GUI automation and imports what it reads.
+In paper mode the fill is simulated from the Jupiter quote, or from a cached price with 30 bps of adverse slippage and 5 bps of fees when no quote exists. In live mode, and only when the wallet is armed, the order is signed and submitted. Either way the position, the fill, and the equity change land on the dashboard.
 
-**Manual import.** SETTINGS accepts JSON or CSV in the shape of `fixtures/leaderboard.example.json`: handle, weekly rank, displayed PnL, profile and avatar URLs, one or more Solana addresses, an enabled flag, and an observation time. Every row is validated, duplicates are reported, and the import is audited.
+## When a trader is fired
 
-**The automated route.** A scheduled sweep checks pool freshness every 30 minutes. When the newest candidate observation is more than 6 hours old, or the researcher has asked for a refresh, it opens the 24-hour board in your desktop Chrome, clicks each visible row, copies the profile URL through the clipboard — never OCR, never a guessed slug — imports the rows with `fomo-import`, and republishes the snapshot with `snapshot-rebuild`. It refreshes at most once every 4 hours, takes the browser window for a minute while it runs, and aborts without importing if fewer than five rows were captured or any copied URL is not a profile.
+![A state diagram of the firing lifecycle: watching, then firing after two losing closes, 8 hours of leader silence, 12 hours idle, or a fresh board with nothing open, followed by handoff to the next candidate or a paused state until a new shortlist arrives](docs/images/firing-handoff.png)
 
-**The manual route.** You read the leaderboard yourself and copy identifiers through the clipboard. Two PowerShell helpers in `tools/gui` capture the visible rows and the profile stats line, and the server CLI imports the result:
+_Four ways into Firing, one way back out to Watching, and a paused state when the shortlist cannot fill the slot._
 
-```powershell
-cd zcode-bot\apps\server
-pnpm exec tsx src/cli/fomo-import.ts C:\temp\fomo-entries.json
-```
+Firing is transactional. The worker marks the activation as firing and cancels unsigned intents in one database transaction, applies the position policy, registers the cooldown, and only then consumes the shortlist. An unknown close outcome does not get retried: it moves the activation to REQUIRES_RECONCILIATION and waits for you.
 
-Wallet addresses come from a separate lookup against Dawn (the Telegram bot) using its own logged-in browser profile:
-
-```powershell
-pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 20
-```
-
-The full procedure, including pacing, clipboard verification, and the rules for a failed lookup, is `docs/FOMO_DAWN_FETCHING.md`. It is the canonical version; follow it rather than improvising. A profile slug that fails validation is skipped with a warning and never guessed, because a wrong slug resolves to a different trader's wallet.
-
-Before a trader is hired, two activity checks apply. The wallet must show at least 5 swaps in the last 24 hours, and a hired trader who goes 20 hours without a swap is fired.
-
-## What ZCode does
-
-ZCode is the researcher, never the runtime. It ranks replacement candidates from a sanitized snapshot; the worker makes every trading decision.
-
-The worker writes a snapshot of the candidate pool to `data/research/snapshot/` after boot, every 30 minutes, and immediately after a leaderboard import (the sweep runs `snapshot-rebuild` for that). ZCode reads it through a restricted local MCP server that exposes exactly three tools:
-
-- `get_research_snapshot`
-- `get_replacement_context`
-- `submit_candidate_recommendation`
-
-The submission is one ordered shortlist, tied to the snapshot's id and hash, valid for 3 hours. The worker validates it before storing it, and rejects stale, replayed, malformed, or mismatched submissions with an explicit code (`EXPIRED`, `REPLAYED_RECOMMENDATION_ID`, `SNAPSHOT_MISMATCH`, and others). ZCode can also abstain, which offers no replacement at all. When it abstains because the pool itself is stale it says so with a `POOL_STALE` reason, and the worker records that as a leaderboard-refresh request.
-
-An ordering may also carry a rotation intent. If the board is fresher than the current hire and that hire holds no open position, no reconciliation case and no entry in flight, the worker fires it and hires from the new ordering — but only when some candidate on that ordering is actually hireable. The researcher never fires or hires anything itself. In live mode this is off unless you set `ROTATE_ON_REFRESH=true`.
-
-The MCP process gets only the two research directories, plus optionally a local submit URL and token. It has no `.env`, no wallet, no database, and no order, config, or pause tools by construction.
-
-A 30-minute task is the design cadence, with **Run now** for an on-demand refresh after a firing. That task also owns the leaderboard refresh described above. Setup, the exact task prompt, the permission guidance, and the manual JSON fallback are in `docs/ZCODE_AUTOMATION.md`.
-
-## Going live
-
-Live mode signs real Solana transactions with real money. It is off by default and cannot turn on by accident.
-
-1. Create the wallet: OPS, wallet setup, choose an encryption secret of 16 or more characters. The secret is used for that request only. Write it down somewhere safe; without it the wallet cannot be recovered.
-2. Fund that wallet with a limited operating balance, never your main holdings.
-3. In `.env`, set `MODE=live`, add a Jupiter production key (`JUPITER_BASE_URL=https://api.jup.ag` plus `JUPITER_API_KEY`), and set the exact acknowledgment:
-
-   ```
-   LIVE_TRADING_ACK=I UNDERSTAND LIVE MODE SIGNS AND SUBMITS REAL SOLANA TRANSACTIONS WITH REAL FUNDS
-   ```
-
-4. Restart, then open SETTINGS, live readiness. Every line must be green.
-5. Arm live from SETTINGS: type the acknowledgment again and enter the wallet secret, which is used in memory only.
-
-The badge shows **LIVE** only when the bot is armed and healthy, never merely because keys exist. Disarm at any time, or press **EMERGENCY STOP**, which blocks new entries and any signing that does not reduce risk. It cannot recall a transaction already submitted on chain, and the UI says so.
-
-## How it works inside
-
-The moving parts are a polling monitor, a copy engine, an executor, and a ledger. One copied trade looks like this:
-
-![A sequence diagram of one copied trade: a buy lands in the leader wallet, the worker polls Helius for the transaction, classifies and dedupes it, sizes at 0.25x with caps, applies risk gates, asks Jupiter for a quote, simulates the fill in paper mode or signs it in live mode, then mirrors the leader's sell and records the close](docs/images/one-copied-trade.png)
-
-_Time runs downward. The two lanes that matter are the worker, which makes every decision, and Helius, which is how leader activity reaches it._
-
-The monitor polls the leader wallet with Helius `getTransactionsForAddress`, keeps a persisted cursor, and deduplicates by chain, leader, signature, and leg. Events older than 90 seconds are rejected rather than copied late, so a restart resumes forward instead of replaying history.
-
-Each qualifying buy is classified, sized at 0.25x the leader's measured input notional, and capped by the configured limits: a minimum and maximum per buy, a maximum deployed percentage, and a daily realized loss limit. Price age, slippage, and price impact have their own ceilings. Two time rules keep a hire from sitting still: a position older than 16 hours is sold when it shows a positive mark, and one still open after a 3 hour grace window is force-closed regardless; a hire with no open positions for 12 hours is fired. A rejection is recorded with the rule name, which is what you see in AUDIT.
-
-Execution is a single boundary. The paper executor simulates and never signs. The live executor exists only behind arming and readiness, and the test suite never constructs it. A close mirrors the leader's sold fraction, and a fully closed position contributes to the loss streak.
-
-Firing is atomic and ordered:
-
-![A state diagram of the firing handoff: watching the trader, then firing either after two losing closes in a row or when a fresh board arrives with nothing open, cancelling unsigned intents, closing positions per policy and cooling the trader down for 24 hours, then either hiring the next eligible candidate or pausing until a fresh shortlist or manual pick](docs/images/firing-handoff.png)
-
-_The only way back from a firing is a candidate the worker accepts, or a fresh shortlist that gives it one._
-
-Firing counts consecutive losing units, not total losses. With the default unit type, one fully closed position is one unit, and partial closes neither add to nor reset the count. A winning unit resets the count to zero; a breakeven unit leaves it unchanged by default. When the second consecutive losing unit closes, the worker marks the trader `FIRING`, cancels unsigned intents, applies the position policy (the default closes all copied positions before switching), records a 24 hour cooldown for the fired trader, and then walks the shortlist in the order ZCode gave. Fired, cooling down, disabled, stale, unsupported, or ambiguous candidates are skipped with recorded reasons. When nothing qualifies, the app state becomes **PAUSED_WAITING_FOR_ZCODE**. New entries stop; monitoring, mirrored exits, reconciliation, and the emergency controls keep working.
-
-Unknown execution outcomes never get retried blind. An order whose signed or submitted result is unknown becomes `REQUIRES_RECONCILIATION`, and the state machine has no path back to a quotable state. You resolve the case with on-chain evidence; the procedure is in `docs/RUNBOOK.md`.
-
-Three modes, one process:
-
-- **demo**: the fictional replay only, in memory, labeled everywhere.
-- **paper** (the default): real public data, simulated fills, no signing.
-- **live**: real data and real signing, only after readiness and explicit arming.
-
-Money is stored as integer micro-USD, never as floating point. One worker holds an exclusive lock, so a second instance refuses to start instead of double-executing orders. Provider failures surface as health state in the dashboard rather than as silent fallbacks.
+Replacement walks the whole ordering rather than stopping at the first candidate that fails to activate, so one candidate with a stale wallet cannot strand the slot. Rotation is narrower: it is honoured only in the sweep that follows a board refresh, it skips when the fresh ordering still ranks the incumbent first, and it never fires into an empty chair. It is enabled in live mode by default (`ROTATE_ON_REFRESH=true`); remove that line to keep it paper only.
 
 ## Honest limitations
 
-- **No profitability claim.** The demo numbers are invented, paper fills are simulated, and the tests never exercise live signing. Nothing here has been shown to make money.
-- **One trader at a time.** The bot copies a single active trader and replaces them after a firing. It does not spread capital across several.
-- **Live mode is unproven by the test suite.** Every automated test and demo path uses paper or demo execution. Live is reachable only by manual arming, and you carry that risk yourself.
-- **Your PC is the bot.** If the machine sleeps, loses network, or shuts down, monitoring stops. A phone client is a remote view, not a remote runtime.
-- **Displayed leaderboard PnL is unverified.** The snapshot ranks on evidence quality, activity, and data completeness; the displayed weekly PnL is treated as a claim, not a result.
-- **The leaderboard is read by your Chrome, never by the runtime.** The bot process never opens fomo.family and there is no Playwright path to it. The scheduled sweep can drive your own desktop Chrome through GUI automation to refresh the board, which takes the window for about a minute; a slug that cannot be verified is skipped, never guessed.
-- **Dawn lookups are slow and can fail.** They are paced at roughly 20 seconds plus jitter, depend on a live Telegram web session, and stop when that session dies.
-- **Provider budgets are finite.** Helius credits and the Jupiter free tier are metered. The runbook estimates the Helius free plan lasts about 36 days at its current 36-second poll, and Jupiter's free keyed plan allows about 1 request per second and 60 per minute in one shared bucket.
-- **Paper fills are assumptions, not fills.** A quote-based simulation and a cached price with 30 bps slippage and 5 bps fees are both approximations, and neither is a real execution.
-- **Reconciliation needs you.** Unknown outcomes stay open until you resolve them with on-chain evidence, and positions held in that state are kept out of equity.
+- **Displayed PnL is not banked profit.** Every PnL figure comes from fomo's own marks. The richer card with realized on-chain profit is unreachable on our path, so `realizedOnchainUsd` is null for every candidate. The 24-hour ranking is a claim, and the risk controls, not the ranking, are what bound your exposure.
+- **A positive day can be a rebound.** A trader who lost the week and won today may be doubling down. The bot ranks them anyway, by design, because the holding window is hours. Point-farm style divergence is recorded as a concern, not used as a filter.
+- **One trader at a time.** The bot copies a single active trader. It does not spread capital across several.
+- **Live mode is not exercised by the tests.** Every automated test and the demo use paper execution. Live signing is reachable only through readiness checks, the documented ack string, and a separate arming action.
+- **Your PC is the runtime.** If the machine sleeps, loses network, or shuts down, monitoring stops. The dashboard on a phone is a remote view, not a remote runtime.
+- **The leaderboard is read through your own Chrome.** The scheduled sweep drives your desktop Chrome with GUI automation and takes the window for about a minute. There is no Playwright path to fomo.family, and a layout change aborts the read instead of guessing.
+- **Dawn can log itself out.** Telegram Web sessions expire. Lookups are paced at roughly 20 seconds plus jitter, and a dead session needs one QR scan from you.
+- **Paper fills are assumptions.** A quote-based simulation and a cached price with 30 bps slippage are approximations, never real executions.
+- **The positive-day gate can thin the pool.** If fewer than three candidates qualify, the researcher abstains and the bot holds its current book.
+- **Reconciliation needs you.** Unknown execution outcomes stay open until you resolve them with on-chain evidence, and those positions are kept out of equity.
 - **Emergency stop is not a recall.** It blocks new entries and non-risk-reducing signing. It cannot undo a transaction already on chain.
-- **The dashboard is local and plain HTTP.** It is meant for your own machine or your own Wi-Fi. Never expose port 8787 to the internet without HTTPS and a reverse proxy.
+- **The dashboard is local plain HTTP.** Keep it on your machine or your own Wi-Fi. Do not expose port 8787 without HTTPS and a reverse proxy.
 
 ## Technical appendix
 
-A pnpm workspace on Node 22 or newer, TypeScript throughout. The server is Hono with a REST and SSE API; the dashboard is React, Vite, and Tailwind; storage is SQLite through Drizzle with WAL journaling; the chain side is `@solana/web3.js`, Helius for leader activity, and Jupiter Swap API v1 for quotes and swaps. The research bridge is the official MCP SDK over stdio, restricted to three tools. Tests are Vitest, plus Playwright for the browser suite.
+Node 22 or newer, TypeScript throughout. The server is Hono with REST and SSE; the dashboard is React, Vite, and Tailwind; storage is SQLite through Drizzle with WAL; the chain side is `@solana/web3.js`, Helius for leader activity, and Jupiter Swap API v1 for quotes and swaps. The research bridge is the official MCP SDK over stdio, restricted to three tools. Tests are Vitest, plus Playwright for the browser suite.
 
-```text
+```
 zcode-bot/
   apps/
-    server/        Hono API and SSE, worker, ops console, CLIs
-    web/           React dashboard, Playwright end-to-end tests
-    zcode-mcp/     restricted MCP server, exactly three tools
+    server/       Hono API, worker, monitor, executors, ops console, CLIs
+    web/          React dashboard (TRADE, OPS, SETTINGS, AUDIT)
+    zcode-mcp/    restricted research bridge, exactly three tools
   packages/
-    config/        environment and risk validation, repo-root path resolution
-    core/          money, sizing, exits, loss streaks, state machines
-    db/            Drizzle schema, migrations, repositories
-    providers/     leaderboard import, Dawn, Helius, Jupiter, prices, notifications
-  docs/            runbook, automation contract, fetching procedure
-  fixtures/        example import and the fictional demo timeline
-  tools/gui/       clipboard-driven PowerShell readers
+    core/         money, sizing, exits, streaks, eligibility, recommendation validation
+    db/           Drizzle schema, migrations, repositories
+    providers/    FOMO import, Dawn, Helius, Jupiter, pricing, notifications
+    config/       Zod env and risk validation
+  docs/           runbook, fetching procedure, automation contract, diagrams
+  fixtures/       example imports and the fictional demo timeline
+  tools/gui/      clipboard-driven PowerShell readers for desktop Chrome
+  install.bat launch.bat enable-phone-access.bat
 ```
 
-The decisions worth knowing before changing anything:
+Three decisions shape the code. The worker is the only authority: the researcher nominates, and never signs, sizes, or exits. Everything fails closed: ambiguous swaps are skipped, unknown outcomes become reconciliation cases, stale or mismatched recommendations are rejected, and an exhausted shortlist pauses instead of inventing a trader. And money is integer micro-USD as bigints, with token amounts as base-unit strings, never floats.
 
-- **The worker is the only authority.** ZCode researches; it never monitors, sizes, exits, signs, or reconciles.
-- **Money is integer micro-USD.** Token amounts are base-unit strings with decimals. No authoritative value is a JavaScript float.
-- **Order transitions are guarded.** Signed and submitted orders cannot return to a quotable state; unknown outcomes are reconciled, not retried.
-- **The ops console is a whitelist.** Operations are server-side constants, serialized by one mutex, behind authentication and CSRF, and audited.
-- **The MCP process is least privilege.** Two directories and three tools, nothing else in its environment.
-- **Demo cannot leak.** The replay is in memory and writes no trading rows.
-- **Every number is traceable.** Dashboard values carry a source and a freshness label.
-- **Fail closed.** Stale recommendations, ambiguous swaps, unsupported chains, and exhausted shortlists all end in a skip or a pause, never a guess.
-
-### Running it as a container
-
-One image serves the dashboard and runs the API and worker together:
-
-```powershell
-docker build -t zcode-bot .
-docker run -d --name zcode-bot `
-  -p 8787:8787 `
-  -v zcode-bot-data:/data `
-  -e SESSION_SECRET=<32 or more random characters> `
-  -e MODE=paper `
-  -e HELIUS_API_KEY=<your key> `
-  zcode-bot
-```
-
-`/data` is the persistent volume for the database, wallet, and research directories. The image listens on 8787 and sets `DATA_DIR=/data`. For live mode, add the acknowledgment string and the Jupiter production settings, and mount the encrypted wallet file inside `/data`.
+More detail lives in `docs/ZCODE_AUTOMATION.md` (the research contract), `docs/FOMO_DAWN_FETCHING.md` (the canonical board and wallet procedure), `docs/RUNBOOK.md` (operations), and `AGENTS.md` (the repository contract).
 
 ## Where things live
 
-Local state, all under the data directory (`./data` by default):
+- `data/zcode-bot.db`, the SQLite database (WAL)
+- `data/wallet/`, the encrypted Solana key
+- `data/research/snapshot/`, `inbox/`, `processed/`, the research files
+- `data/browser-profile-dawn/`, the Telegram session for wallet lookups
+- `.env`, your configuration and keys, entered locally and never committed
+- `docs/screenshot-dashboard.png`, `docs/screenshot-handoff.png`, `docs/screenshot-operations.png`
 
-- `data/zcode-bot.db`, with `-wal` and `-shm` files while the server runs
-- `data/wallet/zcode-bot-wallet.json`, the encrypted wallet; useless without its secret
-- `data/research/snapshot/`, `data/research/inbox/`, `data/research/processed/`, and `data/research/submit-token`
-- `data/browser-profile-dawn/`, the Telegram profile used for wallet lookups
-- `data/setup-token.txt` and `data/worker.lock`
-
-Configuration is `.env` in the repository root. It is gitignored and holds your keys and the session secret.
-
-Validation and development commands:
-
-```powershell
-pnpm format:check && pnpm typecheck && pnpm test && pnpm build
-pnpm e2e
-pnpm dev:server
-pnpm dev:web
-```
-
-Documentation:
-
-- `docs/GETTING_STARTED.md`: the short operator guide.
-- `docs/RUNBOOK.md`: startup, pause and resume, emergencies, restart recovery, reconciliation, arming, backups, and troubleshooting.
-- `docs/ZCODE_AUTOMATION.md`: the MCP server, the scheduled research task, and the verification steps.
-- `docs/FOMO_DAWN_FETCHING.md`: the canonical leaderboard and wallet fetching procedure.
-- `docs/diagrams/`: the Mermaid sources behind the three images above; edit those and re-render the PNGs in `docs/images/`.
+Run the checks with `pnpm typecheck`, `pnpm test`, and `pnpm e2e`; `pnpm format` and `pnpm format:check` cover formatting. `pnpm demo` replays a fictional 28-second session without touching real data.

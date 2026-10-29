@@ -2,6 +2,8 @@
 stateDiagram-v2
     [*] --> Watching
     Watching --> Firing: two losing closes in a row
+    Watching --> Firing: leader wallet silent 8h
+    Watching --> Firing: 12h with nothing open
     Watching --> Firing: fresh board, no open position
     Firing --> Handoff: unsigned intents cancelled
     Handoff --> Watching: next candidate hired
