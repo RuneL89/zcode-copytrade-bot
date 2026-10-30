@@ -17,3 +17,6 @@ logs/*.log
 *.tsbuildinfo
 .state/
 apps/web/e2e/.data/
+
+# Scratch files (sweep entries, temp scripts) — never committed
+Temp/
