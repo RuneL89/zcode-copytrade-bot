@@ -214,4 +214,48 @@ describe('pipeline stage in the dashboard payload', () => {
     expect(s.hiring.stage).toBe('RESEARCH_RUNNING');
     expect(s.hiring.researchDispatched).toBe(true);
   });
+
+  it('POOL_STALE after an abstention newer than the request (never a stuck HIRING)', () => {
+    const activationId = seedHire(8);
+    repo.updateActivation(handle.db, activationId, {
+      state: 'FIRED',
+      endedAt: new Date().toISOString(),
+      endReason: 'fired',
+    });
+    repo.insertHandoffEvent(handle.db, {
+      fromCandidateId: 'cand_idler',
+      toCandidateId: null,
+      status: 'paused_for_fresh_research',
+      recommendationId: null,
+      source: 'zcode_shortlist',
+      detail: 'ordering predates the latest scan',
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    repo.controlEvent(handle.db, 'research_request', 'ordering predates the latest scan', 'worker');
+    const now = new Date().toISOString();
+    repo.saveRecommendation(
+      handle.db,
+      {
+        recommendationId: 'rec_abstain',
+        snapshotId: 'snap_test',
+        snapshotHash: '0'.repeat(64),
+        createdAt: now,
+        receivedAt: now,
+        expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
+        modelLabel: 'test-model',
+        researchSessionId: null,
+        abstain: true,
+        abstainReason: 'POOL_STALE: 2 of 7 scan handles usable',
+        status: 'consumed',
+        validationError: null,
+        rawJson: '{}',
+        normalizedJson: null,
+      },
+      [],
+    );
+
+    const s = builder().build();
+    expect(s.hiring.stage).toBe('POOL_STALE');
+    expect(s.hiring.pausedForResearch).toBe(true);
+  });
 });

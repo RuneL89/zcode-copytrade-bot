@@ -78,9 +78,15 @@ function HiringPipeline({ state, now }: { state: DashboardState; now: number }) 
     },
     {
       key: 'research',
-      label: h.stage === 'RESEARCH_RUNNING' ? 'RESEARCHING…' : 'RESEARCH',
+      label:
+        h.stage === 'RESEARCH_RUNNING'
+          ? 'RESEARCHING…'
+          : h.stage === 'POOL_STALE'
+            ? 'POOL TOO THIN'
+            : 'RESEARCH',
       done: h.stage === 'ORDERING_READY' || h.stage === 'HIRED',
-      active: h.stage === 'RESEARCH_REQUESTED' || h.stage === 'RESEARCH_RUNNING',
+      active:
+        h.stage === 'RESEARCH_REQUESTED' || h.stage === 'RESEARCH_RUNNING' || h.stage === 'POOL_STALE',
     },
     {
       key: 'hire',
@@ -108,6 +114,9 @@ function HiringPipeline({ state, now }: { state: DashboardState; now: number }) 
   } else if (h.stage === 'RESEARCH_RUNNING') {
     headline = 'RESEARCHING';
     sub = h.stageSince ? `STARTED ${timeAgo(h.stageSince, now)} AGO` : 'RANKING THE CURRENT BOARD';
+  } else if (h.stage === 'POOL_STALE') {
+    headline = 'POOL TOO THIN';
+    sub = 'RESEARCH RAN — WAITING FOR THE NEXT BOARD REFRESH';
   } else if (h.stage === 'ORDERING_READY') {
     headline = 'HIRING';
     sub = 'FRESH ORDERING VALIDATED — TOP CANDIDATE ACTIVATES';

@@ -452,6 +452,13 @@ export class StateBuilder {
 
     // One stage for the whole pipeline, so the dashboard can light up the step
     // that is actually running instead of inferring it from several fields.
+    // Only a VALIDATED ordering counts as "ready": an abstention is stored as a
+    // recommendation row too, and treating it as an ordering would leave the
+    // panel claiming HIRING while nothing can be hired.
+    const validCreatedAt = valid?.payload.createdAt ?? null;
+    const abstainedAfterRequest = Boolean(
+      latest?.abstain && researchRequestAt && latest.createdAt > researchRequestAt,
+    );
     let stage: DashboardState['hiring']['stage'] = 'IDLE';
     let stageSince: string | null = null;
     if (activation) {
@@ -459,10 +466,15 @@ export class StateBuilder {
       stageSince = activation.startedAt;
     } else if (pausedForResearch) {
       const orderingIsNewer = Boolean(
-        latest?.createdAt && researchRequestAt && latest.createdAt > researchRequestAt,
+        validCreatedAt && researchRequestAt && validCreatedAt > researchRequestAt,
       );
       if (orderingIsNewer) {
         stage = 'ORDERING_READY';
+        stageSince = validCreatedAt;
+      } else if (abstainedAfterRequest) {
+        // Research ran and declined: the pool is too thin to rank. The next
+        // board refresh re-arms it; until then the bot stays paused.
+        stage = 'POOL_STALE';
         stageSince = latest?.createdAt ?? null;
       } else if (researchDispatched) {
         stage = 'RESEARCH_RUNNING';

@@ -163,7 +163,15 @@ export interface DashboardState {
    */
   hiring: {
     /** Where the idle → fire → research → hire pipeline stands right now. */
-    stage: 'IDLE_COUNTDOWN' | 'FIRED' | 'RESEARCH_REQUESTED' | 'RESEARCH_RUNNING' | 'ORDERING_READY' | 'HIRED' | 'IDLE';
+    stage:
+      | 'IDLE_COUNTDOWN'
+      | 'FIRED'
+      | 'RESEARCH_REQUESTED'
+      | 'RESEARCH_RUNNING'
+      | 'POOL_STALE'
+      | 'ORDERING_READY'
+      | 'HIRED'
+      | 'IDLE';
     /** When the current stage was entered (handoff/activation/request time). */
     stageSince: string | null;
     /** No trader active and the pause is the deliberate wait for fresh research. */
