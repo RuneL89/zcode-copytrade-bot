@@ -22,6 +22,15 @@ export interface DashboardState {
     series: Array<{ t: string; usdMicro: string }>;
     source: 'DEMO_FIXTURES' | 'PAPER_CALCULATION' | 'LIVE_EVIDENCE';
     asOf: string;
+    /** Live only: the wallet breakdown behind the equity number. */
+    wallet?: {
+      usdcMicro: string;
+      solUsdMicro: string;
+      positionsUsdMicro: string;
+      /** Deposit-adjusted wallet PnL since the baseline. */
+      pnlUsdMicro: string;
+      asOf: string;
+    };
   };
   activeTrader: null | {
     candidateId: string;

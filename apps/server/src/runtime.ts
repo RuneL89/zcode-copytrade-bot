@@ -22,6 +22,7 @@ import {
   type PersonalProfileSyncOptions,
 } from '@zcode-bot/providers';
 import { StateStore } from './services/state.js';
+import { WalletEquityService } from './services/wallet-equity.js';
 import { ControlService } from './services/control.js';
 import { SnapshotService, RecommendationService } from './services/research.js';
 import { CopyEngine, SOL_MINT, USDC_MINT } from './services/engine.js';
@@ -87,6 +88,9 @@ export class Runtime {
   private lastAutoDawnAt = 0;
   /** Last auto-triggered activity refresh (same throttle pattern as Dawn). */
   private lastAutoActivityAt = 0;
+  /** Wallet-truth equity (live only); null in paper/demo. */
+  walletEquity: WalletEquityService | null = null;
+  private walletTimer: ReturnType<typeof setInterval> | null = null;
   /** Re-entrancy guard for the rank-watch fire check inside snapshot rebuilds. */
   private rankWatchBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
@@ -168,6 +172,16 @@ export class Runtime {
       return p.priceUsdMicro;
     });
 
+    this.walletEquity =
+      config.mode === 'live'
+        ? new WalletEquityService(
+            this.db.db,
+            prices,
+            this.heliusRpcUrl(),
+            walletPublicKey(config.env.DATA_DIR) ?? '',
+          )
+        : null;
+
     this.engine = new CopyEngine(
       this.db.db,
       config.risk,
@@ -192,6 +206,16 @@ export class Runtime {
       walletPublicKey(config.env.DATA_DIR),
       this.equityStartUsdMicro,
       config.mode === 'live',
+      // Live gates run on the real wallet: USDC cash (+ open cost) from the
+      // last wallet refresh; null keeps paper on the modelled bankroll.
+      config.mode === 'live'
+        ? () => {
+            const b = this.walletEquity?.currentBankroll();
+            return b
+              ? { cashUsdMicro: BigInt(b.cashUsdMicro), capitalUsdMicro: BigInt(b.capitalUsdMicro) }
+              : null;
+          }
+        : undefined,
     );
 
     this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine, this.snapshots);
@@ -571,6 +595,16 @@ export class Runtime {
     // Operator push reports (Telegram): anomalies every 10 min, daily PnL 09:00.
     this.reports.start();
 
+    // Wallet-truth equity (live): read the chain + marks every 30s so the
+    // dashboard shows what an explorer would. Baseline and deposits are
+    // handled inside the service.
+    if (this.walletEquity) {
+      void this.walletEquity.refresh().catch(() => undefined);
+      this.walletTimer = setInterval(() => {
+        void this.walletEquity?.refresh().catch(() => undefined);
+      }, 30_000);
+    }
+
     this.rebuildState();
   }
 
@@ -582,6 +616,7 @@ export class Runtime {
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     if (this.snapshotDebounceTimer) clearTimeout(this.snapshotDebounceTimer);
+    if (this.walletTimer) clearInterval(this.walletTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);

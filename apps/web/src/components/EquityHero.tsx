@@ -14,7 +14,6 @@ export function EquityHero({ state }: { state: DashboardState }) {
   const rolling = BigInt(eq.rollingUsdMicro);
   const start = BigInt(eq.startUsdMicro);
   const sinceStart = rolling - start;
-  const positive = sinceStart >= 0n;
   const parts = splitEquity(eq.rollingUsdMicro);
   const points = eq.series.map((p) => Number(BigInt(p.usdMicro) / 1000n));
 
@@ -31,12 +30,19 @@ export function EquityHero({ state }: { state: DashboardState }) {
     return (lamports / 1e9).toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
   };
   const counters = state.counters;
+  // Live: the headline is the wallet itself; the since-start number is the
+  // deposit-adjusted wallet PnL, and the breakdown shows what an explorer
+  // would. Paper has no wallet and keeps the modelled change.
+  const wallet = eq.wallet ?? null;
+  const pnlSince = wallet ? BigInt(wallet.pnlUsdMicro) : sinceStart;
+  const pnlPositive = pnlSince >= 0n;
+  const positive = wallet ? pnlPositive : sinceStart >= 0n;
 
   return (
     <section className="card p-5 mb-4" aria-label="equity">
       <div className="flex items-start justify-between">
         <div>
-          <p className="label">EQUITY · USDC</p>
+          <p className="label">{wallet ? 'EQUITY · WALLET' : 'EQUITY · USDC'}</p>
           <p className="money !text-[42px] leading-none font-bold mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span>
               {parts.sign}${parts.whole}
@@ -47,13 +53,22 @@ export function EquityHero({ state }: { state: DashboardState }) {
             </span>
           </p>
           <p
-            className={`money text-[13px] font-semibold mt-1.5 ${positive ? 'text-[#16a06a]' : 'text-[#e85454]'}`}
+            className={`money text-[13px] font-semibold mt-1.5 ${pnlPositive ? 'text-[#16a06a]' : 'text-[#e85454]'}`}
             data-testid="equity-change"
           >
-            {sinceStart > 0n ? '+' : ''}
-            {usd(sinceStart.toString())}{' '}
-            <span className="text-[#7d78a0] font-normal">since start (${usd(eq.startUsdMicro, 0)})</span>
+            {pnlSince > 0n ? '+' : ''}
+            {usd(pnlSince.toString())}{' '}
+            <span className="text-[#7d78a0] font-normal">
+              {wallet ? 'wallet PnL (deposits excluded)' : `since start ($${usd(eq.startUsdMicro, 0)})`}
+            </span>
           </p>
+          {wallet && (
+            <p className="label !text-[9px] mt-1" data-testid="wallet-breakdown">
+              {`WALLET: $${usd(wallet.usdcMicro)} USDC · $${usd(wallet.solUsdMicro)} SOL · $${usd(
+                wallet.positionsUsdMicro,
+              )} POSITIONS`}
+            </p>
+          )}
           <p className="label !text-[9px] mt-1.5">
             DEPLOYED {state.counters.deployedPct.toFixed(1)}% OF CAPITAL (CAP {state.counters.maxDeployedPct}
             %)
