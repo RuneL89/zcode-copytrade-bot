@@ -87,13 +87,18 @@ async function main() {
       avatarUrl: null,
       enabled: true,
       source: 'fomo-web-manual',
-      // undefined = "not captured by this import", so the repo preserves
-      // whatever Dawn or Helius already stored (explicit null would clear it).
+      // The board's displayed 24h PnL IS a fresh positive-day signal: store it
+      // so the momentum gate can qualify a trader the moment he appears, before
+      // Dawn's richer card arrives (which then overwrites these figures).
+      // undefined elsewhere = "not captured by this import", so the repo
+      // preserves whatever Dawn or Helius already stored (explicit null would
+      // clear it).
+      pnl24hUsd: pnlUsd ?? undefined,
+      statsCheckedAt: pnlUsd !== null ? observedAt : undefined,
       avgHoldHours: avgHoldHours ?? undefined,
       tradesCount7d: trades7d ?? undefined,
       winRatePct: winRatePct ?? undefined,
       realizedOnchainUsd: realizedOnchainUsd ?? undefined,
-      statsCheckedAt: avgHoldHours !== null || trades7d !== null ? observedAt : undefined,
       observedAt,
     });
     if (address && isLikelySolanaAddress(address)) {

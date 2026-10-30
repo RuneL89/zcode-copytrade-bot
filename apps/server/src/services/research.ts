@@ -102,6 +102,9 @@ export class SnapshotService {
       const a = c.activityCheckedAt ? Date.parse(c.activityCheckedAt) : NaN;
       return !Number.isFinite(a) || a < activityCutoff;
     }).length;
+    // The freshest captured scan: the engine's board-presence guard only hires
+    // these handles, so the researcher gets the list explicitly.
+    const latestScanRow = repo.listRecentScans(this.db, 1)[0] ?? null;
     const snapshot: ResearchSnapshot = {
       snapshotId: 'snap_' + randomUUID(),
       createdAt: now.toISOString(),
@@ -112,6 +115,9 @@ export class SnapshotService {
         freshestObserved !== null ? Math.max(0, Math.round((now.getTime() - freshestObserved) / 1000)) : 0,
       oldestObservedAt: oldestObserved !== null ? new Date(oldestObserved).toISOString() : null,
       staleCandidateCount,
+      latestScan: latestScanRow
+        ? { observedAt: latestScanRow.observedAt, handles: latestScanRow.rows.map((r) => r.handle) }
+        : null,
       candidates: sanitized,
     };
     // Mark a genuine board refresh: when the freshest observation advances,
@@ -285,6 +291,11 @@ export class RecommendationService {
     if (!rec.abstain && rec.rotateIfFlat) {
       this.onRotationRequest?.(rec);
     }
+    // A fresh ordering can also fill an empty chair: the runtime listens so an
+    // idle (PAUSED_WAITING_FOR_ZCODE) bot can hire from it immediately.
+    if (!rec.abstain) {
+      this.onRecommendationValidated?.(rec);
+    }
 
     return { ok: true, recommendationId: rec.recommendationId };
   }
@@ -294,6 +305,9 @@ export class RecommendationService {
    * research service never holds a reference to the trading engine.
    */
   onRotationRequest: ((rec: RecommendationPayload) => void) | null = null;
+
+  /** Fired after every validated non-abstain ordering lands in the inbox. */
+  onRecommendationValidated: ((rec: RecommendationPayload) => void) | null = null;
 
   latestValid(): { payload: RecommendationPayload; receivedAt: string } | null {
     const rows = repo.listRecommendations(this.db, 50);

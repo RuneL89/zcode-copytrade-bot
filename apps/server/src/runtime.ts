@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, type AppConfig } from '@zcode-bot/config';
-import { SCAN_FRESH_MS, evaluateRankStability } from '@zcode-bot/core';
+import { SCAN_FRESH_MS, ACTIVITY_FRESH_MS, evaluateRankStability } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -85,6 +85,8 @@ export class Runtime {
   private dawnRunBusy = false;
   /** Last auto-triggered Dawn run (throttle for the post-rebuild wallet sweep). */
   private lastAutoDawnAt = 0;
+  /** Last auto-triggered activity refresh (same throttle pattern as Dawn). */
+  private lastAutoActivityAt = 0;
   /** Re-entrancy guard for the rank-watch fire check inside snapshot rebuilds. */
   private rankWatchBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
@@ -330,6 +332,14 @@ export class Runtime {
       void this.lifecycle.rotateIfFlat(rec).catch((e: Error) => {
         this.recommendationsAuditRotationError(rec.recommendationId, e);
       });
+    };
+
+    // A validated ordering can fill an empty chair (PAUSED_WAITING_FOR_ZCODE):
+    // rebuildState runs the idle-hire gate, which activates the best eligible
+    // board-present candidate. Hiring itself signs nothing; every order still
+    // passes the armed-executor boundary.
+    this.recommendations.onRecommendationValidated = () => {
+      this.rebuildState();
     };
   }
 
@@ -593,6 +603,7 @@ export class Runtime {
     this.rebuildState();
     this.rankWatchCheck();
     this.maybeAutoDawn();
+    this.maybeAutoActivity();
     repo.pruneLeaderboardObservations(this.db.db, 30);
   }
 
@@ -687,6 +698,48 @@ export class Runtime {
   }
 
   /**
+   * Auto activity refresh: when a wallet-having enabled candidate has never
+   * had an on-chain activity check (or the stamp went stale), run one now
+   * instead of waiting for the 6-hour timer. This is what makes a fresh board
+   * import hireable within the same cycle: the activity gate needs swaps24h.
+   * Throttled like the Dawn auto-run.
+   */
+  private maybeAutoActivity(): void {
+    if (!this.helius?.configured || this.demo?.running) return;
+    const AUTO_ACTIVITY_MIN_INTERVAL_MS = 20 * 60 * 1000;
+    if (Date.now() - this.lastAutoActivityAt < AUTO_ACTIVITY_MIN_INTERVAL_MS) return;
+    const wallets = new Set(
+      repo
+        .listCandidateAddresses(this.db.db)
+        .filter((a) => a.chain === 'solana')
+        .map((a) => a.candidateId),
+    );
+    const staleCutoff = Date.now() - ACTIVITY_FRESH_MS;
+    const stale = repo
+      .listCandidates(this.db.db)
+      .filter(
+        (c) =>
+          c.enabled &&
+          wallets.has(c.candidateId) &&
+          (c.activityCheckedAt === null || Date.parse(c.activityCheckedAt) < staleCutoff),
+      );
+    if (stale.length === 0) return;
+    this.lastAutoActivityAt = Date.now();
+    repo.audit(
+      this.db.db,
+      'activity',
+      `auto activity refresh: ${stale.length} candidate(s) with missing/stale activity: ${stale
+        .slice(0, 5)
+        .map((c) => c.handle)
+        .join(', ')}`,
+      {},
+    );
+    void this.activityRefreshNow().catch((e: Error) => {
+      repo.audit(this.db.db, 'activity', 'auto activity refresh failed: ' + e.message, {});
+    });
+  }
+
+  /**
    * Debounced snapshot rebuild after Dawn/Helius changed candidate rows, so
    * research reads current wallets and activity stamps within a minute instead
    * of waiting for the 30-minute publish timer.
@@ -707,16 +760,21 @@ export class Runtime {
 
   rebuildState(): import('./services/state.js').DashboardState {
     if (this.demo?.running) return this.store.get()!; // demo owns the state while replaying
-    // Cold-start hire (paper mode): when idle with a valid recommendation,
-    // activate its best eligible candidate so the loop starts unattended.
-    if (this.config.mode === 'paper' && !this.coldStartBusy) {
+    // Idle hire: when no trader is active and a valid recommendation exists,
+    // activate its best eligible candidate so the loop resumes on its own.
+    // Paper always; live only while armed (a hire is the decision to copy).
+    // Refuses while a fire is still blocked (activeActivation covers
+    // FIRING/REQUIRES_RECONCILIATION), so it can never double-hire.
+    const idleHireAllowed =
+      this.config.mode === 'paper' || (this.config.mode === 'live' && this.control.flags.armed);
+    if (idleHireAllowed && !this.coldStartBusy) {
       this.refreshLifecycleRecommendation();
       this.coldStartBusy = true;
       void this.lifecycle
         .coldStartHire()
         .then((hired) => {
           if (hired.status === 'ACTIVATED') {
-            repo.audit(this.db.db, 'activation', 'cold-start hire completed (paper mode)', {});
+            repo.audit(this.db.db, 'activation', 'idle hire completed from recommendation', {});
             void this.rebuildState();
           }
         })

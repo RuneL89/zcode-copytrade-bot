@@ -59,6 +59,44 @@ describe('database', () => {
     expect(repo.listCandidateAddresses(handle.db, 'cand_a')).toHaveLength(1);
   });
 
+  it('scan import writes pnl24h + stats stamp and preserves Dawn stats', () => {
+    const now = new Date().toISOString();
+    // Dawn card first: rich stats + its own stamp.
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_scan',
+      handle: 'scanface',
+      weeklyRank: 3,
+      displayedWeeklyPnlUsdMicro: '50000000',
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'dawn',
+      observedAt: now,
+      winRatePct: 61.5,
+      pnl24hUsd: null,
+      statsCheckedAt: '2026-10-29T00:00:00.000Z',
+    });
+    // Board import: only the scan's displayed 24h PnL + fresh stamp.
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_scan',
+      handle: 'scanface',
+      weeklyRank: 1,
+      displayedWeeklyPnlUsdMicro: '262897540000',
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'fomo-web-manual',
+      observedAt: now,
+      pnl24hUsd: 262897.54,
+      statsCheckedAt: now,
+    });
+    const c = repo.listCandidates(handle.db).find((x) => x.candidateId === 'cand_scan')!;
+    expect(c.pnl24hUsd).toBeCloseTo(262897.54, 2);
+    expect(c.statsCheckedAt).toBe(now);
+    // undefined stats must survive the scan import untouched.
+    expect(c.winRatePct).toBeCloseTo(61.5, 2);
+  });
+
   it('observed events dedupe by unique key', () => {
     const a = repo.insertObservedEvent(handle.db, {
       dedupeKey: 'solana:L:sig1:0',

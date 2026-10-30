@@ -67,6 +67,12 @@ export interface ResearchSnapshot {
   oldestObservedAt?: string | null;
   /** Candidates whose observedAt is older than 24h — the pool may be partially stale. */
   staleCandidateCount?: number;
+  /**
+   * The most recent captured board scan. The engine refuses any hire whose
+   * handle is not in latestScan.handles (NOT_ON_BOARD), so this list is the
+   * researcher's hireable universe.
+   */
+  latestScan?: { observedAt: string; handles: string[] } | null;
   candidates: SanitizedCandidate[];
 }
 

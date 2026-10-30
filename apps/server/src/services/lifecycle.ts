@@ -217,10 +217,11 @@ export class TraderLifecycle {
   }
 
   /**
-   * Cold-start hire (paper mode only): when no trader is active and a valid
-   * recommendation exists, activate its best eligible candidate. This starts
-   * the copy loop without operator input; firing/replacement then sustains
-   * it. Live mode always starts through explicit operator activation.
+   * Idle hire: when no trader is active (or a fire is still blocked) and a
+   * valid recommendation exists, activate its best eligible candidate. The
+   * runtime decides when this may run (paper always; live only while armed).
+   * activeActivation() covers ACTIVE/FIRING/REQUIRES_RECONCILIATION, so a hire
+   * can never double-book a trader while a fire is stuck in reconciliation.
    */
   async coldStartHire(): Promise<
     { status: 'ACTIVATED'; candidateId: string } | { status: 'IDLE' | 'NO_CANDIDATE' }

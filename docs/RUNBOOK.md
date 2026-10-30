@@ -174,9 +174,12 @@ wallet stays usable; the researcher flags its outdated PnL marks as a concern.
 - **Resume** re-enables entries.
 - **PAUSED_WAITING_FOR_ZCODE** (automatic): the shortlist is exhausted,
   stale, or missing. The dashboard says so and the audit shows a
-  `replacement_request`. Use the ZCode task's **Run now** or Settings →
-  recommendation import. This is fail-closed by design; do not "fix" it by
-  hand-activating candidates unless you deliberately want a manual override.
+  `replacement_request`. Since 2026-10-30 the pause self-heals: the next
+  validated ordering (the 30-minute sweep's research) is hired automatically —
+  paper always, live while armed — provided a candidate passes the
+  board-presence, activity and day gates. Until such an ordering exists the
+  pause stands; do not "fix" it by hand-activating candidates unless you
+  deliberately want a manual override.
 
 ## 4. Emergency procedures
 
