@@ -566,12 +566,20 @@ describe('day-trader discipline: time exits + idle firing', () => {
     );
   });
 
-  function sweep(activationId: string, startedAt: string): Promise<void> {
-    return (monitor as unknown as { sweep: (a: string, s: string, n: Date) => Promise<void> }).sweep(
-      activationId,
-      startedAt,
-      new Date(),
-    );
+  /**
+   * The monitor splits its work: the idle fire runs on every tick, the hourly
+   * sweep owns time exits and the stall watcher. This helper exercises both the
+   * way a tick would, so the discipline tests below cover the real sequence.
+   */
+  async function sweep(activationId: string, startedAt: string): Promise<void> {
+    const m = monitor as unknown as {
+      checkIdle: (a: string, s: string, n: Date) => Promise<boolean>;
+      sweep: (a: string, n: Date) => Promise<void>;
+    };
+    const now = new Date();
+    const fired = await m.checkIdle(activationId, startedAt, now);
+    if (fired) return;
+    await m.sweep(activationId, now);
   }
 
   function freshActivation(id: string): void {

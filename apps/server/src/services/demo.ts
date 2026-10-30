@@ -329,11 +329,16 @@ export class DemoEngine {
             }
           : null,
       hiring: {
+        stage: waitingForZcode ? 'RESEARCH_REQUESTED' : 'IDLE_COUNTDOWN',
+        stageSince: handoffActive && lastHandoff ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString() : null,
         pausedForResearch: waitingForZcode,
         reason: waitingForZcode ? 'DEMO: shortlist exhausted — fresh research requested' : null,
+        firedAt: waitingForZcode && lastHandoff ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString() : null,
         latestScanAt: null,
         recommendationAt: null,
         researchRequested: waitingForZcode,
+        researchDispatched: false,
+        idleFireAtIso: waitingForZcode ? null : new Date(Date.now() + 3600_000 * 5).toISOString(),
         autoResume: true,
       },
       recommendation: {

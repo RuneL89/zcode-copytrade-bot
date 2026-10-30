@@ -133,6 +133,18 @@ never hires a trader the board has already dropped. Scans come from the sweep's
 
 ### Hiring pause: fired → fresh research → auto-hire (wired 2026-10-30)
 
+**The pipeline is one box on the dashboard.** The OPEN POSITIONS card (where the
+idle countdown lives) shows every stage as chips — `IDLE TIMER › FIRED ›
+RESEARCH › NEW HIRE` — plus a headline: the countdown while flat, then `FIRED`,
+`RESEARCH QUEUED`, `RESEARCHING`, `HIRING`. The stages come from
+`DashboardState.hiring.stage`, so what the dashboard shows is what the engine is
+actually doing.
+
+**Idle fire timing.** The idle check runs on EVERY monitor tick (8s), not on the
+hourly discipline sweep: when the countdown reaches zero the trader is fired
+within a tick. Provider failures during the Helius poll are recorded but no
+longer skip the idle/time checks.
+
 After a fire, the replacement walk will **not** spend an ordering that predates
 the newest board scan (5-minute tolerance; the guard stands down when no scan is
 captured or the scan itself is older than 2 hours, so a broken capture pipeline
@@ -140,14 +152,18 @@ can never freeze hiring). Hiring from such an ordering would pick the best
 candidate from hours ago; instead the bot pauses
 (`PAUSED_WAITING_FOR_ZCODE`, handoff event `paused_for_fresh_research` with the
 "ordering … predates the latest scan …" detail), records a `research_request`
-control event (throttled to one per scan), and the sweep's trigger — *"a
-research_request newer than the newest recommendation"* — dispatches the
-researcher. When the fresh ordering is validated, the idle-hire path activates
-its top eligible candidate automatically. The dashboard shows the whole loop in
-the NOW COPYING card while paused: `FIRED → RESEARCHING → AUTO-HIRE` with the
-scan age, ordering age and the pause reason; the fired overlay (first 20s after
-a fire) carries the real fire reason and the same promise. The same guard
-applies to cold start and idle resume.
+control event (throttled to one per scan), and one of two actors picks it up:
+
+- the 5-minute **research dispatcher** (see `docs/research-sweep-automation.md`):
+  refreshes candidate activity, rebuilds the snapshot, writes
+  `research_dispatched`, and spawns the researcher — latency ≤5 min;
+- otherwise the 30-minute sweep, which treats a `research_request` newer than
+  the newest recommendation (and newer than any `research_dispatched`) as a
+  research trigger.
+
+When the fresh ordering is validated, the idle-hire path activates its top
+eligible candidate automatically. The same guard applies to cold start and idle
+resume.
 
 ### Stall watcher (wired 2026-10-29)
 

@@ -162,16 +162,26 @@ export interface DashboardState {
    * hired automatically once that ordering is validated.
    */
   hiring: {
+    /** Where the idle → fire → research → hire pipeline stands right now. */
+    stage: 'IDLE_COUNTDOWN' | 'FIRED' | 'RESEARCH_REQUESTED' | 'RESEARCH_RUNNING' | 'ORDERING_READY' | 'HIRED' | 'IDLE';
+    /** When the current stage was entered (handoff/activation/request time). */
+    stageSince: string | null;
     /** No trader active and the pause is the deliberate wait for fresh research. */
     pausedForResearch: boolean;
     /** One-line reason from the latest pause (stale ordering / exhausted shortlist). */
     reason: string | null;
+    /** When the last trader was fired (outgoing handoff event). */
+    firedAt: string | null;
     /** Board scan the ordering is compared against (null when none captured). */
     latestScanAt: string | null;
     /** Creation time of the newest recommendation, valid or not. */
     recommendationAt: string | null;
     /** A research_request control event was recorded after the pause began. */
     researchRequested: boolean;
+    /** The dispatcher acknowledged the request and started the research run. */
+    researchDispatched: boolean;
+    /** When the idle fire is due, while a flat hire is counting down. */
+    idleFireAtIso: string | null;
     /** Constant: a validated ordering auto-hires its top eligible candidate. */
     autoResume: true;
   };

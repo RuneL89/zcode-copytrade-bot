@@ -116,11 +116,16 @@ export interface DashboardState {
   };
   /** The fired → paused → research → auto-hire cycle, for the hire/fire panel. */
   hiring: {
+    stage: 'IDLE_COUNTDOWN' | 'FIRED' | 'RESEARCH_REQUESTED' | 'RESEARCH_RUNNING' | 'ORDERING_READY' | 'HIRED' | 'IDLE';
+    stageSince: string | null;
     pausedForResearch: boolean;
     reason: string | null;
+    firedAt: string | null;
     latestScanAt: string | null;
     recommendationAt: string | null;
     researchRequested: boolean;
+    researchDispatched: boolean;
+    idleFireAtIso: string | null;
     autoResume: true;
   };
   recommendation: {

@@ -422,21 +422,77 @@ export class StateBuilder {
       (lastHandoff?.status === 'paused_waiting_for_zcode' ||
         lastHandoff?.status === 'paused_for_fresh_research');
     const latestScanRow = repo.listRecentScans(this.db, 1)[0] ?? null;
+    const recentControl = repo.listControlEvents(this.db, 20);
     const researchRequested = pausedForResearch
-      ? repo
-          .listControlEvents(this.db, 20)
-          .some(
-            (e) =>
-              (e.type === 'research_request' || e.type === 'replacement_request') &&
-              e.createdAt >= (lastHandoff?.createdAt ?? ''),
-          )
+      ? recentControl.some(
+          (e) =>
+            (e.type === 'research_request' || e.type === 'replacement_request') &&
+            e.createdAt >= (lastHandoff?.createdAt ?? ''),
+        )
       : false;
+    const researchRequestAt = recentControl
+      .filter((e) => e.type === 'research_request')
+      .map((e) => e.createdAt)
+      .sort()
+      .pop();
+    const researchDispatched = Boolean(
+      researchRequestAt && recentControl.some((e) => e.type === 'research_dispatched' && e.createdAt >= researchRequestAt),
+    );
+
+    // Idle-fire deadline while a flat hire is counting down (same baseline the
+    // monitor uses: hire time, or the last time a position was held).
+    let idleFireAtIso: string | null = null;
+    if (activation && openPositionRows.length === 0) {
+      const lastOpenAt = repo.kvGet(this.db, `monitor.lastOpenAt:${activation.activationId}`);
+      const baselineMs = Math.max(Date.parse(activation.startedAt), lastOpenAt ? Date.parse(lastOpenAt) : 0);
+      if (Number.isFinite(baselineMs) && baselineMs > 0) {
+        idleFireAtIso = new Date(baselineMs + this.config.risk.IDLE_FIRE_HOURS * 3_600_000).toISOString();
+      }
+    }
+
+    // One stage for the whole pipeline, so the dashboard can light up the step
+    // that is actually running instead of inferring it from several fields.
+    let stage: DashboardState['hiring']['stage'] = 'IDLE';
+    let stageSince: string | null = null;
+    if (activation) {
+      stage = 'HIRED';
+      stageSince = activation.startedAt;
+    } else if (pausedForResearch) {
+      const orderingIsNewer = Boolean(
+        latest?.createdAt && researchRequestAt && latest.createdAt > researchRequestAt,
+      );
+      if (orderingIsNewer) {
+        stage = 'ORDERING_READY';
+        stageSince = latest?.createdAt ?? null;
+      } else if (researchDispatched) {
+        stage = 'RESEARCH_RUNNING';
+        stageSince = recentControl.find((e) => e.type === 'research_dispatched')?.createdAt ?? null;
+      } else if (researchRequested) {
+        stage = 'RESEARCH_REQUESTED';
+        stageSince = researchRequestAt ?? null;
+      } else {
+        stage = 'FIRED';
+        stageSince = lastHandoff?.createdAt ?? null;
+      }
+    } else if (lastHandoff) {
+      stage = 'FIRED';
+      stageSince = lastHandoff.createdAt;
+    }
+    // An ACTIVE hire that is flat and counting down is the first step of the
+    // same pipeline; IDLE_COUNTDOWN makes that explicit for the dashboard.
+    if (stage === 'HIRED' && idleFireAtIso) stage = 'IDLE_COUNTDOWN';
+
     const hiring: DashboardState['hiring'] = {
+      stage,
+      stageSince,
       pausedForResearch,
       reason: pausedForResearch ? (lastHandoff?.detail ?? null) : null,
+      firedAt: lastHandoff?.fromCandidateId ? lastHandoff.createdAt : null,
       latestScanAt: latestScanRow?.observedAt ?? null,
       recommendationAt: latest?.createdAt ?? null,
       researchRequested,
+      researchDispatched,
+      idleFireAtIso,
       autoResume: true,
     };
 

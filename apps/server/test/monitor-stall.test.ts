@@ -97,9 +97,8 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
 describe('stall watcher (8h, fresh evidence only)', () => {
   it('fires when the leader wallet is silent longer than the stall threshold', async () => {
     const activationId = seedAndHire(9, 1);
-    await (monitor as unknown as { sweep: (a: string, s: string, n: Date) => Promise<void> }).sweep(
+    await (monitor as unknown as { sweep: (a: string, n: Date) => Promise<void> }).sweep(
       activationId,
-      new Date().toISOString(),
       new Date(),
     );
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('FIRED');
@@ -108,9 +107,8 @@ describe('stall watcher (8h, fresh evidence only)', () => {
 
   it('does not fire while the leader traded within the threshold', async () => {
     const activationId = seedAndHire(7, 1);
-    await (monitor as unknown as { sweep: (a: string, s: string, n: Date) => Promise<void> }).sweep(
+    await (monitor as unknown as { sweep: (a: string, n: Date) => Promise<void> }).sweep(
       activationId,
-      new Date().toISOString(),
       new Date(),
     );
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');
@@ -120,9 +118,8 @@ describe('stall watcher (8h, fresh evidence only)', () => {
     // Wallet silent 12h, but the last Helius check itself is 12h old — the
     // watcher must not act on evidence it cannot trust.
     const activationId = seedAndHire(12, 12);
-    await (monitor as unknown as { sweep: (a: string, s: string, n: Date) => Promise<void> }).sweep(
+    await (monitor as unknown as { sweep: (a: string, n: Date) => Promise<void> }).sweep(
       activationId,
-      new Date().toISOString(),
       new Date(),
     );
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');

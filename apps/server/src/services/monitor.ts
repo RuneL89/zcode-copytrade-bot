@@ -66,17 +66,41 @@ export class LeaderMonitor {
     try {
       const activation = repo.activeActivation(this.db);
       if (activation) {
+        // Idle fire runs FIRST and on EVERY tick: the dashboard countdown hits
+        // zero to the minute, so the fire that follows it must not wait for the
+        // hourly sweep — nor be blocked by a provider failure in the poll
+        // below. Pure local DB math.
+        if (activation.state === 'ACTIVE') {
+          const idleFired = await this.checkIdle(activation.activationId, activation.startedAt, now);
+          if (idleFired) {
+            this.lastTickAt = now.toISOString();
+            this.lastError = null;
+            return;
+          }
+        }
         const addresses = repo.listCandidateAddresses(this.db, activation.candidateId);
         const solana = addresses.find((a) => a.chain === 'solana');
         if (solana) {
-          await this.pollAddress(solana.address, activation.activationId, activation.candidateId);
+          // Provider failure is recorded but never skips the discipline checks.
+          try {
+            await this.pollAddress(solana.address, activation.activationId, activation.candidateId);
+          } catch (e) {
+            this.lastError = (e as Error).message;
+            repo.recordProviderHealth(this.db, {
+              provider: 'helius',
+              status: 'degraded',
+              latencyMs: null,
+              detail: this.lastError,
+              checkedAt: now.toISOString(),
+            });
+          }
         }
-        // Day-trader discipline sweep, at most hourly: time exits + idle fire.
+        // Day-trader discipline sweep, at most hourly: time exits + stall watcher.
         // Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
         // are in progress and close their own positions).
         if (activation.state === 'ACTIVE' && now.getTime() - this.lastSweepCheckAt >= 3600_000) {
           this.lastSweepCheckAt = now.getTime();
-          await this.sweep(activation.activationId, activation.startedAt, now);
+          await this.sweep(activation.activationId, now);
         }
       }
       this.lastTickAt = now.toISOString();
@@ -96,13 +120,14 @@ export class LeaderMonitor {
   }
 
   /**
-   * Day-trader discipline: (a) force-close positions past their time window —
-   * positive PnL (excl. fees) sells at MAX_POSITION_AGE_HOURS, everything
-   * still open at MAX_POSITION_AGE_HOURS + POSITION_GRACE_HOURS sells
-   * regardless; (b) fire the hire after IDLE_FIRE_HOURS with zero open
-   * positions (baseline: hire time or the last time a position was held).
+   * Day-trader discipline, at most hourly: (a) force-close positions past
+   * their time window — positive PnL (excl. fees) sells at
+   * MAX_POSITION_AGE_HOURS, everything still open at MAX_POSITION_AGE_HOURS +
+   * POSITION_GRACE_HOURS sells regardless; (b) the stall watcher. The idle
+   * fire is NOT here — it runs on every tick (checkIdle) so it lands when the
+   * dashboard countdown reaches zero.
    */
-  private async sweep(activationId: string, startedAt: string, now: Date): Promise<void> {
+  private async sweep(activationId: string, now: Date): Promise<void> {
     const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
     const nowMs = now.getTime();
 
@@ -169,23 +194,39 @@ export class LeaderMonitor {
     const stillOpen = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
     if (stillOpen.length > 0) {
       repo.kvSet(this.db, lastOpenKey, now.toISOString());
-      return;
+    }
+  }
+
+  /**
+   * Idle fire: an ACTIVE hire that has held zero positions for IDLE_FIRE_HOURS
+   * (measured from the hire or the last held position) loses the slot. Runs on
+   * every tick so the fire lands when the dashboard countdown reaches zero;
+   * the hourly sweep no longer owns it. Returns true when a fire was issued.
+   */
+  private async checkIdle(activationId: string, startedAt: string, now: Date): Promise<boolean> {
+    const lastOpenKey = `monitor.lastOpenAt:${activationId}`;
+    const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    if (open.length > 0) {
+      repo.kvSet(this.db, lastOpenKey, now.toISOString());
+      return false;
     }
     const lastOpenAt = repo.kvGet(this.db, lastOpenKey);
     const baselineMs = Math.max(Date.parse(startedAt), lastOpenAt ? Date.parse(lastOpenAt) : 0);
     const baselineIso = new Date(
       Number.isFinite(baselineMs) && baselineMs > 0 ? baselineMs : Date.parse(startedAt),
     ).toISOString();
-    if (isIdleOver({ baselineIso, nowMs, idleFireHours: this.risk.IDLE_FIRE_HOURS })) {
-      const hours = ((nowMs - baselineMs) / 3_600_000).toFixed(1);
-      repo.audit(this.db, 'monitor', `idle watcher: no open positions for ${hours}h — firing`, {});
-      await this.lifecycle
-        .fire(activationId, `idle: no open positions for ${hours}h`)
-        .then(() => this.onStateChange())
-        .catch((e: Error) => {
-          repo.audit(this.db, 'monitor', `idle fire failed: ${e.message}`, {});
-        });
+    if (!isIdleOver({ baselineIso, nowMs: now.getTime(), idleFireHours: this.risk.IDLE_FIRE_HOURS })) {
+      return false;
     }
+    const hours = ((now.getTime() - baselineMs) / 3_600_000).toFixed(1);
+    repo.audit(this.db, 'monitor', `idle watcher: no open positions for ${hours}h — firing`, {});
+    await this.lifecycle
+      .fire(activationId, `idle: no open positions for ${hours}h`)
+      .then(() => this.onStateChange())
+      .catch((e: Error) => {
+        repo.audit(this.db, 'monitor', `idle fire failed: ${e.message}`, {});
+      });
+    return true;
   }
 
   private async pollAddress(address: string, activationId: string, candidateId: string): Promise<void> {

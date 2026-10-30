@@ -52,16 +52,165 @@ function countdown(
 
 const TICK_MS = 10_000;
 
+/**
+ * The whole hire/fire pipeline in one box: idle countdown → fired → research
+ * (requested, then running) → auto-hire. Before a fire the countdown is the
+ * headline; after it the same box switches to the stage that is running, so
+ * the operator can follow the handoff without changing screens.
+ */
+function HiringPipeline({ state, now }: { state: DashboardState; now: number }) {
+  const h = state.hiring;
+  const idleFireAt = h.idleFireAtIso ? Date.parse(h.idleFireAtIso) : null;
+  const idleLeftMs = idleFireAt !== null && Number.isFinite(idleFireAt) ? idleFireAt - now : null;
+
+  const steps: Array<{ key: string; label: string; done: boolean; active: boolean }> = [
+    {
+      key: 'idle',
+      label: 'IDLE TIMER',
+      done: h.stage !== 'IDLE_COUNTDOWN' && h.stage !== 'IDLE',
+      active: h.stage === 'IDLE_COUNTDOWN',
+    },
+    {
+      key: 'fired',
+      label: 'FIRED',
+      done: h.stage !== 'IDLE_COUNTDOWN' && h.stage !== 'IDLE' && h.stage !== 'FIRED',
+      active: h.stage === 'FIRED',
+    },
+    {
+      key: 'research',
+      label: h.stage === 'RESEARCH_RUNNING' ? 'RESEARCHING…' : 'RESEARCH',
+      done: h.stage === 'ORDERING_READY' || h.stage === 'HIRED',
+      active: h.stage === 'RESEARCH_REQUESTED' || h.stage === 'RESEARCH_RUNNING',
+    },
+    {
+      key: 'hire',
+      label: 'NEW HIRE',
+      done: false,
+      active: h.stage === 'ORDERING_READY' || h.stage === 'HIRED',
+    },
+  ];
+
+  // Headline: the number while counting down, the running stage after that.
+  let headline = '—';
+  let sub = 'NO ACTIVE TRADER';
+  if (h.stage === 'IDLE_COUNTDOWN' && idleLeftMs !== null) {
+    headline = hhmm(idleLeftMs);
+    sub = 'HOURS:MINUTES UNTIL AUTOMATIC REPLACEMENT';
+  } else if (h.stage === 'HIRED') {
+    headline = state.activeTrader ? `@${state.activeTrader.handle}` : 'HIRED';
+    sub = 'POSITION OPEN — TIMER PAUSED';
+  } else if (h.stage === 'FIRED') {
+    headline = 'FIRED';
+    sub = h.stageSince ? `OUT ${timeAgo(h.stageSince, now)} AGO` : 'WAITING FOR RESEARCH';
+  } else if (h.stage === 'RESEARCH_REQUESTED') {
+    headline = 'RESEARCH QUEUED';
+    sub = 'WAITING FOR THE NEXT RESEARCH RUN';
+  } else if (h.stage === 'RESEARCH_RUNNING') {
+    headline = 'RESEARCHING';
+    sub = h.stageSince ? `STARTED ${timeAgo(h.stageSince, now)} AGO` : 'RANKING THE CURRENT BOARD';
+  } else if (h.stage === 'ORDERING_READY') {
+    headline = 'HIRING';
+    sub = 'FRESH ORDERING VALIDATED — TOP CANDIDATE ACTIVATES';
+  }
+
+  return (
+    <div
+      className={`mt-3 rounded-[14px] border p-3 ${
+        h.stage === 'IDLE_COUNTDOWN'
+          ? 'bg-amber-50 border-amber-200'
+          : h.stage === 'HIRED'
+            ? 'bg-emerald-50 border-emerald-200'
+            : 'bg-orange-50 border-orange-200'
+      }`}
+      data-testid="hiring-pipeline"
+      aria-label={`hire pipeline: ${h.stage}`}
+    >
+      <div className="flex items-center gap-1" aria-label="pipeline stages">
+        {steps.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-1 flex-1 min-w-0">
+            <span
+              className={`flex-1 text-center rounded-full px-1.5 py-1 text-[8px] font-bold tracking-wide truncate ${
+                s.done
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : s.active
+                    ? h.stage === 'IDLE_COUNTDOWN'
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-orange-100 text-orange-700'
+                    : 'bg-white/70 text-[#a29dbf] border border-white'
+              }`}
+            >
+              {s.done ? '✓ ' : ''}
+              {s.label}
+            </span>
+            {i < steps.length - 1 && <span className="text-[#c6c2dd] text-[9px]">›</span>}
+          </div>
+        ))}
+      </div>
+
+      <div className="text-center mt-2">
+        <p
+          className={`money font-bold leading-none ${
+            h.stage === 'IDLE_COUNTDOWN' ? 'text-[30px] text-amber-700' : 'text-[17px] text-[#2a2740]'
+          }`}
+          data-testid="pipeline-headline"
+        >
+          {headline}
+        </p>
+        <p className="label !text-[8px] mt-1 text-[#a29dbf]">{sub}</p>
+      </div>
+
+      {state.activeTrader && h.stage === 'IDLE_COUNTDOWN' && (
+        <p className="label !text-[8.5px] mt-2 text-center text-amber-700">
+          @{state.activeTrader.handle.toUpperCase()} IS REPLACED IF NOTHING COPIES
+        </p>
+      )}
+
+      {h.pausedForResearch && (
+        <div className="mt-2 text-center">
+          <p className="label !text-[8.5px] text-orange-700">
+            {h.stage === 'RESEARCH_RUNNING'
+              ? 'FRESH RESEARCH RE-RANKS THE CURRENT BOARD'
+              : 'FRESH RESEARCH STARTS AS SOON AS THE RUN IS DISPATCHED'}
+          </p>
+          <p className="text-[10.5px] text-[#7d78a0] mt-1 leading-snug">
+            The best candidate <span className="font-semibold">right now</span> is hired automatically
+            once the new ordering validates.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+        <div>
+          <p className="label !text-[8px]">BOARD SCAN</p>
+          <p className="money font-semibold">
+            {h.latestScanAt ? `${timeAgo(h.latestScanAt, now)} ago` : '—'}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="label !text-[8px]">LAST ORDERING</p>
+          <p className="money font-semibold">
+            {h.recommendationAt ? `${timeAgo(h.recommendationAt, now)} old` : '—'}
+          </p>
+        </div>
+      </div>
+
+      {h.reason && (
+        <p className="mt-1.5 text-[9.5px] text-[#a29dbf] break-words text-center" data-testid="pipeline-reason">
+          {h.reason}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function PositionsPanel({ state }: { state: DashboardState }) {
   const positions = state.positions;
-  const idle = state.counters.idleFireHoursLeft;
-  // Local minute-by-minute ticking so countdowns move between state pushes.
+  // Local ticking so the pipeline countdown moves between state pushes.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(t);
   }, []);
-  const idleLeftMs = idle !== null ? idle * 3_600_000 - (now - Date.parse(state.generatedAt)) : null;
 
   return (
     <section className="card p-5 mb-4" aria-label="open positions" data-testid="positions-panel">
@@ -82,22 +231,7 @@ export function PositionsPanel({ state }: { state: DashboardState }) {
               ? `No open positions — waiting for @${state.activeTrader.handle}'s next buy.`
               : 'No open positions.'}
           </p>
-          {state.activeTrader && idleLeftMs !== null && (
-            <div
-              className="mt-3 rounded-[14px] bg-amber-50 border border-amber-200 p-3 text-center"
-              data-testid="idle-countdown"
-            >
-              <p className="label !text-[9px] text-amber-700">
-                IDLE FIRE — @{state.activeTrader.handle.toUpperCase()} IS REPLACED IF NOTHING COPIES
-              </p>
-              <p className="money text-[30px] leading-none font-bold text-amber-700 mt-1.5">
-                {hhmm(idleLeftMs)}
-              </p>
-              <p className="label !text-[8px] mt-1 text-[#a29dbf]">
-                HOURS:MINUTES UNTIL AUTOMATIC REPLACEMENT
-              </p>
-            </div>
-          )}
+          <HiringPipeline state={state} now={now} />
         </div>
       ) : (
         <ul className="mt-3 space-y-2">
