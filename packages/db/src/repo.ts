@@ -269,6 +269,54 @@ export function recordLeaderboardObservation(
     .run();
 }
 
+/** One captured board scan: all rows sharing an observed_at timestamp. */
+export interface BoardScanRows {
+  observedAt: string;
+  rows: Array<{ handle: string; rank: number | null; displayedPnlUsdMicro: string | null }>;
+}
+
+/** The `limit` most recent scans, newest first (one scan = one observed_at group). */
+export function listRecentScans(db: Db, limit = 5): BoardScanRows[] {
+  const rows = db
+    .select({
+      handle: schema.leaderboardObservations.handle,
+      weeklyRank: schema.leaderboardObservations.weeklyRank,
+      displayedPnlUsdMicro: schema.leaderboardObservations.displayedPnlUsdMicro,
+      observedAt: schema.leaderboardObservations.observedAt,
+    })
+    .from(schema.leaderboardObservations)
+    .orderBy(desc(schema.leaderboardObservations.observedAt))
+    .all();
+  const scans: BoardScanRows[] = [];
+  for (const row of rows) {
+    const last = scans[scans.length - 1];
+    if (last && last.observedAt === row.observedAt) {
+      last.rows.push({
+        handle: row.handle,
+        rank: row.weeklyRank,
+        displayedPnlUsdMicro: row.displayedPnlUsdMicro,
+      });
+    } else {
+      if (scans.length >= limit) break;
+      scans.push({
+        observedAt: row.observedAt,
+        rows: [{ handle: row.handle, rank: row.weeklyRank, displayedPnlUsdMicro: row.displayedPnlUsdMicro }],
+      });
+    }
+  }
+  return scans;
+}
+
+/** Delete scans older than the retention window; returns the rows removed. */
+export function pruneLeaderboardObservations(db: Db, keepDays = 30): number {
+  const cutoff = new Date(Date.now() - keepDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db
+    .delete(schema.leaderboardObservations)
+    .where(sql`${schema.leaderboardObservations.observedAt} < ${cutoff}`)
+    .run();
+  return result.changes;
+}
+
 // --- research snapshots / recommendations --------------------------------------
 
 export function saveSnapshot(db: Db, input: SnapshotInsert): void {

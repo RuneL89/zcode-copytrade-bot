@@ -280,7 +280,6 @@ describe('recommendation validation', () => {
 describe('ordered shortlist consumption', () => {
   const ctxBase = {
     now: Date.now(),
-    cooldownUntilMs: new Map<string, number>(),
     leaderboardMaxAgeSeconds: DEFAULT_RISK.LEADERBOARD_MAX_AGE_SECONDS,
   };
 
@@ -301,16 +300,15 @@ describe('ordered shortlist consumption', () => {
       { ...rec.orderedCandidates[1]!, candidateId: 'c-alpha' },
     ];
     const candidatesById = new Map(snap.candidates.map((c) => [c.candidateId, c]));
-    // Put c-alpha in cooldown.
-    const cooldowns = new Map([['c-alpha', ctxBase.now + 60_000]]);
+    // c-alpha is not on the latest board scan, so the hire guard skips it.
     const out = consumeShortlist({
       ...ctxBase,
-      cooldownUntilMs: cooldowns,
+      latestScan: { observedAt: new Date(ctxBase.now).toISOString(), handles: ['someone-else'] },
       recommendation: rec,
       candidatesById,
     });
     expect(out.result).toBe('PAUSED_WAITING_FOR_ZCODE');
-    expect(out.skipped.map((s) => s.reason)).toEqual(['DISABLED', 'FIRED_COOLDOWN']);
+    expect(out.skipped.map((s) => s.reason)).toEqual(['DISABLED', 'NOT_ON_BOARD']);
   });
 
   it('pauses when no recommendation exists or it expired', () => {
@@ -342,7 +340,6 @@ describe('ordered shortlist consumption', () => {
 describe('eligibility', () => {
   const ctx = {
     now: Date.now(),
-    cooldownUntilMs: new Map<string, number>(),
     leaderboardMaxAgeSeconds: DEFAULT_RISK.LEADERBOARD_MAX_AGE_SECONDS,
   };
 
@@ -377,11 +374,28 @@ describe('eligibility', () => {
     expect(checkEligibility(ambiguous, ctx).reason).toBe('AMBIGUOUS_ADDRESS');
   });
 
-  it('enforces cooldown, disabled, staleness, and recurring failures', () => {
+  it('enforces the board-presence hire guard, disabled, staleness, and recurring failures', () => {
     const snap = snapshotFixture();
-    const cooldowns = new Map([[snap.candidates[0]!.candidateId, ctx.now + 3600_000]]);
-    expect(checkEligibility(snap.candidates[0]!, { ...ctx, cooldownUntilMs: cooldowns }).reason).toBe(
-      'FIRED_COOLDOWN',
+    // A fresh scan that does not include the candidate's handle blocks the hire.
+    const freshScan = { observedAt: new Date(ctx.now).toISOString(), handles: ['not-this-handle'] };
+    expect(checkEligibility(snap.candidates[0]!, { ...ctx, latestScan: freshScan }).reason).toBe(
+      'NOT_ON_BOARD',
+    );
+    // A scan older than the freshness window stands down: no board requirement.
+    const staleScan = {
+      observedAt: new Date(ctx.now - 3 * 3600_000).toISOString(),
+      handles: ['not-this-handle'],
+    };
+    expect(checkEligibility(snap.candidates[0]!, { ...ctx, latestScan: staleScan }).reason).toBe('ELIGIBLE');
+    // No scan at all: no board requirement (cold start before the first import).
+    expect(checkEligibility(snap.candidates[0]!, { ...ctx, latestScan: null }).reason).toBe('ELIGIBLE');
+    // The candidate's own handle on the scan passes.
+    const scanWithHandle = {
+      observedAt: new Date(ctx.now).toISOString(),
+      handles: [snap.candidates[0]!.handle],
+    };
+    expect(checkEligibility(snap.candidates[0]!, { ...ctx, latestScan: scanWithHandle }).reason).toBe(
+      'ELIGIBLE',
     );
     expect(checkEligibility(snap.candidates[2]!, ctx).reason).toBe('DISABLED');
     const stale = { ...snap.candidates[0]!, observedAt: new Date(ctx.now - 10 * 86400_000).toISOString() };

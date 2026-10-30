@@ -25,11 +25,12 @@ and browser security blocks. Do not deviate; do not "optimize" against these ste
 
 ## Procedure A — FOMO leaderboard refresh (GUI + clipboard)
 
-**Who runs it.** The 30-minute research sweep owns this procedure now: when the pool
-is older than 6h (or the researcher raised a `POOL_STALE` request), the sweep executes
-the stage-0 steps below in the operator's desktop Chrome, imports the rows, and
-rebuilds the snapshot. A human can still run it by hand. Nothing here may be done by
-the research subagent or by the MCP server.
+**Who runs it.** The 30-minute research sweep owns this procedure now, and since
+2026-10-30 it runs **unconditionally on every sweep**: there is no pool-age
+condition anymore — every 30-minute run refreshes the board once (the rank-fire
+rule needs scan evidence every 30 minutes), imports the rows, and rebuilds the
+snapshot. A human can still run it by hand. Nothing here may be done by the
+research subagent or by the MCP server.
 
 1. Launch desktop Chrome: `https://fomo.family/leaderboard?range=24h`.
    Dismiss the "Restore pages?" bubble if present. An automated run must then raise
@@ -134,12 +135,14 @@ for the subagent-exclusivity rule.
 
 The pool is restricted to **day traders**: fast, currently-active, positive today. Decisions:
 
-- **Capture** (the sweep, automated): the always-visible top rows of the 24H board — no scrolling. Clipboard URL per row, imported by `fomo-import`, snapshot rebuilt by `snapshot-rebuild`. Manual capture follows the same shape.
+- **Capture** (the sweep, automated): the always-visible top rows of the 24H board — no scrolling, **every 30-minute run unconditionally**. Clipboard URL per row, imported by `fomo-import`, snapshot rebuilt by `snapshot-rebuild`. Manual capture follows the same shape.
 - **Activity gate (Helius, hard):** ≥5 swaps in the last 24h on-chain, last swap ≤20h — confirmed before every hire.
 - **Momentum gate (researcher, hard):** `pnl24hUsd > 0` with `statsCheckedAt` within 12h. A trader with a non-positive or unknown day is not qualified, however good the week looks — the system holds ≤16h, so only the current window is copyable.
-- **Wallet resolution (Dawn):** runs automatically — boot +2 min, then every 6h, oldest stats first. One polite message per candidate → wallet + paper PnL marks + win rate stored (realized PnL is null for everyone: the rich card is unreachable).
-- **Stall watcher (wired 2026-10-29):** a hired leader whose wallet shows no on-chain activity for `LEADER_STALL_FIRE_HOURS` (8h, tunable in Settings) while we hold is fired — regardless of open-position winners — and replaced from the shortlist. Judged only when the Helius activity stamp is fresh.
-- **Ranking (researcher):** qualify on the activity gate + positive fresh day, then order by 24h PnL descending (tie-break: fresher activity check, then more swaps). Divergence concerns (all-time >> 30d, day-hot/week-cold) are recorded, not enforced — the engine's reactive controls (2-loss fire, 12h idle fire, 16h time exit, 8h stall fire) are the real protection.
+- **Board-presence hire guard (engine, hard, 2026-10-30):** every hire requires the handle to be on the latest captured scan; combined with the rank-fire rule below, the board decides both holding and hiring.
+- **Wallet resolution (Dawn):** runs automatically — boot +2 min, then every 6h, oldest stats first, plus an auto-run after any rebuild that still sees walletless candidates (one per 20 min max), so new faces from a fresh import are resolved the same cycle. One polite message per candidate → wallet + paper PnL marks + win rate stored (realized PnL is null for everyone: the rich card is unreachable).
+- **Rank-fire rule (engine, 2026-10-30):** the hired trader is fired when he is absent from the latest scan once, or outside displayed top-3 in two consecutive scans; both branches stand down when the latest scan is older than 2h. No fired-trader cooldown exists — a fired trader is rehireable the moment he qualifies again.
+- **Stall watcher (wired 2026-10-29):** a hired leader whose wallet shows no on-chain activity for `LEADER_STALL_FIRE_HOURS` (8h, tunable in Settings) while we hold is fired — regardless of open-position winners — and replaced from the shortlist. Judged only when the Helius activity stamp is fresh; backstop for board outages.
+- **Ranking (researcher):** qualify on the activity gate + positive fresh day, then order by 24h PnL descending (tie-break: fresher activity check, then more swaps). Divergence concerns (all-time >> 30d, day-hot/week-cold) are recorded, not enforced — the engine's reactive controls (rank-fire, 2-loss fire, 12h idle fire, 16h time exit, 8h stall fire) are the real protection.
 - Known trade-off: the 24H PnL board under-represents pure scalpers — if the gate yields too few, scan deeper (ranks 10–50) rather than loosening the activity requirements.
 
 ## Day-trader data pipeline (implemented 2026-10-28)

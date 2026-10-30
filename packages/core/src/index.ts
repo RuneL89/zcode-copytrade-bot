@@ -5,6 +5,7 @@ export * from './streak.js';
 export * from './states.js';
 export * from './recommendation.js';
 export * from './eligibility.js';
+export * from './boardRank.js';
 export * from './shortlist.js';
 export * from './events.js';
 export * from './eventOrder.js';

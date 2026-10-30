@@ -15,6 +15,8 @@ import type { RiskConfig } from '@zcode-bot/config';
 
 /** A candidate whose leaderboard observation is older than this is "stale". */
 const STALE_CANDIDATE_AGE_MS = 24 * 60 * 60 * 1000;
+/** How long after a firing the sanitized recentlyFired flag stays set (informational only). */
+const RECENTLY_FIRED_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Machine-readable prefix the researcher uses to request a leaderboard refresh. */
 export const POOL_STALE_PREFIX = 'POOL_STALE';
 
@@ -150,9 +152,13 @@ export class SnapshotService {
     return snapshot;
   }
 
-  /** Candidates fired within the cooldown window (sanitized flag only). */
+  /**
+   * Candidates fired recently (sanitized flag only). Informational for the
+   * researcher: fired traders carry NO cooldown and are rehireable the moment
+   * they qualify again.
+   */
   recentlyFiredCandidateIds(now: Date): string[] {
-    const since = new Date(now.getTime() - this.risk.FIRED_TRADER_COOLDOWN_MS).toISOString();
+    const since = new Date(now.getTime() - RECENTLY_FIRED_WINDOW_MS).toISOString();
     const activations = repo.listActivations(this.db, 200);
     return activations
       .filter((a) => a.state === 'FIRED' && a.endedAt !== null && a.endedAt >= since)

@@ -94,7 +94,6 @@ beforeAll(() => {
 
   const config = loadConfig({ SESSION_SECRET: 'x'.repeat(40) });
   config.risk.MIN_PER_BUY_USD = 5; // small numbers for the test
-  config.risk.FIRED_TRADER_COOLDOWN_MS = 3_600_000;
   config.risk.MAX_DAILY_REALIZED_LOSS_USD = 1_000_000; // do not trip mid-test
   config.risk.MAX_DEPLOYED_PCT = 100; // flow tests use a huge bankroll instead
   risk = config.risk;
@@ -283,7 +282,7 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     expect(handoffs[0]!.status).toBe('activated');
   });
 
-  it('exhausted shortlist leads to PAUSED_WAITING_FOR_ZCODE while exits continue', async () => {
+  it('rehires from the ordering after a fire (no cooldown) and pauses entries when idle', async () => {
     // Fire moonpie too: two more losing round trips.
     const moonAct = repo.activeActivation(handle.db)!;
     firedCount = 0;
@@ -292,17 +291,18 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
       await engine.handleLeaderTx(moonAct.activationId, 'cand_moon', leaderSell(MEOW, 9_000_000n, 0n));
     }
     expect(firedCount).toBeGreaterThanOrEqual(1);
-    await waitFor(() => repo.activeActivation(handle.db) === undefined);
+    await waitFor(() => repo.getActivation(handle.db, moonAct.activationId)?.state === 'FIRED');
 
-    // Shortlist now: cand_moon in cooldown, cand_ape in cooldown -> exhausted.
-    expect(repo.activeActivation(handle.db)).toBeUndefined();
-    const lastHandoff = repo.listHandoffEvents(handle.db, 1)[0]!;
-    expect(lastHandoff.status).toBe('paused_waiting_for_zcode');
-    expect(repo.listControlEvents(handle.db, 5).some((e) => e.type === 'replacement_request')).toBe(true);
+    // No cooldown anywhere: moonpie is skipped as JUST_FIRED for this handoff,
+    // and the walk rehires the next ordering entry (cand_ape, fired one fire
+    // ago but eligible again).
+    await waitFor(() => repo.activeActivation(handle.db)?.candidateId === 'cand_ape');
+    expect(repo.getActivation(handle.db, moonAct.activationId)?.state).toBe('FIRED');
+    const handoffs = repo.listHandoffEvents(handle.db, 1)[0]!;
+    expect(handoffs.status).toBe('activated');
 
-    // While paused: entries are skipped, but a pre-existing open position's
-    // mirrored exit still works. Open one before pausing is impossible now
-    // (no active trader), so verify the invariant directly on the engine:
+    // The paused path is exercised directly on the engine with a synthetic
+    // activation: entries are skipped while new entries are paused.
     control.pauseNewEntries('test pause');
     const intentsBefore = repo.intentsInStates(handle.db, ['skipped']).length;
     void intentsBefore;

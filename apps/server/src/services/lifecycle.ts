@@ -14,6 +14,7 @@ import {
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 import type { SnapshotService } from './research.js';
+import { SCAN_FRESH_MS, type EligibilityContext } from '@zcode-bot/core';
 
 /**
  * Trader lifecycle: activation, atomic firing (with pending-intent
@@ -93,8 +94,6 @@ export type HandoffOutcome =
   | { status: 'SKIPPED_NOT_FLAT'; skipped: [] };
 
 export class TraderLifecycle {
-  /** candidateId -> cooldown expiry ms (mirrored from DB at startup). */
-  cooldowns = new Map<string, number>();
   latestValidRecommendation: {
     payload: {
       recommendationId: string;
@@ -133,14 +132,20 @@ export class TraderLifecycle {
     return raw;
   }
 
-  loadCooldownsFromDb(): void {
-    const since = new Date(Date.now() - this.risk.FIRED_TRADER_COOLDOWN_MS).toISOString();
-    this.cooldowns.clear();
-    for (const a of repo.listActivations(this.db, 200)) {
-      if (a.state === 'FIRED' && a.endedAt && a.endedAt >= since) {
-        this.cooldowns.set(a.candidateId, Date.parse(a.endedAt) + this.risk.FIRED_TRADER_COOLDOWN_MS);
-      }
-    }
+  /**
+   * Shared eligibility context. Carries the latest captured board scan so the
+   * board-presence hire guard applies to every hire path (replacement walk,
+   * cold start, rotation pre-check, manual activation). Fired traders carry no
+   * cooldown: if the scan says they are back, they are hireable again.
+   */
+  private eligibilityCtx(): EligibilityContext {
+    const scan = repo.listRecentScans(this.db, 1)[0] ?? null;
+    return {
+      now: Date.now(),
+      leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
+      scanFreshSeconds: SCAN_FRESH_MS / 1000,
+      latestScan: scan ? { observedAt: scan.observedAt, handles: scan.rows.map((r) => r.handle) } : null,
+    };
   }
 
   // --- activation -----------------------------------------------------------
@@ -156,11 +161,7 @@ export class TraderLifecycle {
     if (runEligibility) {
       const sanitized = this.snapshotCandidate(candidateId);
       if (!sanitized) return { ok: false, reason: 'candidate not present in the current research snapshot' };
-      const eligibility = checkEligibility(sanitized, {
-        now: Date.now(),
-        cooldownUntilMs: this.cooldowns,
-        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
-      });
+      const eligibility = checkEligibility(sanitized, this.eligibilityCtx());
       if (!eligibility.eligible) {
         repo.recordCandidateRejection(this.db, {
           recommendationId: null,
@@ -312,8 +313,8 @@ export class TraderLifecycle {
       }
     }
 
-    // Cooldown registration.
-    this.cooldowns.set(activation.candidateId, Date.now() + this.risk.FIRED_TRADER_COOLDOWN_MS);
+    // No cooldown: a fired trader is rehireable the moment the board and the
+    // ordering say he qualifies again (operator decision, 2026-10-30).
 
     if (!handoffBlocked) {
       repo.updateActivation(this.db, activationId, {
@@ -366,13 +367,10 @@ export class TraderLifecycle {
     const latest = this.latestValidRecommendation;
 
     if (this.risk.CANDIDATE_REPLACEMENT_MODE === 'deterministic_fallback') {
-      const ranked = rankCandidatesDeterministically(snapshotCandidates, {
-        now: Date.now(),
-        cooldownUntilMs: this.cooldowns,
-        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
-      });
+      const ranked = rankCandidatesDeterministically(snapshotCandidates, this.eligibilityCtx());
       for (const { candidate, score } of ranked) {
         if (!Number.isFinite(score)) break;
+        if (candidate.candidateId === firedCandidateId) continue;
         const act = await this.activate(candidate.candidateId, 'deterministic_fallback', false);
         if (act.ok) {
           repo.insertHandoffEvent(this.db, {
@@ -404,9 +402,7 @@ export class TraderLifecycle {
     }
 
     const outcome = consumeShortlist({
-      now: Date.now(),
-      cooldownUntilMs: this.cooldowns,
-      leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
+      ...this.eligibilityCtx(),
       recommendation: latest
         ? { orderedCandidates: latest.payload.orderedCandidates, expiresAt: latest.payload.expiresAt }
         : null,
@@ -425,6 +421,10 @@ export class TraderLifecycle {
     // Walk the whole ordering, not just the first eligible candidate: activate()
     // can still reject an eligible candidate (activity gate, missing wallet), and
     // stopping there would strand a firing that ranks 2..N could have covered.
+    // The just-fired candidate himself is skipped for THIS handoff only — with
+    // no cooldown anywhere, that exclusion is what stops a two-loss fire from
+    // instantly re-entering the same trader. The next fire, rotation, or
+    // recommendation can hire him again at any time.
     const skipped: Array<{ candidateId: string; reason: string }> = outcome.skipped.map((s) => ({
       candidateId: s.candidateId,
       reason: s.reason,
@@ -432,13 +432,13 @@ export class TraderLifecycle {
     const byId = new Map(snapshotCandidates.map((c) => [c.candidateId, c]));
     const ordered = latest ? [...latest.payload.orderedCandidates].sort((a, b) => a.rank - b.rank) : [];
     for (const entry of ordered) {
+      if (entry.candidateId === firedCandidateId) {
+        skipped.push({ candidateId: entry.candidateId, reason: 'JUST_FIRED' });
+        continue;
+      }
       const candidate = byId.get(entry.candidateId);
       if (!candidate) continue;
-      const eligibility = checkEligibility(candidate, {
-        now: Date.now(),
-        cooldownUntilMs: this.cooldowns,
-        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
-      });
+      const eligibility = checkEligibility(candidate, this.eligibilityCtx());
       if (!eligibility.eligible) continue;
       if (outcome.skipped.some((s) => s.candidateId === entry.candidateId)) continue;
       const act = await this.activate(entry.candidateId, 'zcode_shortlist', true);
@@ -535,15 +535,22 @@ export class TraderLifecycle {
     if (!Number.isFinite(refreshedMs) || Date.now() - refreshedMs > ROTATION_WINDOW_MS) {
       return { rotated: false, reason: 'no fresh board refresh' };
     }
-    // Never rotate off a board the incumbent still leads: firing the rank-1
-    // pick to hire rank 2 is a pure downgrade and burns a cooldown.
-    const top = [...recommendation.orderedCandidates].sort((a, b) => a.rank - b.rank)[0];
-    if (top && top.candidateId === active.candidateId) {
-      repo.audit(this.db, 'rotation', 'rotation skipped: incumbent still ranks first', {
-        activationId: active.activationId,
-        recommendationId: recommendation.recommendationId,
-      });
-      return { rotated: false, reason: 'incumbent still ranks first' };
+    // Never rotate off a board the incumbent still tops: while the incumbent
+    // sits in the scan's top-3, swapping him for a lower-ranked pick is a pure
+    // downgrade. Off-board or past-3 incumbents are rotation (and rank-fire)
+    // territory.
+    const incumbentHandle = repo.getCandidate(this.db, active.candidateId)?.handle ?? null;
+    const latestScan = repo.listRecentScans(this.db, 1)[0] ?? null;
+    if (incumbentHandle && latestScan) {
+      const scanRank = latestScan.rows.find((r) => r.handle === incumbentHandle)?.rank ?? null;
+      if (scanRank !== null && scanRank <= 3) {
+        repo.audit(this.db, 'rotation', 'rotation skipped: incumbent in board top-3', {
+          activationId: active.activationId,
+          recommendationId: recommendation.recommendationId,
+          scanRank,
+        });
+        return { rotated: false, reason: 'incumbent in board top-3' };
+      }
     }
     if (!this.isFlatForActivation(active.activationId)) {
       repo.audit(this.db, 'rotation', 'rotation skipped: open positions or in-flight entry', {
@@ -602,11 +609,7 @@ export class TraderLifecycle {
     for (const entry of ordered) {
       const candidate = byId.get(entry.candidateId);
       if (!candidate) continue;
-      const eligibility = checkEligibility(candidate, {
-        now: Date.now(),
-        cooldownUntilMs: this.cooldowns,
-        leaderboardMaxAgeSeconds: this.risk.LEADERBOARD_MAX_AGE_SECONDS,
-      });
+      const eligibility = checkEligibility(candidate, this.eligibilityCtx());
       if (!eligibility.eligible) continue;
       if (this.helius?.configured) {
         const sol = repo.listCandidateAddresses(this.db, entry.candidateId).find((a) => a.chain === 'solana');

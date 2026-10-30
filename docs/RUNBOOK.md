@@ -86,7 +86,8 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 
 Rotation is evaluated only in the sweep that follows a board refresh (the engine
 requires a `board.refreshed_at` marker written within the last 45 minutes), and it
-keeps the incumbent when the fresh ordering still ranks them first. Within that
+keeps the incumbent while they sit in the **top-3 of the latest captured scan**
+(widened 2026-10-30 from rank-1-only to match the rank-fire rule). Within that
 window, the recommendation carries `rotateIfFlat: true`; on ingest the engine fires
 the active trader **only if** it holds no open position, no reconciliation case and
 no in-flight entry intent, and **only if** some candidate on the new ordering is
@@ -98,13 +99,37 @@ Guards worth knowing:
   no market action from a rotation.
 - A fresh board with no resolved wallets (Dawn not yet run) can never rotate: the
   hireable check fails and the current trader stays.
-- The fired candidate enters the 24h `FIRED_TRADER_COOLDOWN_MS` bucket.
+- **There is no fired-trader cooldown anymore** (removed 2026-10-30): a fired
+  trader is rehireable the moment he qualifies again. The only exclusion is that
+  the just-fired candidate is skipped in the replacement walk of his own fire
+  (`JUST_FIRED` skip reason), so a two-loss fire cannot instantly re-enter the
+  same trader.
 - **Live rotation is ENABLED as of 2026-10-29** (`ROTATE_ON_REFRESH=true` in
   `.env`, restart required after any change). Remove that line to return to
   paper-only rotation; an ignored intent is audited as
   `rotation ignored: live mode requires ROTATE_ON_REFRESH=true`.
 - To stop rotation entirely, remove the rotation paragraph from
   `.zcode/agents/zcode-research.md` (it is the only producer of the intent).
+
+### Rank-fire rule (wired 2026-10-30)
+
+Every snapshot rebuild (30-minute timer, boot, debounced rebuilds) runs the rank
+watch against the captured 24h leaderboard scans. The active trader is fired when
+either:
+
+- he is **absent from the latest scan** (one scan is enough — absence is decay), or
+- he is **outside displayed top-3 in two consecutive scans**.
+
+Both branches stand down when the latest scan is older than 2 hours, so a dead
+capture pipeline never drives fires; the audit line then reads
+`rank-watch stand-down: latest scan older than the freshness window`. A fire
+audits `strikes N, latest rank R` followed by `rank fire outcome: <status>` and
+uses the normal position policy (close all) and replacement walk. Every hire —
+replacement, cold start, rotation, manual — additionally requires the candidate's
+handle to be on the latest scan (`NOT_ON_BOARD` rejection otherwise), so the bot
+never hires a trader the board has already dropped. Scans come from the sweep's
+30-minute Procedure A imports; the last five scans live in
+`leaderboard_observations` (`repo.listRecentScans`), pruned after 30 days.
 
 ### Stall watcher (wired 2026-10-29)
 
@@ -116,11 +141,16 @@ staleness is never judged from stale evidence). The audit line reads
 closes any open positions and the replacement takes the slot. This is what makes
 "traders are discarded after no activity" literally true; the pre-hire gate
 (`MAX_LEADER_STALL_HOURS`, 20h) is a separate decision about who may be hired.
+The rank-fire rule above usually fires first; the stall watcher is the backstop
+for when the board itself is unavailable.
 
 ### Wallet resolution runs itself — except one state
 
-The runtime resolves missing wallets through Dawn once 2 minutes after every boot
-and then every 6 hours. Every run is audited: `lookup run starting (N walletless,
+The runtime resolves missing wallets through Dawn once 2 minutes after every boot,
+then every 6 hours, and **immediately after any snapshot rebuild that still sees
+walletless enabled candidates** (throttled to one auto-run per 20 minutes, added
+2026-10-30 — this is what gives a fresh board import same-cycle wallet
+resolution). Every run is audited: `lookup run starting (N walletless,
 M stale-stats)`, `resolved N address(es), M unresolved`, or
 `lookup skipped: another run already in progress`. The one state that needs you:
 
@@ -174,8 +204,7 @@ On boot the worker automatically:
 1. acquires the single-worker lock,
 2. applies pending SQLite migrations,
 3. reviews open **reconciliation cases** (see §6),
-4. reloads fired-trader cooldowns,
-5. resumes leader polling **forward from the saved cursor** — activity older
+4. resumes leader polling **forward from the saved cursor** — activity older
    than the cursor is never processed, and events older than
    `MAX_COPY_EVENT_AGE_SECONDS` are rejected instead of entered late.
 

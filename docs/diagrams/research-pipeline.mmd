@@ -1,13 +1,12 @@
 %% Render: ~/.zcode/tools/mermaid-render/render.sh -i research-pipeline.mmd -o ../images/research-pipeline.png -b white -s 2 -w 1600
 flowchart TD
-    A["Sweep every 30 min<br/>reads max observed_at"] --> B{"older than 4h?"}
-    B -->|no| S["skip until next sweep"]
-    B -->|yes| C["Desktop Chrome, 24h board<br/>click row, Ctrl+L, Ctrl+C"]
+    A["Sweep every 30 min<br/>always refreshes the board"] --> C["Desktop Chrome, 24h board<br/>click row, Ctrl+L, Ctrl+C"]
     C --> D["Get-Clipboard slug check<br/>strip r parameter"]
     D --> E["fomo-import CLI<br/>upserts the roster"]
-    E --> F["Dawn lookup<br/>wallet plus paper PnL marks"]
+    E --> F["Dawn auto-run<br/>wallets for new faces"]
     F --> G["snapshot-rebuild CLI<br/>writes snapshot.json"]
-    G --> H["MCP get_research_snapshot<br/>three tools only"]
+    G --> R["rank watch<br/>fires on decay, hires need the scan"]
+    R --> H["MCP get_research_snapshot<br/>three tools only"]
     H --> I["ZCode orders by 24h PnL<br/>positive fresh day gate"]
     I --> J["submit_candidate_recommendation<br/>atomic inbox file"]
     J --> K["worker validates id and hash<br/>then hires or pauses"]

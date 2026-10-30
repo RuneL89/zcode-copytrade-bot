@@ -8,25 +8,38 @@ import { SUPPORTED_CHAINS } from './recommendation.js';
  */
 export const ACTIVITY_FRESH_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * How fresh the latest board scan must be for the board-presence hire guard
+ * (and the rank-fire rule) to act on it. With 30-minute sweep refreshes this
+ * tolerates four missed runs; during a capture outage the guards stand down.
+ */
+export const SCAN_FRESH_MS = 2 * 60 * 60 * 1000;
+
 export type EligibilityReason =
   | 'ELIGIBLE'
   | 'DISABLED'
   | 'STALE_DATA'
+  | 'NOT_ON_BOARD'
   | 'MISSING_ADDRESS'
   | 'UNSUPPORTED_CHAIN'
   | 'AMBIGUOUS_ADDRESS'
-  | 'FIRED_COOLDOWN'
-  | 'RECENTLY_FIRED'
   | 'RECURRING_ELIGIBILITY_FAILURE';
+
+export interface LatestScanContext {
+  observedAt: string;
+  handles: readonly string[];
+}
 
 export interface EligibilityContext {
   now: number;
-  /** candidateId -> epoch ms until which the candidate is cooling down after a firing. */
-  cooldownUntilMs: ReadonlyMap<string, number>;
   /** Max age of the candidate's observation, seconds. */
   leaderboardMaxAgeSeconds: number;
   /** Max age of the candidate's last on-chain activity check, seconds. Default 6h. */
   activityFreshSeconds?: number;
+  /** Max age of the latest scan for the board-presence guard, seconds. Default 2h. */
+  scanFreshSeconds?: number;
+  /** Latest captured board scan, when one exists. */
+  latestScan?: LatestScanContext | null;
 }
 
 export interface EligibilityResult {
@@ -43,16 +56,21 @@ export function checkEligibility(candidate: SanitizedCandidate, ctx: Eligibility
   if (!candidate.enabled) {
     return { eligible: false, reason: 'DISABLED', detail: 'candidate disabled by operator' };
   }
-  const cooldown = ctx.cooldownUntilMs.get(candidate.candidateId);
-  if (cooldown !== undefined && cooldown > ctx.now) {
-    return {
-      eligible: false,
-      reason: 'FIRED_COOLDOWN',
-      detail: `cooling down until ${new Date(cooldown).toISOString()}`,
-    };
-  }
-  if (candidate.recentlyFired) {
-    return { eligible: false, reason: 'RECENTLY_FIRED', detail: 'fired in the current session' };
+  // Board-presence hire guard: a hire must be on the latest captured board.
+  // Fired traders carry no penalty here — if the board says they are back and
+  // fresh, they are hireable again immediately.
+  if (ctx.latestScan) {
+    const scanMs = Date.parse(ctx.latestScan.observedAt);
+    const scanFreshSeconds = (ctx.scanFreshSeconds ?? SCAN_FRESH_MS / 1000) * 1000;
+    if (Number.isFinite(scanMs) && ctx.now - scanMs <= scanFreshSeconds) {
+      if (!ctx.latestScan.handles.includes(candidate.handle)) {
+        return {
+          eligible: false,
+          reason: 'NOT_ON_BOARD',
+          detail: `not on the latest scan (${ctx.latestScan.observedAt})`,
+        };
+      }
+    }
   }
   // Two independent clocks: the leaderboard observation and the on-chain
   // activity check. A stale observation alone must not disqualify a candidate

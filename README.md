@@ -4,7 +4,7 @@
 
 ## What this is
 
-ZCode Bot reads the 24-hour leaderboard on fomo.family, hires one trader at a time, and copies that trader's Solana buys at a quarter of the leader's measured input. It mirrors their sells, and it exits anything still open at 16 hours. When the trader loses twice in a row, goes quiet for 8 hours, or leaves you with nothing to copy for 12 hours, it fires them and hires the next name from a researched shortlist. If nothing qualifies, it pauses and says why.
+ZCode Bot reads the 24-hour leaderboard on fomo.family, hires one trader at a time, and copies that trader's Solana buys at a quarter of the leader's measured input. It mirrors their sells, and it exits anything still open at 16 hours. When the trader drops off the board, slips out of its top three twice in a row, loses twice in a row, goes quiet for 8 hours, or leaves you with nothing to copy for 12 hours, it fires them and hires the next name from a researched shortlist. If nothing qualifies, it pauses and says why.
 
 It runs on your PC with your keys. Paper trading is the default, and live signing needs a separate arming step.
 
@@ -44,50 +44,53 @@ When it works you land on the TRADE page in paper mode, with a PAPER badge and, 
 
 The whole design assumes short holds. That is why selection looks at the last 24 hours, why positions expire at 16 hours, and why a trader can lose the slot for going quiet rather than for losing money.
 
-![The day-trader loop: the sweep reads the 24h board, Dawn resolves wallets, the researcher ranks by today's PnL, the bot hires one trader, copies buys at 0.25x, mirrors sells, and fires on two losses, 8 hours of leader silence, or 12 hours idle, then hires the next candidate or pauses](docs/images/copy-loop-overview.png)
+![The day-trader loop: the sweep reads the 24h board every 30 minutes, Dawn resolves the new wallets, the researcher ranks by today's PnL, the bot hires one trader, copies buys at 0.25x, mirrors sells, and fires on decay (off the board, out of the top three twice) as well as two losses, 8 hours of leader silence, or 12 hours idle, then hires the next candidate or pauses](docs/images/copy-loop-overview.png)
 
 _Read it clockwise: candidate sourcing at the top, the copying loop in the middle, and the fire-and-replace cycle at the bottom._
 
-There are four ways to lose the slot:
+There are five ways to lose the slot:
 
+- **Off the board.** The latest scan does not contain the trader. One miss is enough: falling off a board that turns over every few hours is decay, and the bot leaves before it shows up as losses.
+- **Out of the top three twice.** Two consecutive scans rank the trader below the top three. One scan at rank four is a single strike; a scan back inside the top three clears it.
 - **Two losing closes in a row.** A winning close resets the count; a breakeven leaves it unchanged.
 - **Leader silence.** The leader's wallet shows no on-chain activity for 8 hours while you hold. This is judged only when the on-chain check itself is fresh, so a broken data source cannot fire a healthy trader.
 - **Idle.** Twelve hours pass with no position open, measured from the hire or the last position held.
-- **A fresh board while flat.** The scheduled refresh produces an ordering that outranks the current hire, and that hire holds nothing.
 
-A fire is not a market action by itself. Positions close under the configured policy first (the default closes everything), the trader enters a 24-hour cooldown, and the next eligible candidate takes over. If none does, the bot moves to PAUSED_WAITING_FOR_ZCODE and the dashboard says so.
+Two further rules keep the book honest. Every hire must appear on the latest scan, so the bot never buys a trader the board has already dropped. And when the board is fresh and the hire holds nothing, an ordering that outranks them takes over, unless the incumbent still sits in the scan's top three.
+
+A fire is not a market action by itself. Positions close under the configured policy first (the default closes everything), and the next eligible candidate takes over. There is no cooldown: a fired trader can be rehired the moment the board and the shortlist say so. If nobody does, the bot moves to PAUSED_WAITING_FOR_ZCODE and the dashboard says so.
 
 ## Where candidates come from
 
-![The research pipeline with its tools: a 30 minute sweep reads the newest observation age, a stale board is read in desktop Chrome with click and clipboard capture, fomo-import upserts the roster, the Dawn lookup resolves wallets and paper PnL marks, snapshot-rebuild writes snapshot.json, the researcher reads it through the three-tool MCP bridge, submits an atomic inbox file, and the worker validates the snapshot id and hash before hiring](docs/images/research-pipeline.png)
+![The research pipeline with its tools: a 30 minute sweep that always reads the board in desktop Chrome with click and clipboard capture, fomo-import upserts the roster, a Dawn auto-run resolves wallets for new faces, snapshot-rebuild writes snapshot.json and runs the rank watch, the researcher reads it through the three-tool MCP bridge, submits an atomic inbox file, and the worker validates the snapshot id and hash before hiring](docs/images/research-pipeline.png)
 
 _Each box is a real command or tool in the repo. The dashed arrow is the researcher abstaining with POOL_STALE, which becomes a request for the next board read._
 
-| Step              | Tool or command                                                                                            | What it writes                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Freshness check   | the sweep automation, `0,30 * * * *`, SQLite read-only                                                     | nothing, it only decides                                          |
-| Board read        | desktop Chrome, `Ctrl+L` / `Ctrl+C` / `Get-Clipboard`                                                      | `entries.json`                                                    |
-| Roster upsert     | `pnpm exec tsx src/cli/fomo-import.ts entries.json`                                                        | `trader_candidates`, audit `fomo-web-manual`                      |
-| Wallets and marks | `pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25`, also boot +2 min and every 6h             | `candidate_addresses`, PnL and trade columns, audit `dawn-lookup` |
-| On-chain activity | `pnpm exec tsx src/cli/candidate-activity.ts --limit 30`, also every 6h                                    | `swaps_24h`, `last_swap_at`, `activity_checked_at`                |
-| Snapshot          | `pnpm exec tsx src/cli/snapshot-rebuild.ts`, also every 30 min and about 60s after a Dawn or Helius change | `research_snapshots`, `data/research/snapshot/snapshot.json`      |
-| Research input    | MCP `get_research_snapshot`                                                                                | nothing, read only                                                |
-| Submission        | MCP `submit_candidate_recommendation`                                                                      | one atomic file in `data/research/inbox/`                         |
+| Step              | Tool or command                                                                                                                                    | What it writes                                                                 |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Research decision | the sweep automation, `0,30 * * * *`, SQLite read-only                                                                                             | nothing, it only decides                                                       |
+| Board read        | desktop Chrome, `Ctrl+L` / `Ctrl+C` / `Get-Clipboard`, every sweep                                                                                 | `entries.json`                                                                 |
+| Roster upsert     | `pnpm exec tsx src/cli/fomo-import.ts entries.json`                                                                                                | `trader_candidates`, `leaderboard_observations`, audit `fomo-web-manual`       |
+| Wallets and marks | `pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25`, also boot +2 min, every 6h, and after any rebuild that still sees missing wallets | `candidate_addresses`, PnL and trade columns, audit `dawn-lookup`              |
+| On-chain activity | `pnpm exec tsx src/cli/candidate-activity.ts --limit 30`, also every 6h                                                                            | `swaps_24h`, `last_swap_at`, `activity_checked_at`                             |
+| Snapshot          | `pnpm exec tsx src/cli/snapshot-rebuild.ts`, also every 30 min and about 60s after a Dawn or Helius change                                         | `research_snapshots`, `data/research/snapshot/snapshot.json`, rank-watch check |
+| Research input    | MCP `get_research_snapshot`                                                                                                                        | nothing, read only                                                             |
+| Submission        | MCP `submit_candidate_recommendation`                                                                                                              | one atomic file in `data/research/inbox/`                                      |
 
-**1. The sweep decides whether to look.** The automation in `docs/research-sweep-automation.md` runs every 30 minutes and opens the database read-only. It refreshes the board when the newest candidate observation (`max(trader_candidates.observed_at)`) is more than 4 hours old, or when a `POOL_STALE` request is newer than the last import. It never refreshes more than once per 4 hours, so a broken read cannot loop.
+**1. The sweep always reads the board.** The automation in `docs/research-sweep-automation.md` runs every 30 minutes and refreshes the leaderboard unconditionally. A valid recommendation, or the need for research, makes no difference to the read. The rank rule needs scan evidence at that cadence, so there is no age threshold and no once-per-N-hours cap. The database read that remains decides only whether research itself runs. A broken read aborts without importing and skips research for that run; a missing scan is never treated as evidence.
 
 **2. The board read happens in your Chrome.** The sweep opens `https://fomo.family/leaderboard?range=24h` in your normal desktop Chrome and raises the window with `WScript.Shell.AppActivate`, because the automation API cannot front a background window on Windows. It screenshots to find the row positions, then for each visible row clicks the row, presses `Ctrl+L` then `Ctrl+C`, and reads the exact profile URL with `Get-Clipboard`, stripping the `?r=` referral parameter. It aborts without importing when fewer than five rows are captured, when any URL is not `https://fomo.family/profile/<slug>`, or when the range chip is not 24H. It never OCRs a handle and never guesses a slug. The manual equivalent is `tools/gui/board-pass.ps1`. There is no Playwright path to the site.
 
 **3. Four tools fill the roster and its evidence.**
 
 - `fomo-import` upserts `trader_candidates` keyed by handle, preserving statistics it did not capture (a board import never wipes Dawn or Helius values), and audits under `fomo-web-manual`.
-- `dawn-lookup` asks Dawn, the Telegram bot, for each candidate's wallet and card: PnL for 24h, 7d, 30d and all time, trade count, recent buys and sells. It runs two minutes after boot and then every 6 hours, serving the oldest statistics first and capped at 25 lookups per run (`DAWN_MAX_LOOKUPS_PER_RUN`). Wallets land in `candidate_addresses` with verification `reported`. If the Telegram session has expired the run audits `Telegram session needs login; QR login window opened` and waits for you.
+- `dawn-lookup` asks Dawn, the Telegram bot, for each candidate's wallet and card: PnL for 24h, 7d, 30d and all time, trade count, recent buys and sells. It runs two minutes after boot, then every 6 hours, and once more after any snapshot rebuild that still sees candidates without a wallet (throttled to one automatic run per 20 minutes). It serves the oldest statistics first and caps at 25 lookups per run (`DAWN_MAX_LOOKUPS_PER_RUN`), which is how a trader newly seen on the board gets a wallet inside the same cycle. Wallets land in `candidate_addresses` with verification `reported`. If the Telegram session has expired the run audits `Telegram session needs login; QR login window opened` and waits for you.
 - `candidate-activity` calls Helius `walletActivity24h` for each wallet and writes `swaps_24h`, `last_swap_at` and the `activity_checked_at` stamp that eligibility depends on. Addresses that pass the pre-hire gate are upgraded to `verified`.
 - `snapshot-rebuild` publishes the derived snapshot without restarting the server. The runtime also publishes on a 30-minute timer and about 60 seconds after any Dawn or Helius run that changed rows, so research never reads wallet data that is minutes old.
 
 **4. The snapshot is the researcher's entire world.** It is written to `data/research/snapshot/snapshot.json` and to a `research_snapshots` row, and it carries `snapshotId`, `snapshotHash`, `sourceFreshnessSeconds` (the age of the newest observation), `oldestObservedAt`, `staleCandidateCount`, and per candidate the two stamps `activityCheckedAt` (Helius) and `statsCheckedAt` (Dawn). When the freshest observation advances, the server also writes a `board.refreshed_at` marker, which is what later allows rotation. The MCP process receives only `ZCODE_MCP_SNAPSHOT_DIR` and `ZCODE_MCP_INBOX_DIR`, and exposes exactly three tools: `get_research_snapshot`, `get_replacement_context`, `submit_candidate_recommendation`. A submission is an atomic tmp-then-rename file in `data/research/inbox/`; the worker ingests it through `fs.watch` plus a 5 second poll and rejects bad payloads with explicit codes such as `SCHEMA_INVALID`, `SNAPSHOT_MISMATCH`, `EXPIRED` or `REPLAYED_RECOMMENDATION_ID`.
 
-**5. The ranking rule is written down and testable.** A candidate must be enabled, not recently fired, carry exactly one Solana address, and be fresh on at least one clock: `observedAt` within 12 hours, or `activityCheckedAt` within 6 hours. It then needs at least 5 swaps in 24 hours with a swap inside 20 hours, plus a positive fresh day: `pnl24hUsd > 0` and `statsCheckedAt` within 12 hours. Qualified names sort by `pnl24hUsd` descending, then fresher `activityCheckedAt`, then higher `swaps24h`, capped at ten. Fewer than three usable candidates, or none with a wallet, means an abstention; when the pool itself cannot support the ordering the reason starts with `POOL_STALE:`, which the worker records as a `control_events` row of type `leaderboard_refresh_request`.
+**5. The ranking rule is written down and testable.** A candidate must be enabled, carry exactly one Solana address, and be fresh on at least one clock: `observedAt` within 12 hours, or `activityCheckedAt` within 6 hours. It then needs at least 5 swaps in 24 hours with a swap inside 20 hours, plus a positive fresh day: `pnl24hUsd > 0` and `statsCheckedAt` within 12 hours. Qualified names sort by `pnl24hUsd` descending, then fresher `activityCheckedAt`, then higher `swaps24h`, capped at ten. The engine adds one hard gate of its own: the handle must be on the latest captured scan, so a name the board has dropped is skipped no matter how good the numbers look. Fired traders carry no penalty; the board, not the history, decides. Fewer than three usable candidates, or none with a wallet, means an abstention; when the pool itself cannot support the ordering the reason starts with `POOL_STALE:`, which the worker records as a `control_events` row of type `leaderboard_refresh_request`.
 
 ## How one copy happens
 
@@ -101,13 +104,15 @@ In paper mode the fill is simulated from the Jupiter quote, or from a cached pri
 
 ## When a trader is fired
 
-![A state diagram of the firing lifecycle: watching, then firing after two losing closes, 8 hours of leader silence, 12 hours idle, or a fresh board with nothing open, followed by handoff to the next candidate or a paused state until a new shortlist arrives](docs/images/firing-handoff.png)
+![A state diagram of the firing lifecycle: watching, then firing after a missed scan, two scans out of the top three, two losing closes, 8 hours of leader silence, 12 hours idle, or a fresh board with nothing open, followed by handoff to the next candidate or a paused state until a new shortlist arrives](docs/images/firing-handoff.png)
 
-_Four ways into Firing, one way back out to Watching, and a paused state when the shortlist cannot fill the slot._
+_Five ways into Firing plus rotation, one way back out to Watching, and a paused state when the shortlist cannot fill the slot._
 
-Firing is transactional. The worker marks the activation as firing and cancels unsigned intents in one database transaction, applies the position policy, registers the cooldown, and only then consumes the shortlist. An unknown close outcome does not get retried: it moves the activation to REQUIRES_RECONCILIATION and waits for you.
+Firing is transactional. The worker marks the activation as firing and cancels unsigned intents in one database transaction, applies the position policy, and only then consumes the shortlist. There is no cooldown to register: a fired trader is hireable again the moment they qualify, and the one exclusion is that a trader cannot replace themselves in the same handoff. An unknown close outcome does not get retried: it moves the activation to REQUIRES_RECONCILIATION and waits for you.
 
-Replacement walks the whole ordering rather than stopping at the first candidate that fails to activate, so one candidate with a stale wallet cannot strand the slot. Rotation is narrower: it is honoured only in the sweep that follows a board refresh, it skips when the fresh ordering still ranks the incumbent first, and it never fires into an empty chair. It is enabled in live mode by default (`ROTATE_ON_REFRESH=true`); remove that line to keep it paper only.
+The rank rule runs on every snapshot rebuild, about every 30 minutes, and reads the last two captured scans. When the newest scan is older than two hours the rule stands down and says so in the audit trail; a broken Chrome read slows the bot down instead of firing blind, and the silence, idle, and time-exit backstops keep running.
+
+Replacement walks the whole ordering rather than stopping at the first candidate that fails to activate, so one candidate with a stale wallet cannot strand the slot. Rotation is narrower: it is honoured only in the sweep that follows a board refresh, it skips while the incumbent sits in the scan's top three, and it never fires into an empty chair. It is enabled in live mode by default (`ROTATE_ON_REFRESH=true`); remove that line to keep it paper only.
 
 ## Honest limitations
 
@@ -116,7 +121,9 @@ Replacement walks the whole ordering rather than stopping at the first candidate
 - **One trader at a time.** The bot copies a single active trader. It does not spread capital across several.
 - **Live mode is not exercised by the tests.** Every automated test and the demo use paper execution. Live signing is reachable only through readiness checks, the documented ack string, and a separate arming action.
 - **Your PC is the runtime.** If the machine sleeps, loses network, or shuts down, monitoring stops. The dashboard on a phone is a remote view, not a remote runtime.
-- **The leaderboard is read through your own Chrome.** The scheduled sweep drives your desktop Chrome with GUI automation and takes the window for about a minute. There is no Playwright path to fomo.family, and a layout change aborts the read instead of guessing.
+- **The leaderboard is read through your own Chrome.** The scheduled sweep drives your desktop Chrome with GUI automation every 30 minutes and takes the window for about a minute, around the clock. There is no Playwright path to fomo.family, and a layout change aborts the read instead of guessing.
+- **The rank rule is fast and blind past rank seven.** One scan without the incumbent costs them the slot, and "the board" is the visible top seven: rank 8 and rank 500 look identical. When reads fail for hours the rule stands down and the slower backstops take over, so a capture outage suspends the decay exit rather than firing on stale evidence.
+- **No cooldown means churn is possible.** A fired trader who qualifies again can be rehired immediately, including one who just lost twice. The shortlist's ordering and the board, not a memory of past firings, decide who holds the slot.
 - **Dawn can log itself out.** Telegram Web sessions expire. Lookups are paced at roughly 20 seconds plus jitter, and a dead session needs one QR scan from you.
 - **Paper fills are assumptions.** A quote-based simulation and a cached price with 30 bps slippage are approximations, never real executions.
 - **The positive-day gate can thin the pool.** If fewer than three candidates qualify, the researcher abstains and the bot holds its current book.

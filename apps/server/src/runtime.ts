@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, type AppConfig } from '@zcode-bot/config';
+import { SCAN_FRESH_MS, evaluateRankStability } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -82,6 +83,10 @@ export class Runtime {
   private dawnTimer: ReturnType<typeof setInterval> | null = null;
   private dawnBootTimer: ReturnType<typeof setTimeout> | null = null;
   private dawnRunBusy = false;
+  /** Last auto-triggered Dawn run (throttle for the post-rebuild wallet sweep). */
+  private lastAutoDawnAt = 0;
+  /** Re-entrancy guard for the rank-watch fire check inside snapshot rebuilds. */
+  private rankWatchBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
   private activityBootTimer: ReturnType<typeof setTimeout> | null = null;
   private setupToken: SetupToken | null = null;
@@ -405,7 +410,6 @@ export class Runtime {
     await this.restoreLiveArming();
     void this.resolveTokenSymbols().catch(() => undefined);
     void this.refreshFeeLedger().catch(() => undefined);
-    this.lifecycle.loadCooldownsFromDb();
 
     if (this.snapshots.currentSnapshot() === null && repo.listCandidates(this.db.db).length > 0) {
       this.rebuildSnapshot();
@@ -564,6 +568,99 @@ export class Runtime {
   rebuildSnapshot(): void {
     this.snapshots.build();
     this.rebuildState();
+    this.rankWatchCheck();
+    this.maybeAutoDawn();
+    repo.pruneLeaderboardObservations(this.db.db, 30);
+  }
+
+  /**
+   * Rank-stability firing rule (day-trader momentum): absent from the latest
+   * scan once, or outside the top-3 in two consecutive scans, fires the active
+   * trader. Stands down when the latest scan is older than SCAN_FRESH_MS so a
+   * dead capture pipeline never drives fires. Idempotent with lifecycle.fire's
+   * own guards; runs on every snapshot rebuild (30-min timer, debounces, boot).
+   */
+  private rankWatchCheck(): void {
+    if (this.rankWatchBusy || this.demo?.running) return;
+    const active = repo.activeActivation(this.db.db);
+    if (!active || active.state !== 'ACTIVE') return;
+    this.rankWatchBusy = true;
+    void (async () => {
+      try {
+        const handle = repo.getCandidate(this.db.db, active.candidateId)?.handle ?? null;
+        const scans = repo.listRecentScans(this.db.db, 2).map((s) => ({
+          observedAt: s.observedAt,
+          ranks: new Map(s.rows.flatMap((r) => (r.rank == null ? [] : [[r.handle, r.rank] as const]))),
+        }));
+        const verdict = evaluateRankStability({
+          scans,
+          incumbentHandle: handle,
+          nowMs: Date.now(),
+          scanFreshMs: SCAN_FRESH_MS,
+          topN: 3,
+        });
+        if (verdict.action === 'stand_down') {
+          repo.audit(this.db.db, 'rank-watch', `stand-down: ${verdict.detail}`, {});
+          return;
+        }
+        repo.audit(
+          this.db.db,
+          'rank-watch',
+          `strikes ${verdict.strikes}, latest rank ${verdict.latestRank ?? 'absent'}`,
+          {
+            activationId: active.activationId,
+            candidateId: active.candidateId,
+            action: verdict.action,
+          },
+        );
+        if (verdict.action === 'fire') {
+          const outcome = await this.lifecycle.fire(active.activationId, verdict.reason);
+          repo.audit(this.db.db, 'rank-watch', `rank fire outcome: ${outcome.status}`, {
+            activationId: active.activationId,
+            reason: verdict.reason,
+          });
+          this.rebuildState();
+        }
+      } catch (e) {
+        repo.audit(this.db.db, 'rank-watch', 'rank watch failed: ' + (e as Error).message, {});
+      } finally {
+        this.rankWatchBusy = false;
+      }
+    })();
+  }
+
+  /**
+   * Always-Dawn rule: after any rebuild, resolve wallets for enabled
+   * candidates that still lack a Solana address — this is what catches new
+   * faces from a fresh board import within the same cycle. Throttled so a
+   * burst of rebuilds cannot hammer the Telegram browser profile.
+   */
+  private maybeAutoDawn(): void {
+    if (!this.dawnLookup || this.demo?.running) return;
+    const AUTO_DAWN_MIN_INTERVAL_MS = 20 * 60 * 1000;
+    if (Date.now() - this.lastAutoDawnAt < AUTO_DAWN_MIN_INTERVAL_MS) return;
+    const candidates = repo.listCandidates(this.db.db).filter((c) => c.enabled);
+    const wallets = new Set(
+      repo
+        .listCandidateAddresses(this.db.db)
+        .filter((a) => a.chain === 'solana')
+        .map((a) => a.candidateId),
+    );
+    const walletless = candidates.filter((c) => !wallets.has(c.candidateId));
+    if (walletless.length === 0) return;
+    this.lastAutoDawnAt = Date.now();
+    repo.audit(
+      this.db.db,
+      'dawn-lookup',
+      `auto dawn run: ${walletless.length} walletless candidate(s): ${walletless
+        .slice(0, 5)
+        .map((c) => c.handle)
+        .join(', ')}`,
+      {},
+    );
+    void this.dawnLookupNow().catch((e: Error) => {
+      repo.audit(this.db.db, 'dawn-lookup', 'auto dawn run failed: ' + e.message, {});
+    });
   }
 
   /**

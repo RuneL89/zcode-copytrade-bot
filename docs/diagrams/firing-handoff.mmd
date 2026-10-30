@@ -1,6 +1,8 @@
 %% Render: ~/.zcode/tools/mermaid-render/render.sh -i firing-handoff.mmd -o ../images/firing-handoff.png -b white -s 2 -w 1600
 stateDiagram-v2
     [*] --> Watching
+    Watching --> Firing: absent from the latest scan
+    Watching --> Firing: outside top-3 in two scans
     Watching --> Firing: two losing closes in a row
     Watching --> Firing: leader wallet silent 8h
     Watching --> Firing: 12h with nothing open
@@ -9,8 +11,8 @@ stateDiagram-v2
     Handoff --> Watching: next candidate hired
     Handoff --> Paused: no acceptable candidate
     Paused --> Watching: fresh shortlist or manual pick
-    note right of Watching : a winning unit resets the count, a breakeven leaves it unchanged
-    note right of Firing : a rotation only fires when nothing is open. Other fires close per policy, then the trader cools down for 24h
+    note right of Watching : a winning unit resets the loss count, a breakeven leaves it unchanged. The rank rule stands down when the newest scan is older than 2h
+    note right of Firing : a rotation only fires when nothing is open. There is no cooldown, a fired trader is hireable again the moment they qualify
     state "Watching the trader" as Watching
     state "Firing, atomically" as Firing
     state "Handoff" as Handoff

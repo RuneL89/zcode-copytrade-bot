@@ -142,6 +142,20 @@ function markBoardRefreshed() {
   repo.kvSet(handle.db, 'board.refreshed_at', new Date().toISOString());
 }
 
+/** Seed one captured board scan (one observed_at group) with the given ranks. */
+function seedScan(entries: Array<{ handle: string; rank: number }>) {
+  const observedAt = new Date().toISOString();
+  for (const e of entries) {
+    repo.recordLeaderboardObservation(handle.db, {
+      handle: e.handle,
+      weeklyRank: e.rank,
+      displayedPnlUsdMicro: null,
+      source: 'test',
+      observedAt,
+    });
+  }
+}
+
 function inFlightEntry(activationId: string) {
   repo.insertIntent(handle.db, {
     intentId: 'int_' + crypto.randomUUID(),
@@ -202,20 +216,46 @@ describe('flat-only rotation after a leaderboard refresh', () => {
     expect(repo.getActivation(handle.db, activeId)?.state).toBe('ACTIVE');
   });
 
-  it('keeps the incumbent when the fresh ordering still ranks it first', async () => {
+  it('keeps the incumbent while it sits in the scan top-3', async () => {
     const snap = seed();
     const activeId = activateDirect('cand_ape');
     markBoardRefreshed();
+    seedScan([
+      { handle: 'other_trader', rank: 1 },
+      { handle: 'ape_vasco', rank: 2 },
+      { handle: 'moonpie_max', rank: 3 },
+    ]);
     const rec = recommendation(snap, [
-      { candidateId: 'cand_ape', rank: 1 },
+      { candidateId: 'cand_moon', rank: 1 },
       { candidateId: 'cand_star', rank: 2 },
     ]);
 
     const result = await lifecycle.rotateIfFlat(rec);
 
     expect(result.rotated).toBe(false);
-    expect(result.reason).toBe('incumbent still ranks first');
+    expect(result.reason).toBe('incumbent in board top-3');
     expect(repo.getActivation(handle.db, activeId)?.state).toBe('ACTIVE');
+  });
+
+  it('rotates when the incumbent has left the latest scan (decay)', async () => {
+    const snap = seed();
+    const oldId = activateDirect('cand_ape');
+    markBoardRefreshed();
+    // Fresh scan: the incumbent is gone; the ordering entries are present.
+    seedScan([
+      { handle: 'moonpie_max', rank: 1 },
+      { handle: 'star_gazer', rank: 2 },
+    ]);
+    const rec = recommendation(snap, [
+      { candidateId: 'cand_moon', rank: 1 },
+      { candidateId: 'cand_star', rank: 2 },
+    ]);
+
+    const result = await lifecycle.rotateIfFlat(rec);
+
+    expect(result.rotated).toBe(true);
+    expect(repo.getActivation(handle.db, oldId)?.state).toBe('FIRED');
+    expect(repo.activeActivation(handle.db)?.candidateId).toBe('cand_moon');
   });
 
   it('refuses to rotate while a position is open', async () => {
@@ -286,11 +326,23 @@ describe('flat-only rotation after a leaderboard refresh', () => {
   });
 
   it('falls through to the next candidate when the first one cannot be activated', async () => {
-    const snap = seed();
+    seed();
     const activeId = activateDirect('cand_ape');
     markBoardRefreshed();
-    // cand_moon is put in the 24h cooldown, so activation must skip it and use cand_star.
-    lifecycle.cooldowns.set('cand_moon', Date.now() + 3600_000);
+    // cand_moon is disabled, so activation must skip it and use cand_star.
+    // The snapshot must be rebuilt so eligibility sees the disabled flag.
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_moon',
+      handle: 'moonpie_max',
+      weeklyRank: 2,
+      displayedWeeklyPnlUsdMicro: '1000000000',
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: false,
+      source: 'test',
+      observedAt: new Date().toISOString(),
+    });
+    const snap = snapshots.build();
     const rec = recommendation(snap, [
       { candidateId: 'cand_moon', rank: 1 },
       { candidateId: 'cand_star', rank: 2 },
