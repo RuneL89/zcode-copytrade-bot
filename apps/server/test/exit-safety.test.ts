@@ -94,7 +94,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function seedPosition(recordsBase: string) {
+function seedPosition(recordsBase: string, inputUsdMicro = '90000000') {
   const activationId = 'act_' + crypto.randomUUID();
   repo.createActivation(handle.db, {
     activationId,
@@ -117,7 +117,7 @@ function seedPosition(recordsBase: string) {
     status: 'open',
     entryIntentId: null,
     inputMint: USDC,
-    inputUsdMicro: '90000000',
+    inputUsdMicro: inputUsdMicro,
     copiedTokenBase: recordsBase,
     remainingTokenBase: recordsBase,
     leaderTokenBase: null,
@@ -192,6 +192,30 @@ describe('exit safety: sell what the wallet holds', () => {
     // The whole $90 must be charged: no phantom basis left on the books.
     expect(lots[0]!.costBasisUsdMicro).toBe('90000000');
     expect(lots[0]!.pnlUsdMicro).toBe((87_713_984n - 90_000_000n).toString());
+  });
+
+  it('excludes fees from lot PnL: they are paid in SOL, not USDC capital', async () => {
+    const { positionId } = seedPosition('1000', '1000000'); // $1 basis
+    const executor = new ScriptedExecutor([
+      {
+        kind: 'filled',
+        signature: 'sig',
+        inputAmountBase: '0',
+        outputAmountBase: '1050000', // $1.05 proceeds
+        feeUsdMicro: '1500', // $0.0015 modelled fee estimate
+        evidence: {},
+        commitment: 'confirmed',
+      },
+    ]);
+    const engine = engineWith(executor);
+
+    const result = await engine.closePosition(positionId, 'fire_close_all');
+    expect(result).toBe('closed');
+
+    const lot = repo.listPnlLots(handle.db, 10).find((l) => l.positionId === positionId)!;
+    // PnL is proceeds - cost ONLY; the fee estimate stays informational.
+    expect(lot.pnlUsdMicro).toBe((1_050_000n - 1_000_000n).toString());
+    expect(lot.feesUsdMicro).toBe('1500');
   });
 
   it('records a failed intent instead of selling when the balance is zero', async () => {

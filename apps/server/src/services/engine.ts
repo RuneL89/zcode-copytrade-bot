@@ -934,8 +934,12 @@ export class CopyEngine {
         ? (BigInt(outcome.outputAmountBase) * price.priceUsdMicro) / 10n ** 9n
         : BigInt(spec.inputUsdMicro);
     }
+    // Fees are paid in SOL from the fee reserve, NOT out of USDC capital: the
+    // equity ledger is USDC-only, so PnL = proceeds − cost basis and the fee
+    // estimate is kept as informational context on the lot (the real SOL spend
+    // is measured by the fee ledger and shown separately on the dashboard).
     const fees = BigInt(outcome.feeUsdMicro) + (BigInt(position.feesUsdMicro) * closedBase) / copiedTotal;
-    const pnl = proceedsUsdMicro - costBasis - fees;
+    const pnl = proceedsUsdMicro - costBasis;
 
     repo.insertPnlLot(this.db, {
       positionId: exit.positionId,

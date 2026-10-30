@@ -125,6 +125,7 @@ Replacement walks the whole ordering rather than stopping at the first candidate
 - **The rank rule is fast and blind past rank seven.** One scan without the incumbent costs them the slot, and "the board" is the visible top seven: rank 8 and rank 500 look identical. When reads fail for hours the rule stands down and the slower backstops take over, so a capture outage suspends the decay exit rather than firing on stale evidence.
 - **No cooldown means churn is possible.** A fired trader who qualifies again can be rehired immediately, including one who just lost twice. The shortlist's ordering and the board, not a memory of past firings, decide who holds the slot.
 - **Dawn can log itself out.** Telegram Web sessions expire. Lookups are paced at roughly 20 seconds plus jitter, and a dead session needs one QR scan from you.
+- **Equity is USDC trading capital; fees live elsewhere.** Trade PnL is proceeds minus cost basis in USDC, so equity tracks the USDC balance. Network fees and account rent are paid in SOL from a separate reserve, measured by the fee ledger, and are not part of the equity number.
 - **Paper fills are assumptions.** A quote-based simulation and a cached price with 30 bps slippage are approximations, never real executions.
 - **The positive-day gate can thin the pool.** If fewer than three candidates qualify, the researcher abstains and the bot holds its current book.
 - **Reconciliation needs you.** Unknown execution outcomes stay open until you resolve them with on-chain evidence, and those positions are kept out of equity.
