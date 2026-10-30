@@ -100,8 +100,22 @@ research subagent or by the MCP server.
    and re-resolve with the canonical URL. A wrong-slug resolution may belong
    to a stranger (verified live: the 'Aurelius' alias returned a different
    wallet than canonical 'Aurelius0121').
-7. **Rate-limit rule:** empty replies / preview-only replies across many
-   handles = Dawn is soft-throttling. STOP immediately; the 6h schedule
+7. **Silent-bot rule (2026-10-30).** If a sent URL produces no trader card,
+   first confirm Telegram itself is healthy — the browser window still shows
+   the Dawn chat with its message box, not a login/QR screen (check with
+   computer-use on the Dawn window; verified live: jusatrades answered in
+   under a minute while GrimRigidGoat never did, with the same session).
+   - Session healthy: wait 30 seconds and ask once more.
+   - Still no card: record it (`DAWN_NO_CARD` rejection + audit line naming the
+     handle) and **move on to the next target immediately**. A silent handle
+     must never block the rest of the run. After two consecutive silent runs
+     the handle is parked for 6 hours so it cannot monopolise the queue.
+   - Session not healthy (login screen, DOM unrecognised): that is a session
+     fault, not a handle fault. Fail closed and open the QR login window as
+     before.
+8. **Rate-limit rule:** empty replies / preview-only replies across _many_
+   different handles (ten or more, after the retry in step 7 also came back
+   empty) = Dawn is soft-throttling. STOP immediately; the 6h schedule
    retries politely. Never shorten delays, never widen the target list.
 
 ## Environment facts (save yourself the debugging)

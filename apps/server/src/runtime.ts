@@ -9,6 +9,7 @@ import * as repo from '@zcode-bot/db/repo.js';
 import {
   DEFAULT_FOMO_CONFIG,
   DawnNeedsLoginError,
+  DawnNoCardError,
   DawnTraderLookupProvider,
   FomoWebLeaderboardProvider,
   HeliusProvider,
@@ -292,6 +293,10 @@ export class Runtime {
         headless: false, // visible browser: the operator scans the QR once, in person
         replyTimeoutMs: 45_000,
         perLookupDelayMs: 20_000,
+        // Silent-bot policy: one retry after 30s while Telegram is healthy,
+        // then record the handle and move on to the next target.
+        noCardRetryDelayMs: 30_000,
+        maxNoCardAttempts: 2,
       };
       this.dawnLookup = new DawnTraderLookupProvider(dawnConfig);
     }
@@ -1095,7 +1100,9 @@ export class Runtime {
         .filter((a) => a.chain === 'solana')
         .map((a) => a.candidateId),
     );
-    const targets = selectDawnTargets(candidates, wallets, staleCutoff, limit);
+    const targets = selectDawnTargets(candidates, wallets, staleCutoff, limit).filter(
+      (c) => !this.dawnNoCardRecently(c.candidateId),
+    );
     if (targets.length === 0) {
       repo.audit(
         this.db.db,
@@ -1160,6 +1167,15 @@ export class Runtime {
           warnings.push(cand.handle + ': session expired mid-run');
           break;
         }
+        if (e instanceof DawnNoCardError) {
+          // Silent bot, healthy session: note it durably and move on to the
+          // next target. After two such runs the handle is parked for 6h so a
+          // dead profile cannot monopolise every lookup cycle.
+          this.noteDawnNoCard(cand.candidateId, cand.handle);
+          failed++;
+          warnings.push(cand.handle + ': no card (recorded, moving on)');
+          continue;
+        }
         failed++;
         warnings.push(cand.handle + ': ' + (e as Error).message);
       }
@@ -1177,6 +1193,38 @@ export class Runtime {
       this.scheduleSnapshotRebuild();
     }
     return { resolved, failed, warnings };
+  }
+
+  /**
+   * Record a silent-Dawn result for one candidate. Two consecutive no-card
+   * runs park the handle for six hours: the card is absent on Dawn's side, so
+   * retrying sooner only burns run slots that other names need.
+   */
+  private noteDawnNoCard(candidateId: string, handle: string): void {
+    const key = `dawn.noCard:${candidateId}`;
+    const prev = repo.kvGet(this.db.db, key);
+    const parsed = prev ? (JSON.parse(prev) as { count: number; at: string }) : { count: 0, at: '' };
+    const count = parsed.count + 1;
+    repo.kvSet(this.db.db, key, JSON.stringify({ count, at: new Date().toISOString() }));
+    repo.recordCandidateRejection(this.db.db, {
+      recommendationId: null,
+      candidateId,
+      reason: 'DAWN_NO_CARD',
+      detail: `Dawn returned no trader card for @${handle} while the Telegram session was healthy (${count} consecutive run(s))`,
+    });
+    repo.audit(this.db.db, 'dawn-lookup', `${handle}: no card from Dawn; noted, continuing`, {
+      candidateId,
+      consecutive: count,
+    });
+  }
+
+  /** True when this candidate is parked after repeated silent-Dawn runs. */
+  private dawnNoCardRecently(candidateId: string): boolean {
+    const raw = repo.kvGet(this.db.db, `dawn.noCard:${candidateId}`);
+    if (!raw) return false;
+    const { count, at } = JSON.parse(raw) as { count: number; at: string };
+    if (count < 2) return false;
+    return Date.now() - Date.parse(at) < 6 * 3600_000;
   }
 
   /**

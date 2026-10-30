@@ -42,6 +42,14 @@ export interface DawnLookupConfig {
    * random 0-100% jitter so message cadence is not metronomic (anti-spam).
    */
   perLookupDelayMs: number;
+  /**
+   * A silent bot is retried once after this delay, but ONLY while the Telegram
+   * session itself is healthy. A profile that never answers is recorded and
+   * skipped for the rest of the run rather than blocking the other targets.
+   */
+  noCardRetryDelayMs: number;
+  /** How many times one handle may be asked within a single lookup call. */
+  maxNoCardAttempts: number;
 }
 
 export const DEFAULT_DAWN_CONFIG: DawnLookupConfig = {
@@ -51,7 +59,23 @@ export const DEFAULT_DAWN_CONFIG: DawnLookupConfig = {
   headless: false,
   replyTimeoutMs: 45_000,
   perLookupDelayMs: 20_000,
+  noCardRetryDelayMs: 30_000,
+  maxNoCardAttempts: 2,
 };
+
+/**
+ * The bot stayed silent for a handle while the Telegram session was healthy.
+ * Distinct from a session/layout failure: the caller records it and moves on.
+ */
+export class DawnNoCardError extends Error {
+  constructor(
+    readonly handle: string,
+    detail: string,
+  ) {
+    super(`dawn: no card for @${handle} after ${detail}`);
+    this.name = 'DawnNoCardError';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Attempt budget: never look like a bot hammering failed lookups
@@ -383,6 +407,32 @@ export class DawnTraderLookupProvider {
     const clean = handle.trim().replace(/^@/, '');
     if (!clean) throw new Error('dawn: empty handle');
     const sentText = (profileUrl ?? '').trim() || `@${clean}`;
+
+    // A silent bot gets exactly one more ask, and only while the session is
+    // demonstrably healthy. Operators confirmed via the live window that a
+    // healthy session sometimes simply ignores a handle; retrying once clear
+    // of the previous message catches those, while a dead session or a
+    // layout drift still fails closed immediately.
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= this.config.maxNoCardAttempts; attempt++) {
+      try {
+        return await this.attemptLookup(clean, sentText);
+      } catch (e) {
+        lastError = e;
+        const silent = e instanceof DawnNoCardError;
+        const more = attempt < this.config.maxNoCardAttempts;
+        if (!silent || !more) break;
+        const page = await this.ensureChat();
+        const healthy = await this.sessionReady(page);
+        if (!healthy) break;
+        await sleep(this.config.noCardRetryDelayMs);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(`dawn: lookup failed for @${clean}`);
+  }
+
+  /** One send-and-wait cycle. Throws DawnNoCardError when the bot stays silent. */
+  private async attemptLookup(clean: string, sentText: string): Promise<DawnTraderInfo> {
     if (Date.now() - this.lastLookupAt < this.config.perLookupDelayMs) {
       const base = this.config.perLookupDelayMs - (Date.now() - this.lastLookupAt);
       const jitter = Math.floor(Math.random() * this.config.perLookupDelayMs); // 0-100%: non-metronomic
@@ -431,9 +481,21 @@ export class DawnTraderLookupProvider {
     // raced the loop's marker checks.
     const last = parseDawnTraderReply(tail);
     if (last.solanaAddress) return { handle: clean, ...last };
-    throw new Error(
-      `dawn: no trader-card reply for @${clean} within ${this.config.replyTimeoutMs}ms; last tail: ${truncate(tail, 200)}`,
+    throw new DawnNoCardError(
+      clean,
+      `${this.config.maxNoCardAttempts} attempt(s) x ${this.config.replyTimeoutMs}ms; last tail: ${truncate(tail, 200)}`,
     );
+  }
+
+  /** True when the chat input is present and the login screen is not. */
+  private async sessionReady(page: Page): Promise<boolean> {
+    try {
+      await this.assertNotLoggingIn(page);
+      const inputs = await page.locator('div[contenteditable="true"]').count();
+      return inputs > 0;
+    } catch {
+      return false;
+    }
   }
 
   /** Best-effort session probe for scheduling/audit: 'ready' | 'needs-login'. */
