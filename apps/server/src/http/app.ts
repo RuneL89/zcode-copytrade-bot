@@ -241,6 +241,11 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     rt.applySettings(parsed.data);
     repo.audit(db, 'settings', 'risk settings updated', redact(parsed.data));
+    // Publish immediately: the trade screen's counters (time-exit window,
+    // idle-fire countdown) read the store, and the SSE stream only pushes on a
+    // version bump — without this the old values linger until the next
+    // unrelated rebuild.
+    rt.rebuildState();
     return c.json({ ok: true, risk: rt.config.risk });
   });
 

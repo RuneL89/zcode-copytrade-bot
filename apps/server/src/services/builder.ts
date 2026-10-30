@@ -13,8 +13,16 @@ import { SOL_MINT, USDC_MINT, USDT_MINT } from './engine.js';
 const MARK_MAX_AGE_MS = 300_000;
 /** Activity tape length: copied/skipped/exit rows sent to the dashboard. */
 const ACTIVITY_LIMIT = 50;
+/** The tape shows only the last 18 hours; older rows drop off the dashboard. */
+export const ACTIVITY_WINDOW_HOURS = 18;
 /** Observed-event window scanned to compose the tape (noise collapses into a counter). */
-const OBSERVED_WINDOW = 60;
+const OBSERVED_WINDOW = 300;
+
+/** True when `tIso` falls inside the dashboard's activity window ending at `nowMs`. */
+export function withinActivityWindow(tIso: string, nowMs: number): boolean {
+  const t = Date.parse(tIso);
+  return Number.isFinite(t) && nowMs - t <= ACTIVITY_WINDOW_HOURS * 3_600_000;
+}
 
 /**
  * Builds the authoritative dashboard state from persisted evidence. Every
@@ -250,7 +258,7 @@ export class StateBuilder {
 
     // --- activity tape (leader buys → copy/skip, exits, unmatched sells) ----
     const observedEvents = repo.listObservedEvents(this.db, undefined, OBSERVED_WINDOW);
-    const tape = this.buildActivity(positions, lots, observedEvents);
+    const tape = this.buildActivity(positions, lots, observedEvents, now);
     const noise = tape.noiseCount;
 
     // --- counters (UTC day, same boundary the engine's risk gates use) ------
@@ -490,6 +498,7 @@ export class StateBuilder {
     positions: ReturnType<typeof repo.listPositions>,
     lots: ReturnType<typeof repo.listPnlLots>,
     observed: ReturnType<typeof repo.listObservedEvents>,
+    nowMs: number,
   ): { rows: DashboardState['activity']; noiseCount: number } {
     const intents = repo.intentsInStates(this.db, ['confirmed', 'skipped', 'quote_rejected']);
     const staleBySig = new Map<string, string>();
@@ -504,6 +513,9 @@ export class StateBuilder {
     for (const ev of observed) {
       const detail = safeParseDetail(ev.detailJson);
       const tIso = ev.blockTime !== null ? new Date(ev.blockTime * 1000).toISOString() : ev.processedAt;
+      // The dashboard tape is an 18-hour window: older evidence is dropped
+      // entirely (noise included) so the panel reflects recent behaviour.
+      if (!withinActivityWindow(tIso, nowMs)) continue;
 
       if (ev.kind === 'skipped') {
         noiseCount++;

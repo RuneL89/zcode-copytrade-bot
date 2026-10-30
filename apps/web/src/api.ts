@@ -54,7 +54,10 @@ export const api = {
   state: () => request<import('./types.js').DashboardState>('/api/state'),
   settings: () => request<Record<string, unknown>>('/api/settings'),
   patchSettings: (patch: Record<string, unknown>) =>
-    request<{ ok: boolean }>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+    request<{ ok: boolean; risk: Record<string, number | string> }>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   importLeaderboard: (format: 'json' | 'csv', content: string) =>
     request<{ ok: boolean; entries: number; warnings: string[] }>('/api/import/leaderboard', {
       method: 'POST',

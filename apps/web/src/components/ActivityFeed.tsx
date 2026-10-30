@@ -1,5 +1,9 @@
+import { useState } from 'react';
 import type { DashboardState } from '../types';
 import { signedUsd, solFromBase, usd } from '../types';
+
+/** Rows visible before the operator expands the tape (the server sends 18h). */
+const DEFAULT_VISIBLE = 7;
 
 function chipCls(chip: string): string {
   switch (chip) {
@@ -32,10 +36,13 @@ function rowTime(tIso: string): string {
  */
 export function ActivityFeed({ state }: { state: DashboardState }) {
   const { activity, activityNoiseCount, counters } = state;
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? activity : activity.slice(0, DEFAULT_VISIBLE);
+  const hidden = activity.length - visible.length;
   return (
     <section className="card p-5 mb-4" aria-label="activity tape" data-testid="activity-feed">
       <div className="flex items-center justify-between">
-        <p className="label">ACTIVITY</p>
+        <p className="label">ACTIVITY · LAST 18H</p>
         <p className="label !text-[9px]">
           TODAY{' '}
           <span className="text-emerald-700" data-testid="copied-today">
@@ -56,7 +63,7 @@ export function ActivityFeed({ state }: { state: DashboardState }) {
         </p>
       ) : (
         <ul className="mt-3 space-y-1.5">
-          {activity.map((row) => (
+          {visible.map((row) => (
             <li
               key={row.id}
               className="flex items-center gap-2.5 rounded-[12px] bg-white/55 border border-white/80 px-3 py-2"
@@ -117,6 +124,17 @@ export function ActivityFeed({ state }: { state: DashboardState }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {(hidden > 0 || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-3 w-full rounded-[10px] border border-white/80 bg-white/40 py-1.5 label !text-[8.5px] text-[#7d78a0] hover:bg-white/70"
+          data-testid="activity-toggle"
+        >
+          {expanded ? 'SHOW LESS' : `SHOW ${hidden} MORE (ALL 18H)`}
+        </button>
       )}
 
       {activityNoiseCount > 0 && (

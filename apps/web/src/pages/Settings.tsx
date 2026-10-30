@@ -55,21 +55,49 @@ export function SettingsPage({ onBack, onChanged }: { onBack: () => void; onChan
     }
   }, [view]);
 
+  // Save feedback renders here in the card, next to the button — a top-of-page
+  // notice is scrolled out of view exactly when the operator is looking at
+  // this form.
+  const [riskSave, setRiskSave] = useState<{ busy: boolean; ok: boolean | null; text: string | null }>({
+    busy: false,
+    ok: null,
+    text: null,
+  });
+
   const saveRiskLimits = async () => {
+    const current = view?.risk;
     const patch: Record<string, number> = {};
     for (const f of EDITABLE_NUMBER_FIELDS) {
       const n = Number(riskDraft[f]);
-      if (!Number.isFinite(n) || n <= 0) return setMsg(`${f}: must be a positive number`);
-      if (f === 'MAX_DEPLOYED_PCT' && n > 100) return setMsg('MAX_DEPLOYED_PCT: must be 100 or less');
+      if (!Number.isFinite(n) || n <= 0) {
+        setRiskSave({ busy: false, ok: false, text: `${f}: must be a positive number` });
+        return;
+      }
+      if (f === 'MAX_DEPLOYED_PCT' && n > 100) {
+        setRiskSave({ busy: false, ok: false, text: 'MAX_DEPLOYED_PCT: must be 100 or less' });
+        return;
+      }
       patch[f] = Math.round(n);
     }
+    setRiskSave({ busy: true, ok: null, text: null });
     try {
-      await api.patchSettings(patch);
-      setMsg('Risk limits saved — they now survive restarts');
+      const r = await api.patchSettings(patch);
+      const changed = current
+        ? EDITABLE_NUMBER_FIELDS.filter((f) => Number(r.risk[f]) !== Number(current[f]))
+        : [];
+      const diff =
+        changed.length > 0
+          ? changed.map((f) => `${f}: ${String(current?.[f])} → ${String(r.risk[f])}`).join(' · ')
+          : 'values were already current';
+      setRiskSave({
+        busy: false,
+        ok: true,
+        text: `Saved & applied (${diff}). The TRADE screen uses these now — no restart needed.`,
+      });
       onChanged();
       void load();
     } catch (e) {
-      setMsg((e as Error).message);
+      setRiskSave({ busy: false, ok: false, text: (e as Error).message });
     }
   };
 
@@ -233,11 +261,30 @@ export function SettingsPage({ onBack, onChanged }: { onBack: () => void; onChan
             </div>
             <button
               onClick={() => void saveRiskLimits()}
+              disabled={riskSave.busy}
               data-testid="save-risk"
               className="mt-3 w-full rounded-xl bg-[#2a2740] text-white text-[12px] font-bold px-4 py-2.5 disabled:opacity-40"
             >
-              SAVE RISK LIMITS
+              {riskSave.busy ? 'SAVING…' : 'SAVE RISK LIMITS'}
             </button>
+            {riskSave.text && (
+              <div
+                data-testid="save-risk-status"
+                role="status"
+                className={`mt-2 rounded-xl border p-3 ${
+                  riskSave.ok ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'
+                }`}
+              >
+                <p
+                  className={`label !text-[10px] font-bold ${
+                    riskSave.ok ? 'text-emerald-700' : 'text-rose-700'
+                  }`}
+                >
+                  {riskSave.busy ? 'SAVING…' : riskSave.ok ? '✓ SAVED & APPLIED' : '✗ NOT SAVED'}
+                </p>
+                <p className="text-[11.5px] text-[#7d78a0] mt-1">{riskSave.text}</p>
+              </div>
+            )}
             <p className="label !text-[8.5px] mt-3">
               SAVED SETTINGS SURVIVE RESTARTS · COPY_SCALE {String(view.risk.COPY_SCALE)} · LOSS_STREAK_UNIT{' '}
               {String(view.risk.LOSS_STREAK_UNIT)} · FIRE_POSITION_POLICY{' '}
