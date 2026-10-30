@@ -119,7 +119,8 @@ export class WalletEquityService {
 
       const usdcRaw = await reader.getTokenBalanceBase(USDC_MINT).catch(() => null);
       if (usdcRaw === null) return this.current();
-      const usdcMicro = usdcRaw / 1000n; // USDC has 6 decimals; micro-USD = base/1e3
+      // USDC has 6 decimals and micro-USD has 6 decimals: base == micro 1:1.
+      const usdcMicro = usdcRaw;
 
       const solPrice = (await this.prices.priceOf(SOL_MINT, 9).catch(() => null))?.priceUsdMicro ?? 0n;
       const solUsdMicro = (solLamports * solPrice) / 1_000_000_000n;
@@ -217,7 +218,7 @@ export class WalletEquityService {
       if (intent.kind === 'entry') delta -= BigInt(f.inputAmountBase);
       else delta += BigInt(f.outputAmountBase);
     }
-    return delta / 1000n; // USDC base -> micro
+    return delta; // USDC base == micro-USD, 1:1
   }
 
   private externalLedger(): Array<{ t: string; deltaMicro: string; note: string }> {

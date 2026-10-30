@@ -84,12 +84,12 @@ function seedOpenPosition(mint: string, remaining: string, inputUsd = '10000000'
   });
 }
 
-function seedLiveFill(kind: 'entry' | 'exit', usdBase: string, at: Date) {
+function seedLiveFill(kind: 'entry' | 'exit', usdBase: string, at: Date, mode: 'live' | 'paper' = 'live') {
   const intentId = 'intent_' + crypto.randomUUID();
   repo.insertIntent(handle.db, {
     intentId,
     kind,
-    mode: 'live',
+    mode,
     activationId: 'act_x',
     candidateId: 'cand_test',
     positionId: null,
@@ -111,7 +111,7 @@ function seedLiveFill(kind: 'entry' | 'exit', usdBase: string, at: Date) {
     fillId: 'fill_' + crypto.randomUUID(),
     intentId,
     positionId: null,
-    mode: 'live',
+    mode,
     txSignature: 'sig' + crypto.randomUUID(),
     inputAmountBase: usdBase,
     outputAmountBase: usdBase,
@@ -126,7 +126,7 @@ function seedLiveFill(kind: 'entry' | 'exit', usdBase: string, at: Date) {
 describe('wallet equity', () => {
   it('composes equity from USDC, priced SOL, and tracked positions', async () => {
     seedOpenPosition(PURR, '3696130585599');
-    const svc = service({ sol: 41_873_000n, usdc: 121_030_191_000n, tokens: { [PURR]: 3_696_130_585_599n } });
+    const svc = service({ sol: 41_873_000n, usdc: 121_030_191n, tokens: { [PURR]: 3_696_130_585_599n } });
 
     const snap = await svc.refresh();
     expect(snap).not.toBeNull();
@@ -147,11 +147,11 @@ describe('wallet equity', () => {
 
   it('detects an unexplained USDC jump as a deposit without breaking PnL', async () => {
     seedOpenPosition(PURR, '3696130585599');
-    const balances = { sol: 41_873_000n, usdc: 121_030_191_000n, tokens: { [PURR]: 3_696_130_585_599n } };
+    const balances = { sol: 41_873_000n, usdc: 121_030_191n, tokens: { [PURR]: 3_696_130_585_599n } };
     const svc = service(balances);
     await svc.refresh();
 
-    balances.usdc = 221_030_191_000n; // +$100 from outside
+    balances.usdc = 221_030_191n; // +$100 from outside
     const snap = await svc.refresh();
     // Headline PnL ignores the deposit: equity rose but PnL stays 0.
     expect(BigInt(snap!.equityUsdMicro)).toBe(221_030_191n + 6_280_950n + 3_696_130_585n);
@@ -164,13 +164,13 @@ describe('wallet equity', () => {
 
   it('does not count our own live exit as a deposit', async () => {
     seedOpenPosition(PURR, '3696130585599');
-    const balances = { sol: 41_873_000n, usdc: 121_030_191_000n, tokens: { [PURR]: 3_696_130_585_599n } };
+    const balances = { sol: 41_873_000n, usdc: 121_030_191n, tokens: { [PURR]: 3_696_130_585_599n } };
     const svc = service(balances);
     const first = await svc.refresh();
 
     // Our exit lands: +$13.31 USDC (base units), position stays tracked here.
-    seedLiveFill('exit', '13313248000', new Date());
-    balances.usdc += 13_313_248_000n;
+    seedLiveFill('exit', '13313248', new Date());
+    balances.usdc += 13_313_248n;
     const second = await svc.refresh();
 
     expect(
@@ -187,16 +187,16 @@ describe('wallet equity', () => {
   });
 
   it('counts a paper fill as nothing (live wallet only)', async () => {
-    const svc = service({ sol: 41_873_000n, usdc: 121_030_191_000n, tokens: {} });
+    const svc = service({ sol: 41_873_000n, usdc: 121_030_191n, tokens: {} });
     await svc.refresh();
-    seedLiveFill('exit', '13313248', new Date());
+    seedLiveFill('exit', '13313248', new Date(), 'paper');
     // Paper fill (mode paper) must not offset: same balances, no trades.
     const second = await svc.refresh();
     expect(second.externalNetUsdMicro).toBe('0');
   });
 
   it('samples the series at most once per minute and prunes to 24h', async () => {
-    const svc = service({ sol: 41_873_000n, usdc: 121_030_191_000n, tokens: {} });
+    const svc = service({ sol: 41_873_000n, usdc: 121_030_191n, tokens: {} });
     await svc.refresh(new Date('2026-10-30T00:00:00Z'));
     await svc.refresh(new Date('2026-10-30T00:00:10Z')); // too soon: dropped
     await svc.refresh(new Date('2026-10-30T00:01:00Z')); // kept
@@ -210,7 +210,7 @@ describe('wallet equity', () => {
   });
 
   it('keeps the last snapshot when the RPC read fails', async () => {
-    const balances = { sol: 41_873_000n, usdc: 121_030_191_000n, tokens: {} };
+    const balances = { sol: 41_873_000n, usdc: 121_030_191n, tokens: {} };
     const svc = service(balances);
     await svc.refresh();
     const before = svc.current();
