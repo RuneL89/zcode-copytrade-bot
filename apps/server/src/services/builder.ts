@@ -383,19 +383,27 @@ export class StateBuilder {
         })
       : [];
 
+    // Fire reason from the outgoing trader's latest firing event — drives both
+    // the fired overlay (first 20s) and the hiring pipeline's FIRED stage, for
+    // every firing condition (idle, rank, stall, losses, rotation, manual).
+    let fireReason: string | null = null;
+    let firedAtIso: string | null = null;
+    if (lastHandoff?.fromCandidateId) {
+      const firedActivation = activations
+        .filter((a) => a.candidateId === lastHandoff.fromCandidateId && a.state === 'FIRED')
+        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+      if (firedActivation) {
+        const event = repo.latestFiringEventForActivation(this.db, firedActivation.activationId);
+        fireReason = event?.reason ?? null;
+        firedAtIso = event?.firedAt ?? null;
+      }
+    }
+
     // --- handoff (drives the fired animation) --------------------------------
     let handoff: DashboardState['handoff'] = null;
     if (lastHandoff && now - Date.parse(lastHandoff.createdAt) < 20_000) {
       const from = candidatesRows.find((c) => c.candidateId === lastHandoff.fromCandidateId);
       const to = candidatesRows.find((c) => c.candidateId === lastHandoff.toCandidateId);
-      // Fire reason from the outgoing trader's latest firing event, so the
-      // overlay shows rank/rotation/stall/idle instead of a hardcoded cause.
-      const firedActivation = activations
-        .filter((a) => a.candidateId === lastHandoff.fromCandidateId && a.state === 'FIRED')
-        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
-      const fireReason = firedActivation
-        ? (repo.latestFiringEventForActivation(this.db, firedActivation.activationId)?.reason ?? null)
-        : null;
       handoff = {
         phase:
           lastHandoff.status === 'activated'
@@ -456,8 +464,10 @@ export class StateBuilder {
     // recommendation row too, and treating it as an ordering would leave the
     // panel claiming HIRING while nothing can be hired.
     const validCreatedAt = valid?.payload.createdAt ?? null;
+    // >= (not >): ISO stamps share millisecond granularity, and a same-ms
+    // abstention still means research already responded to the request.
     const abstainedAfterRequest = Boolean(
-      latest?.abstain && researchRequestAt && latest.createdAt > researchRequestAt,
+      latest?.abstain && researchRequestAt && latest.createdAt >= researchRequestAt,
     );
     let stage: DashboardState['hiring']['stage'] = 'IDLE';
     let stageSince: string | null = null;
@@ -484,11 +494,11 @@ export class StateBuilder {
         stageSince = researchRequestAt ?? null;
       } else {
         stage = 'FIRED';
-        stageSince = lastHandoff?.createdAt ?? null;
+        stageSince = firedAtIso ?? lastHandoff?.createdAt ?? null;
       }
     } else if (lastHandoff) {
       stage = 'FIRED';
-      stageSince = lastHandoff.createdAt;
+      stageSince = firedAtIso ?? lastHandoff.createdAt;
     }
     // An ACTIVE hire that is flat and counting down is the first step of the
     // same pipeline; IDLE_COUNTDOWN makes that explicit for the dashboard.
@@ -499,7 +509,8 @@ export class StateBuilder {
       stageSince,
       pausedForResearch,
       reason: pausedForResearch ? (lastHandoff?.detail ?? null) : null,
-      firedAt: lastHandoff?.fromCandidateId ? lastHandoff.createdAt : null,
+      firedReason: fireReason,
+      firedAt: lastHandoff?.fromCandidateId ? (firedAtIso ?? lastHandoff.createdAt) : null,
       latestScanAt: latestScanRow?.observedAt ?? null,
       recommendationAt: latest?.createdAt ?? null,
       researchRequested,

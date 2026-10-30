@@ -333,6 +333,7 @@ export class DemoEngine {
         stageSince: handoffActive && lastHandoff ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString() : null,
         pausedForResearch: waitingForZcode,
         reason: waitingForZcode ? 'DEMO: shortlist exhausted — fresh research requested' : null,
+        firedReason: waitingForZcode ? 'DEMO: 2 consecutive losses' : null,
         firedAt: waitingForZcode && lastHandoff ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString() : null,
         latestScanAt: null,
         recommendationAt: null,

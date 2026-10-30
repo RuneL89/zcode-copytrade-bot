@@ -128,6 +128,8 @@ export interface DashboardState {
     stageSince: string | null;
     pausedForResearch: boolean;
     reason: string | null;
+    /** Why the last trader was fired (idle / rank / stall / losses / rotation / manual). */
+    firedReason: string | null;
     firedAt: string | null;
     latestScanAt: string | null;
     recommendationAt: string | null;

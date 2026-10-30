@@ -178,7 +178,9 @@ export interface DashboardState {
     pausedForResearch: boolean;
     /** One-line reason from the latest pause (stale ordering / exhausted shortlist). */
     reason: string | null;
-    /** When the last trader was fired (outgoing handoff event). */
+    /** Why the last trader was fired (idle / rank / stall / losses / rotation / manual). */
+    firedReason: string | null;
+    /** When the last trader was fired (from the firing event). */
     firedAt: string | null;
     /** Board scan the ordering is compared against (null when none captured). */
     latestScanAt: string | null;

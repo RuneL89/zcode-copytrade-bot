@@ -22,6 +22,19 @@ An abstention newer than the request is respected: research re-arms only after a
 new board import (or 30 minutes later), so a thin pool cannot burn a run every
 5 minutes.
 
+**Research is hire-time only (2026-10-30).** Research runs when the engine wants
+to hire and has no spendable ordering — nothing else. Concretely: the post-fire
+request above, a paused cold start with no valid ordering, or a firing whose
+handoff never produced a replacement. There are deliberately NO speculative
+triggers: an expired ordering while a trader is active does NOT re-run research
+(it would refill a shelf the freshness guard refuses to spend from), and pool
+growth does not either (the next hire-time run sees the bigger pool). This made
+rotation dormant: `rotateIfFlat` arrives inside research orderings, and no
+speculative research means no rotation while a trader is active — the rank-fire
+rule is the momentum mechanism that remains. An abstention newer than the
+request re-arms research only after a new board import (or 30 minutes), so a
+thin pool cannot burn a run every 5 minutes.
+
 - **title:** `Every 5 minutes ZCode Bot fast tick (research immediately on fire, board every ~30 min)`
 - **cron:** `*/5 * * * *`
 - **recurring:** `true`

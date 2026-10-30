@@ -322,6 +322,10 @@ describe('dashboard payload exposes the hiring loop', () => {
     expect(s.hiring.autoResume).toBe(true);
     expect(s.hiring.researchRequested).toBe(true);
     expect(s.hiring.reason).toContain('predates the latest scan');
+    // The fire cause survives the whole pause: the pipeline box names what
+    // fired the trader (rank, idle, stall, losses — whichever condition ran).
+    expect(s.hiring.firedReason).toBe('rank: left the board');
+    expect(s.hiring.firedAt).toBeTruthy();
     expect(s.hiring.latestScanAt).toBe(scanAt);
     expect(s.hiring.recommendationAt).toBeTruthy();
     // Fresh handoff event (seconds old) drives the fired overlay.

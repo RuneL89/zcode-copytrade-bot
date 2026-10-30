@@ -107,7 +107,9 @@ function HiringPipeline({ state, now }: { state: DashboardState; now: number }) 
     sub = 'POSITION OPEN — TIMER PAUSED';
   } else if (h.stage === 'FIRED') {
     headline = 'FIRED';
-    sub = h.stageSince ? `OUT ${timeAgo(h.stageSince, now)} AGO` : 'WAITING FOR RESEARCH';
+    const cause = h.firedReason ? (h.firedReason.length > 44 ? `${h.firedReason.slice(0, 44)}…` : h.firedReason) : null;
+    const out = h.stageSince ? `OUT ${timeAgo(h.stageSince, now)} AGO` : '';
+    sub = [cause, out].filter(Boolean).join(' · ') || 'WAITING FOR RESEARCH';
   } else if (h.stage === 'RESEARCH_REQUESTED') {
     headline = 'RESEARCH QUEUED';
     sub = 'WAITING FOR THE NEXT RESEARCH RUN';
@@ -203,6 +205,11 @@ function HiringPipeline({ state, now }: { state: DashboardState; now: number }) 
         </div>
       </div>
 
+      {h.firedReason && (
+        <p className="mt-2 text-[10px] text-[#7d78a0] break-words text-center" data-testid="pipeline-fired-reason">
+          FIRED: {h.firedReason}
+        </p>
+      )}
       {h.reason && (
         <p className="mt-1.5 text-[9.5px] text-[#a29dbf] break-words text-center" data-testid="pipeline-reason">
           {h.reason}

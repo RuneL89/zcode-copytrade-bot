@@ -131,39 +131,35 @@ never hires a trader the board has already dropped. Scans come from the sweep's
 30-minute Procedure A imports; the last five scans live in
 `leaderboard_observations` (`repo.listRecentScans`), pruned after 30 days.
 
-### Hiring pause: fired → fresh research → auto-hire (wired 2026-10-30)
+### The fire → research → hire pipeline (all firing conditions, 2026-10-30)
 
-**The pipeline is one box on the dashboard.** The OPEN POSITIONS card (where the
-idle countdown lives) shows every stage as chips — `IDLE TIMER › FIRED ›
-RESEARCH › NEW HIRE` — plus a headline: the countdown while flat, then `FIRED`,
-`RESEARCH QUEUED`, `RESEARCHING`, `HIRING`. The stages come from
-`DashboardState.hiring.stage`, so what the dashboard shows is what the engine is
-actually doing.
+Every firing condition routes through the same `lifecycle.fire()` and therefore
+the same pipeline, illustrated by the same dashboard box — the OPEN POSITIONS
+card's chips `IDLE TIMER › FIRED › RESEARCH › NEW HIRE` with a headline that
+names the live stage and cause:
 
-**Idle fire timing.** The idle check runs on EVERY monitor tick (8s), not on the
-hourly discipline sweep: when the countdown reaches zero the trader is fired
-within a tick. Provider failures during the Helius poll are recorded but no
-longer skip the idle/time checks.
+- **idle fire** — flat hire, `IDLE_FIRE_HOURS` with zero positions; runs on
+  every monitor tick so it lands when the countdown hits zero;
+- **rank fire** — absent from the latest scan once, or outside top-3 twice;
+- **stall fire** — leader wallet silent `LEADER_STALL_FIRE_HOURS` while we hold;
+- **loss fire** — `FIRE_AFTER_CONSECUTIVE_LOSSES` consecutive time-exit losses;
+- **manual fire** — the dashboard's fire button.
 
-After a fire, the replacement walk will **not** spend an ordering that predates
-the newest board scan (5-minute tolerance; the guard stands down when no scan is
-captured or the scan itself is older than 2 hours, so a broken capture pipeline
-can never freeze hiring). Hiring from such an ordering would pick the best
-candidate from hours ago; instead the bot pauses
-(`PAUSED_WAITING_FOR_ZCODE`, handoff event `paused_for_fresh_research` with the
-"ordering … predates the latest scan …" detail), records a `research_request`
-control event (throttled to one per scan), and one of two actors picks it up:
+The fire cause (`hiring.firedReason`, from the firing event) is shown in the
+box for the whole pause — e.g. "FIRED: rank: left the board (absent from the
+top-7 scan …)" — next to the pause reason ("ordering … predates the latest
+scan …"). The fired overlay (first 20s) carries the same cause.
 
-- the 5-minute **research dispatcher** (see `docs/research-sweep-automation.md`):
-  refreshes candidate activity, rebuilds the snapshot, writes
-  `research_dispatched`, and spawns the researcher — latency ≤5 min;
-- otherwise the 30-minute sweep, which treats a `research_request` newer than
-  the newest recommendation (and newer than any `research_dispatched`) as a
-  research trigger.
-
-When the fresh ordering is validated, the idle-hire path activates its top
-eligible candidate automatically. The same guard applies to cold start and idle
-resume.
+**Research is hire-time only.** A fire either (a) hires instantly from a valid
+ordering that postdates the newest scan, or (b) pauses
+(`PAUSED_WAITING_FOR_ZCODE`, handoff `paused_for_fresh_research`) and writes a
+`research_request` control row, which the 5-minute fast tick consumes
+(research-first, ≤5 min). There are no speculative triggers: an expired ordering
+while a trader is active does not re-run research, and neither does pool growth.
+This made rotation dormant (`rotateIfFlat` only arrives inside research
+orderings); the rank-fire rule is the momentum mechanism. The freshness guard
+(5-minute tolerance, 2h stand-down) and the POOL_TOO_THIN abstention stage are
+unchanged, and the same guard applies to cold start and idle resume.
 
 ### Stall watcher (wired 2026-10-29)
 
