@@ -913,7 +913,17 @@ export class CopyEngine {
 
     const closedBase = exit.exitBase;
     const copiedTotal = BigInt(position.copiedTokenBase);
-    const costBasis = (BigInt(position.inputUsdMicro) * closedBase) / copiedTotal;
+    // A full close must charge every remaining cent of cost basis. An exit is
+    // clamped to the wallet's real balance, which can be below the recorded
+    // quantity (recorded sizes include quoted-but-undelivered slippage); a
+    // proportional share would leave that basis on the books as phantom equity
+    // for a position that no longer exists.
+    const priorLots = repo.listPnlLots(this.db, 10000).filter((l) => l.positionId === exit.positionId);
+    const bookedCost = priorLots.reduce((sum, l) => sum + BigInt(l.costBasisUsdMicro), 0n);
+    const proportionalCost = (BigInt(position.inputUsdMicro) * closedBase) / copiedTotal;
+    const fullyClosed = exit.remainingAfter <= 0n;
+    const remainingCost = BigInt(position.inputUsdMicro) - bookedCost;
+    const costBasis = fullyClosed && remainingCost > proportionalCost ? remainingCost : proportionalCost;
     // Proceeds in USD micro from the funding mint received.
     let proceedsUsdMicro: bigint;
     if (position.inputMint === USDC_MINT || position.inputMint === USDT_MINT) {

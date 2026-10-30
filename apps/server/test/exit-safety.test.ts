@@ -168,6 +168,32 @@ describe('exit safety: sell what the wallet holds', () => {
     expect(executor.specs[0]!.inputAmountBase).toBe('1000');
   });
 
+  it('charges the full remaining cost basis when a clamped sell closes the position', async () => {
+    const { positionId } = seedPosition('6153520309157'); // $90 recorded basis
+    const executor = new ScriptedExecutor([
+      {
+        kind: 'filled',
+        signature: 'sig',
+        inputAmountBase: '0',
+        outputAmountBase: '87713984', // $87.71 proceeds
+        feeUsdMicro: '0',
+        evidence: {},
+        commitment: 'confirmed',
+      },
+    ]);
+    executor['onChain'] = 6098849896889n; // 0.89% less than recorded
+    const engine = engineWith(executor);
+
+    const result = await engine.closePosition(positionId, 'fire_close_all');
+    expect(result).toBe('closed');
+
+    const lots = repo.listPnlLots(handle.db, 10).filter((l) => l.positionId === positionId);
+    expect(lots).toHaveLength(1);
+    // The whole $90 must be charged: no phantom basis left on the books.
+    expect(lots[0]!.costBasisUsdMicro).toBe('90000000');
+    expect(lots[0]!.pnlUsdMicro).toBe((87_713_984n - 90_000_000n).toString());
+  });
+
   it('records a failed intent instead of selling when the balance is zero', async () => {
     const { positionId } = seedPosition('1000');
     const executor = new ScriptedExecutor([], 0n);
