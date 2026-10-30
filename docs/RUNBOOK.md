@@ -144,19 +144,6 @@ closes any open positions and the replacement takes the slot. This is what makes
 The rank-fire rule above usually fires first; the stall watcher is the backstop
 for when the board itself is unavailable.
 
-### Equity is the wallet (live)
-
-Since 2026-10-30 the live dashboard equity is what an explorer would show:
-USDC + priced SOL + the market value of the token balances behind open
-positions, read from the chain every 30 seconds (`wallet-equity.ts`). The
-headline PnL is the deposit-adjusted change from the first observed wallet
-value; unexplained USDC jumps (your deposits and withdrawals) are recorded in
-the `wallet.external` ledger and excluded from PnL. Bankroll — the investable
-number used by the risk gates — is the real USDC cash only; SOL stays a fee
-reserve. Paper mode keeps the modelled equity calculation (there is no wallet
-to read), and the source label on the dashboard always says which one you are
-looking at.
-
 ### Wallet resolution runs itself — except one state
 
 The runtime resolves missing wallets through Dawn once 2 minutes after every boot,

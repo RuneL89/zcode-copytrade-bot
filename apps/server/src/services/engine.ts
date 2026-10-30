@@ -52,12 +52,6 @@ export class CopyEngine {
     private walletPublicKey: string | null,
     private equityStartUsdMicro: bigint = 1_000_000_000n,
     private liveMode: boolean = false,
-    /**
-     * Real bankroll (live): USDC cash and capital (cash + open position cost)
-     * from the latest wallet refresh. When it returns null (or is absent,
-     * paper) the modelled equityStart+realized bankroll is used instead.
-     */
-    private realBankroll?: () => { cashUsdMicro: bigint; capitalUsdMicro: bigint } | null,
   ) {}
 
   setRisk(risk: RiskConfig): void {
@@ -182,41 +176,17 @@ export class CopyEngine {
     }
 
     // Bankroll step: deployed (open entries INCL. entry fees) may not exceed
-    // MAX_DEPLOYED_PCT of capital. Live gates on the REAL wallet (USDC cash +
-    // open position cost, from the last wallet refresh): before the first
-    // read has landed there is no real number, and the modelled bankroll must
-    // never gate a live order — the entry is skipped instead. Paper keeps the
-    // modelled equityStart + realized bankroll.
+    // MAX_DEPLOYED_PCT of capital (equity start + fee-net realized PnL). A
+    // copy that doesn't fit is downsized to the headroom; skipped only when
+    // the remainder is below the per-bet minimum.
     const openAll = repo.openPositions(this.db);
-    // Fail closed only when a bankroll provider IS configured (production live)
-    // but has no data yet. No provider at all (tests) keeps the modelled path.
-    const real = this.liveMode && this.realBankroll ? (this.realBankroll() ?? null) : null;
-    if (this.liveMode && this.realBankroll && !real) {
-      repo.insertRiskRejection(this.db, {
-        activationId,
-        rule: 'WALLET_BANKROLL_UNKNOWN',
-        limitValue: '0',
-        actualValue: '0',
-        detail: 'live entry before the first wallet refresh — no real bankroll yet',
-        createdAt: new Date().toISOString(),
-      });
-      return;
-    }
-    const bank = real
-      ? bankrollHeadroom({
-          equityStartUsdMicro: real.capitalUsdMicro,
-          openEntriesUsdMicro: real.capitalUsdMicro - real.cashUsdMicro,
-          openFeesUsdMicro: 0n,
-          realizedNetUsdMicro: 0n,
-          maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
-        })
-      : bankrollHeadroom({
-          equityStartUsdMicro: this.equityStartUsdMicro,
-          openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
-          openFeesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
-          realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
-          maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
-        });
+    const bank = bankrollHeadroom({
+      equityStartUsdMicro: this.equityStartUsdMicro,
+      openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
+      openFeesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
+      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
+      maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
+    });
     const capped = capToHeadroom(
       sizing.finalUsdMicro!,
       bank.headroomUsdMicro,

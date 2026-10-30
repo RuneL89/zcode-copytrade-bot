@@ -124,50 +124,22 @@ export class StateBuilder {
     // --- equity + closes ---------------------------------------------------
     const positions = repo.listPositions(this.db, 200);
     const lots = repo.listPnlLots(this.db, 500);
-
-    // Live: equity is the wallet, full stop. USDC + priced SOL + the market
-    // value of the token balances behind open positions, read by the wallet
-    // service every 30s (kv-persisted). Headline PnL is the deposit-adjusted
-    // change from the first observed value. Paper keeps the modelled
-    // equityStart + realized-lot calculation (there is no wallet to read).
-    const walletJson = this.config.mode === 'live' ? repo.kvGet(this.db, 'wallet.equity') : null;
-    const wallet = walletJson
-      ? (JSON.parse(walletJson) as {
-          asOf: string;
-          usdcMicro: string;
-          solUsdMicro: string;
-          positionsUsdMicro: string;
-          equityUsdMicro: string;
-          baselineUsdMicro: string | null;
-          headlinePnlUsdMicro: string | null;
-        })
-      : null;
-
-    const equityStart = wallet
-      ? BigInt(wallet.baselineUsdMicro ?? wallet.equityUsdMicro)
-      : this.equityStartUsdMicro;
-    let equityNow = wallet ? BigInt(wallet.equityUsdMicro) : this.equityStartUsdMicro;
-    if (!wallet) for (const lot of lots) equityNow += BigInt(lot.pnlUsdMicro);
+    const equityStart = this.equityStartUsdMicro;
+    let equityNow = equityStart;
+    for (const lot of lots) equityNow += BigInt(lot.pnlUsdMicro);
     const winners = lots.filter((l) => BigInt(l.pnlUsdMicro) > 0n).length;
 
-    // Equity series: live = sampled wallet values (kv, ~24h); paper = start
-    // point plus every lot, as before.
-    let series: DashboardState['equity']['series'];
-    if (wallet) {
-      const raw = repo.kvGet(this.db, 'wallet.series');
-      series = raw ? (JSON.parse(raw) as Array<{ t: string; usdMicro: string }>) : [];
-    } else {
-      series = [
-        {
-          t: lots.length ? lots[lots.length - 1]!.closedAt : new Date(now).toISOString(),
-          usdMicro: equityStart.toString(),
-        },
-      ];
-      let running = equityStart;
-      for (const lot of [...lots].reverse()) {
-        running += BigInt(lot.pnlUsdMicro);
-        series.push({ t: lot.closedAt, usdMicro: running.toString() });
-      }
+    // Equity series: start point plus every lot.
+    const series: DashboardState['equity']['series'] = [
+      {
+        t: lots.length ? lots[lots.length - 1]!.closedAt : new Date(now).toISOString(),
+        usdMicro: equityStart.toString(),
+      },
+    ];
+    let running = equityStart;
+    for (const lot of [...lots].reverse()) {
+      running += BigInt(lot.pnlUsdMicro);
+      series.push({ t: lot.closedAt, usdMicro: running.toString() });
     }
 
     const closes: DashboardState['closes'] = lots.slice(0, 60).map((lot) => ({
@@ -289,28 +261,13 @@ export class StateBuilder {
     const staleRejectionsToday = repo
       .listRiskRejections(this.db, 200)
       .filter((r) => r.rule === 'MAX_COPY_EVENT_AGE_SECONDS' && r.createdAt >= dayStartIso);
-    // Live: the bank the operator sees (and the engine gates on) is the real
-    // wallet: cash = USDC balance, capital = cash + recorded open cost. Paper
-    // keeps the modelled equityStart + realized bankroll.
-    const bankrollJson = this.config.mode === 'live' ? repo.kvGet(this.db, 'wallet.bankroll') : null;
-    const bankroll = bankrollJson
-      ? (JSON.parse(bankrollJson) as { cashUsdMicro: string; capitalUsdMicro: string })
-      : null;
-    const bank = bankroll
-      ? bankrollHeadroom({
-          equityStartUsdMicro: BigInt(bankroll.capitalUsdMicro),
-          openEntriesUsdMicro: BigInt(bankroll.capitalUsdMicro) - BigInt(bankroll.cashUsdMicro),
-          openFeesUsdMicro: 0n,
-          realizedNetUsdMicro: 0n,
-          maxDeployedPct: this.config.risk.MAX_DEPLOYED_PCT,
-        })
-      : bankrollHeadroom({
-          equityStartUsdMicro: this.equityStartUsdMicro,
-          openEntriesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
-          openFeesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
-          realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
-          maxDeployedPct: this.config.risk.MAX_DEPLOYED_PCT,
-        });
+    const bank = bankrollHeadroom({
+      equityStartUsdMicro: this.equityStartUsdMicro,
+      openEntriesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
+      openFeesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
+      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
+      maxDeployedPct: this.config.risk.MAX_DEPLOYED_PCT,
+    });
     const deployedPct =
       bank.capitalUsdMicro > 0n
         ? Math.round(Number((bank.deployedUsdMicro * 10_000n) / bank.capitalUsdMicro)) / 100
@@ -459,28 +416,16 @@ export class StateBuilder {
       equity: {
         currentUsdMicro: equityNow.toString(),
         startUsdMicro: equityStart.toString(),
-        // Live: deposit-adjusted PnL (wallet delta minus external movements),
-        // which can differ from equity − start when the operator moved funds.
-        changeUsdMicro: wallet?.headlinePnlUsdMicro ?? (equityNow - equityStart).toString(),
+        changeUsdMicro: (equityNow - equityStart).toString(),
         // Rolling equity: bankroll (investable cash, fees already sunk) plus
         // the live mark of every open position (at entry cost until priced).
         rollingUsdMicro: (
           bank.cashUsdMicro +
-          positionsPanel.reduce((acc, p) => acc + BigInt(p.markUsdMicro ?? p.copyUsdMicro), 0n) +
-          (wallet ? BigInt(wallet.solUsdMicro) : 0n)
+          positionsPanel.reduce((acc, p) => acc + BigInt(p.markUsdMicro ?? p.copyUsdMicro), 0n)
         ).toString(),
         series,
         source: mode === 'demo' ? 'DEMO_FIXTURES' : mode === 'paper' ? 'PAPER_CALCULATION' : 'LIVE_EVIDENCE',
         asOf: new Date(now).toISOString(),
-        wallet: wallet
-          ? {
-              usdcMicro: wallet.usdcMicro,
-              solUsdMicro: wallet.solUsdMicro,
-              positionsUsdMicro: wallet.positionsUsdMicro,
-              pnlUsdMicro: wallet.headlinePnlUsdMicro ?? '0',
-              asOf: wallet.asOf,
-            }
-          : undefined,
       },
       activeTrader,
       closes,
