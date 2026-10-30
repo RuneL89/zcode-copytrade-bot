@@ -295,17 +295,25 @@ export class TraderLifecycle {
     let handoffBlocked = false;
     if (this.risk.FIRE_POSITION_POLICY === 'close_all_before_switch' && this.engine) {
       const result = await this.engine.closeAllForActivation(activationId);
-      if (result.unknown > 0) {
+      // A position that survives the retries (unknown OR definitively failed)
+      // must block the handoff: marking the trader FIRED with his bags still
+      // held would leave them with no owner, because the monitor only manages
+      // the ACTIVE trader's positions.
+      if (result.unknown > 0 || result.failed > 0) {
         repo.updateActivation(this.db, activationId, { state: 'REQUIRES_RECONCILIATION' });
         repo.insertReconciliationCase(this.db, {
-          kind: 'unknown_execution',
+          kind: result.unknown > 0 ? 'unknown_execution' : 'close_failed',
           intentId: null,
           positionId: null,
           signature: null,
           status: 'open',
-          detail: `fire close-out has ${result.unknown} unknown outcome(s)`,
+          detail: `fire close-out incomplete: ${result.closed} closed, ${result.unknown} unknown, ${result.failed} failed after retries`,
           createdAt: nowIso,
           resolvedAt: null,
+        });
+        repo.audit(this.db, 'firing', 'firing blocked: positions still open after close-out retries', {
+          activationId,
+          ...result,
         });
         handoffBlocked = true;
       } else {

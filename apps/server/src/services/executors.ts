@@ -45,6 +45,30 @@ export interface Executor {
   readonly mode: 'paper' | 'live';
   quote(spec: IntentSpec): Promise<QuoteCheck>;
   execute(spec: IntentSpec, quote: QuoteCheck): Promise<ExecOutcome>;
+  /**
+   * On-chain balance of `mint` owned by the trading wallet, base units.
+   * null when unknown (paper mode, or the read failed) — callers must then
+   * fall back to their recorded amount rather than guess.
+   */
+  availableBalance?(mint: string): Promise<bigint | null>;
+  /** SOL balance in lamports for fee/rent headroom; null when unknown. */
+  availableSolLamports?(): Promise<number | null>;
+}
+
+/** Below this the wallet cannot reliably pay swap fees + rent: exits fail closed. */
+export const MIN_SOL_FOR_FEES_LAMPORTS = 5_000_000; // 0.005 SOL
+/** Below this the notifier warns before exits start failing. */
+export const SOL_LOW_WATERMARK_LAMPORTS = 20_000_000; // 0.02 SOL
+
+/**
+ * True when a send error is a preflight/simulation rejection. Such a
+ * transaction was never accepted by the RPC, so nothing reached the chain and
+ * the operation is safe to retry — unlike a post-send confirmation timeout.
+ * Solana's SendTransactionError renders these as "Simulation failed. ...".
+ */
+export function isPreflightRejection(error: unknown): boolean {
+  const msg = (error as Error)?.message ?? String(error);
+  return /simulation failed|transaction simulation failed|preflight failure/i.test(msg);
 }
 
 /** Documented paper-mode simulation assumptions (displayed in the UI). */
@@ -64,6 +88,15 @@ export class PaperExecutor implements Executor {
 
   setJupiter(jupiter: JupiterProvider | null): void {
     this.jupiter = jupiter;
+  }
+
+  /** Paper positions are synthetic: no on-chain balance is meaningful. */
+  async availableBalance(): Promise<bigint | null> {
+    return null;
+  }
+
+  async availableSolLamports(): Promise<number | null> {
+    return null;
   }
 
   async quote(spec: IntentSpec): Promise<QuoteCheck> {
@@ -143,16 +176,74 @@ export class PaperExecutor implements Executor {
   }
 }
 
+/** Minimal connection surface the live path needs (injectable for tests). */
+export interface LiveConnection {
+  sendRawTransaction(raw: Uint8Array, opts?: { skipPreflight?: boolean }): Promise<string>;
+  confirmTransaction(strategy: unknown, commitment: string): Promise<{ value: { err: unknown } }>;
+  getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+  getParsedTokenAccountsByOwner(
+    owner: unknown,
+    filter: unknown,
+  ): Promise<{
+    value: Array<{ account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }>;
+  }>;
+  getBalance(owner: unknown): Promise<number>;
+}
+
 /** Live signing/submit path. Constructed ONLY after successful live arming. */
 export class LiveExecutor implements Executor {
   readonly mode = 'live' as const;
+  private connection: LiveConnection | null = null;
 
   constructor(
     private jupiter: JupiterProvider,
     private rpcUrl: string,
     private secretKey: Uint8Array,
     private publicKey: string,
+    /** Test seam: supply a fake connection instead of a real RPC client. */
+    private connectionFactory?: (rpcUrl: string) => LiveConnection,
   ) {}
+
+  private async conn(): Promise<LiveConnection> {
+    if (!this.connection) {
+      if (this.connectionFactory) {
+        this.connection = this.connectionFactory(this.rpcUrl);
+      } else {
+        const { Connection } = await import('@solana/web3.js');
+        this.connection = new Connection(this.rpcUrl, 'confirmed') as unknown as LiveConnection;
+      }
+    }
+    return this.connection;
+  }
+
+  /** Sum of every token account the wallet holds for `mint` (0 when none). */
+  async availableBalance(mint: string): Promise<bigint | null> {
+    try {
+      const { PublicKey } = await import('@solana/web3.js');
+      const conn = await this.conn();
+      const res = await conn.getParsedTokenAccountsByOwner(new PublicKey(this.publicKey), {
+        mint: new PublicKey(mint),
+      });
+      let sum = 0n;
+      for (const acc of res.value) {
+        const amount = acc?.account?.data?.parsed?.info?.tokenAmount?.amount;
+        if (amount) sum += BigInt(amount);
+      }
+      return sum;
+    } catch {
+      return null; // unknown: callers fall back to the recorded amount
+    }
+  }
+
+  async availableSolLamports(): Promise<number | null> {
+    try {
+      const { PublicKey } = await import('@solana/web3.js');
+      const conn = await this.conn();
+      return await conn.getBalance(new PublicKey(this.publicKey));
+    } catch {
+      return null;
+    }
+  }
 
   async quote(spec: IntentSpec): Promise<QuoteCheck> {
     const q = await this.jupiter.quote({
@@ -170,34 +261,67 @@ export class LiveExecutor implements Executor {
   }
 
   async execute(spec: IntentSpec, _quote: QuoteCheck): Promise<ExecOutcome> {
+    // Every failure before a signature exists is DEFINITIVELY unsent and
+    // therefore retryable ('failed'). Only a send whose outcome is ambiguous,
+    // or a confirmation that we lose after submitting, becomes 'unknown'.
+
     // Requote + rebuild immediately before signing (never reuse stale quotes).
-    const quoteResponse = await this.jupiter.quote({
-      inputMint: spec.inputMint,
-      outputMint: spec.outputMint,
-      amount: spec.inputAmountBase,
-      slippageBps: spec.slippageBpsCap,
-    });
-    const built = await this.jupiter.buildSwap({
-      quoteResponse,
-      userPublicKey: this.publicKey,
-    });
-    const { Connection, VersionedTransaction, PublicKey } = await import('@solana/web3.js');
-    const connection = new Connection(this.rpcUrl, 'confirmed');
-    const tx = VersionedTransaction.deserialize(Buffer.from(built.swapTransaction, 'base64'));
-    tx.sign([{ publicKey: new PublicKey(this.publicKey), secretKey: this.secretKey }]);
-    const raw = tx.serialize();
-    const signature = await connection.sendRawTransaction(raw, { skipPreflight: false });
+    let quoteResponse: Awaited<ReturnType<JupiterProvider['quote']>>;
     try {
+      quoteResponse = await this.jupiter.quote({
+        inputMint: spec.inputMint,
+        outputMint: spec.outputMint,
+        amount: spec.inputAmountBase,
+        slippageBps: spec.slippageBpsCap,
+      });
+    } catch (e) {
+      return { kind: 'failed', error: `quote failed before submission: ${(e as Error).message}` };
+    }
+
+    let built: Awaited<ReturnType<JupiterProvider['buildSwap']>>;
+    try {
+      built = await this.jupiter.buildSwap({ quoteResponse, userPublicKey: this.publicKey });
+    } catch (e) {
+      return { kind: 'failed', error: `swap build failed before submission: ${(e as Error).message}` };
+    }
+
+    // Snapshot the output balance BEFORE sending so the fill records what was
+    // actually received, not what was quoted. Best effort: a read failure
+    // falls back to the quote.
+    const preOutput = await this.availableBalance(spec.outputMint);
+
+    let signature: string;
+    try {
+      const { VersionedTransaction, PublicKey } = await import('@solana/web3.js');
+      const tx = VersionedTransaction.deserialize(Buffer.from(built.swapTransaction, 'base64'));
+      tx.sign([{ publicKey: new PublicKey(this.publicKey), secretKey: this.secretKey }]);
+      const connection = await this.conn();
+      signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    } catch (e) {
+      if (isPreflightRejection(e)) {
+        return { kind: 'failed', error: `preflight rejected (not submitted): ${(e as Error).message}` };
+      }
+      return { kind: 'unknown', detail: `send outcome unknown: ${(e as Error).message}` };
+    }
+
+    try {
+      const connection = await this.conn();
       const latest = await connection.getLatestBlockhash();
       const result = await connection.confirmTransaction({ signature, ...latest }, 'confirmed');
       if (result.value.err) {
         return { kind: 'failed', error: `transaction failed on-chain: ${JSON.stringify(result.value.err)}` };
       }
+      // Actual received = post - pre when both reads succeeded; else the quote.
+      let outputAmountBase = quoteResponse.outAmount;
+      const post = await this.availableBalance(spec.outputMint);
+      if (preOutput !== null && post !== null && post >= preOutput) {
+        outputAmountBase = (post - preOutput).toString();
+      }
       return {
         kind: 'filled',
         signature,
         inputAmountBase: spec.inputAmountBase,
-        outputAmountBase: quoteResponse.outAmount,
+        outputAmountBase,
         feeUsdMicro: usdToMicro(0.0005 + 0.001).toString(),
         evidence: { signature, slot: latest.lastValidBlockHeight, live: true },
         commitment: 'confirmed',

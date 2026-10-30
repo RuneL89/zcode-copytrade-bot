@@ -218,11 +218,31 @@ An order becomes `REQUIRES_RECONCILIATION` when a signed/submitted outcome is
 unknown. **Never blindly retry such an order** — the state machine makes that
 transition impossible.
 
+Since 2026-10-30 the engine only reaches that state for genuinely ambiguous
+outcomes. Failures that provably never left the wallet (Jupiter quote or build
+errors, RPC preflight/simulation rejections, insufficient SOL for fees) are
+recorded as `failed` instead, and a fire retries them up to three times with
+backoff before it gives up. If a position is still open after those retries the
+handoff is blocked with a `close_failed` case, because the monitor only manages
+the active trader's positions and a FIRED trader would strand them.
+
+Exits also sell **what the wallet holds**, not the recorded amount: the copied
+size comes from quoted outputs at entry and can exceed the delivered balance
+after slippage, which is what produced the 2026-10-30 `InsufficientFunds` (6024)
+reconciliations on GTA6 and PURR. When the on-chain balance is unreadable the
+recorded amount is used unchanged, and when it is zero the exit is refused with
+an explicit failed intent.
+
+The wallet needs SOL for fees and rent. Below 0.02 SOL the notifier warns once an
+hour; below 0.005 SOL exits fail closed before signing.
+
 To resolve a case (paper or live):
 
 1. Audit → RECONCILIATION CASES shows intent id + detail.
 2. On-chain (live only): look up the transaction by signature on a Solana
-   explorer or via Helius `getTransaction`.
+   explorer or via Helius `getTransaction`. A case with **no signature** never
+   reached the chain, so it can be retried or marked failed without chain
+   evidence; a case **with** a signature needs the on-chain check.
    - Confirmed with balance changes → record the evidence; the position/fill
      stands. Cases whose intent reaches `confirmed` auto-resolve at restart.
    - Definitively failed → mark the intent failed and close the case.

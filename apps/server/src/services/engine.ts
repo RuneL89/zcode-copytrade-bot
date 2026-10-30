@@ -20,12 +20,18 @@ import {
   type LeaderTxSummary,
 } from '@zcode-bot/core';
 import type { Executor, ExecOutcome, IntentSpec, QuoteCheck } from './executors.js';
+import { MIN_SOL_FOR_FEES_LAMPORTS, SOL_LOW_WATERMARK_LAMPORTS } from './executors.js';
 import type { ControlService } from './control.js';
 import type { Notifier } from '@zcode-bot/providers';
 
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+/** Close-out attempts per position during a fire (pre-submission failures only). */
+const CLOSE_ATTEMPTS = 3;
+const CLOSE_BACKOFF_MS = 800;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface EngineCallbacks {
   /** Called when a close unit pushes the streak to the fire threshold. */
@@ -410,16 +416,56 @@ export class CopyEngine {
     return 'failed';
   }
 
-  async closeAllForActivation(activationId: string): Promise<{ closed: number; unknown: number }> {
+  async closeAllForActivation(activationId: string): Promise<{
+    closed: number;
+    unknown: number;
+    failed: number;
+  }> {
     const positions = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
     let closed = 0;
     let unknown = 0;
-    for (const p of positions) {
-      const r = await this.closePosition(p.positionId, 'fire_close_all');
-      if (r === 'closed') closed++;
-      else if (r === 'unknown') unknown++;
+    let failed = 0;
+    for (let i = 0; i < positions.length; i++) {
+      // Space the closes: two quotes back to back is what tripped Jupiter's 429.
+      if (i > 0) await sleep(400 + Math.random() * 400);
+      const position = positions[i]!;
+      let result: 'closed' | 'unknown' | 'failed' = 'failed';
+      for (let attempt = 1; attempt <= CLOSE_ATTEMPTS; attempt++) {
+        result = await this.closePosition(position.positionId, 'fire_close_all');
+        if (result !== 'failed') break;
+        if (attempt < CLOSE_ATTEMPTS) {
+          const backoff = CLOSE_BACKOFF_MS * 2 ** (attempt - 1) + Math.random() * 400;
+          repo.audit(
+            this.db,
+            'firing',
+            `close retry ${attempt + 1}/${CLOSE_ATTEMPTS} in ${Math.round(backoff)}ms`,
+            {
+              positionId: position.positionId,
+              mint: position.mint,
+            },
+          );
+          await sleep(backoff);
+        }
+      }
+      if (result === 'closed') closed++;
+      else if (result === 'unknown') unknown++;
+      else failed++;
     }
-    return { closed, unknown };
+    return { closed, unknown, failed };
+  }
+
+  /** Warn (throttled) before the wallet runs out of fee headroom. */
+  private lastLowSolAlertAt = 0;
+  private alertLowSol(lamports: number): void {
+    const now = Date.now();
+    if (now - this.lastLowSolAlertAt < 3_600_000) return;
+    this.lastLowSolAlertAt = now;
+    repo.audit(this.db, 'trade', `wallet SOL low: ${(lamports / 1e9).toFixed(4)} SOL`, { lamports });
+    void this.notifier
+      .notify(
+        `⚠️ ZCode Bot: wallet SOL is ${(lamports / 1e9).toFixed(4)} — exits still work but top up soon.`,
+      )
+      .catch(() => {});
   }
 
   // ---------------------------------------------------------------------
@@ -641,9 +687,53 @@ export class CopyEngine {
     const position = repo.getPosition(this.db, positionId);
     if (!position) return 'no-position';
 
+    // Sell what the wallet actually holds, never more. Recorded amounts come
+    // from quoted outputs at entry and can exceed the delivered balance after
+    // slippage; asking Jupiter for more fails with InsufficientFunds (6024).
+    const remainingRecorded = BigInt(position.remainingTokenBase);
+    const onChain = (await this.executor.availableBalance?.(position.mint).catch(() => null)) ?? null;
+    if (onChain !== null && exitBase > onChain) {
+      repo.audit(this.db, 'trade', 'exit clamped to on-chain balance', {
+        positionId,
+        requestedBase: exitBase.toString(),
+        onChainBase: onChain.toString(),
+      });
+      exitBase = onChain;
+    }
+    // The chain is the truth for what remains after the sale.
+    if (onChain !== null) remainingAfter = onChain > exitBase ? onChain - exitBase : 0n;
+    else if (remainingRecorded >= exitBase) remainingAfter = remainingRecorded - exitBase;
+
     // Output notional estimation for the exit (token -> funding mint).
     const inputUsdEstimate = await this.estimateUsdMicroForTokens(position.mint, exitBase).catch(() => 0n);
     const intentId = 'intent_' + randomUUID();
+
+    // Nothing on chain to sell: record it and fail closed. The position stays
+    // open (never silently "closed" without evidence); the caller's retry and
+    // handoff guards surface it to the operator.
+    if (exitBase <= 0n) {
+      const detail = 'on-chain balance is 0 for this mint — nothing to sell';
+      repo.insertIntent(this.db, {
+        intentId,
+        kind: full ? 'fire_close' : 'exit',
+        mode: this.executor.mode,
+        activationId: position.activationId,
+        candidateId: position.candidateId,
+        positionId,
+        mint: position.mint,
+        inputMint: position.mint,
+        inputAmountBase: '0',
+        inputUsdMicro: '0',
+        state: 'failed',
+        reason: detail,
+        idempotencyKey: `exit:${positionId}:0:${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      repo.audit(this.db, 'trade', `exit skipped — ${detail}`, { positionId, mint: position.mint });
+      return { kind: 'failed', error: detail };
+    }
+
     const spec: IntentSpec = {
       intentId,
       kind: full
@@ -708,6 +798,25 @@ export class CopyEngine {
       return { kind: 'unknown', detail };
     }
 
+    // Fee headroom: a wallet this low on SOL cannot reliably pay swap fees and
+    // account rent, so the swap would fail at preflight. Fail closed with an
+    // explicit reason instead of producing a misleading reconciliation case.
+    const solLamports = (await this.executor.availableSolLamports?.().catch(() => null)) ?? null;
+    if (this.executor.mode === 'live' && solLamports !== null) {
+      if (solLamports < MIN_SOL_FOR_FEES_LAMPORTS) {
+        const detail = `insufficient SOL for fees: ${solLamports} lamports (need ${MIN_SOL_FOR_FEES_LAMPORTS}) — exit NOT sent`;
+        repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
+        repo.audit(this.db, 'trade', `exit blocked — ${detail}`, { positionId });
+        void this.notifier
+          .notify(
+            `⚠️ ZCode Bot: wallet SOL is ${(solLamports / 1e9).toFixed(4)} — too low to pay fees. Top up before exits will work.`,
+          )
+          .catch(() => {});
+        return { kind: 'failed', error: detail };
+      }
+      if (solLamports < SOL_LOW_WATERMARK_LAMPORTS) this.alertLowSol(solLamports);
+    }
+
     // Exits are risk-reducing: run them even under pause; skip quote gates for
     // mirrored exits (leader already sold; our job is to mirror, fast).
     let outcome: ExecOutcome;
@@ -720,7 +829,9 @@ export class CopyEngine {
       }));
       outcome = await this.executor.execute(spec, quote);
     } catch (e) {
-      outcome = { kind: 'unknown', detail: (e as Error).message };
+      // execute() contains its own send/confirm classification, so anything
+      // escaping it happened before a signature existed: retryable, not unknown.
+      outcome = { kind: 'failed', error: `executor error before submission: ${(e as Error).message}` };
     }
 
     if (
