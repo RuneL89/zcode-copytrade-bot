@@ -131,6 +131,24 @@ never hires a trader the board has already dropped. Scans come from the sweep's
 30-minute Procedure A imports; the last five scans live in
 `leaderboard_observations` (`repo.listRecentScans`), pruned after 30 days.
 
+### Hiring pause: fired → fresh research → auto-hire (wired 2026-10-30)
+
+After a fire, the replacement walk will **not** spend an ordering that predates
+the newest board scan (5-minute tolerance; the guard stands down when no scan is
+captured or the scan itself is older than 2 hours, so a broken capture pipeline
+can never freeze hiring). Hiring from such an ordering would pick the best
+candidate from hours ago; instead the bot pauses
+(`PAUSED_WAITING_FOR_ZCODE`, handoff event `paused_for_fresh_research` with the
+"ordering … predates the latest scan …" detail), records a `research_request`
+control event (throttled to one per scan), and the sweep's trigger — *"a
+research_request newer than the newest recommendation"* — dispatches the
+researcher. When the fresh ordering is validated, the idle-hire path activates
+its top eligible candidate automatically. The dashboard shows the whole loop in
+the NOW COPYING card while paused: `FIRED → RESEARCHING → AUTO-HIRE` with the
+scan age, ordering age and the pause reason; the fired overlay (first 20s after
+a fire) carries the real fire reason and the same promise. The same guard
+applies to cold start and idle resume.
+
 ### Stall watcher (wired 2026-10-29)
 
 The hourly discipline sweep fires the hired leader when their wallet has shown no

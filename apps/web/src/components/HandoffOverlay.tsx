@@ -23,6 +23,10 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
 
   if (!visible) return null;
   const waiting = handoff.phase === 'WAITING_FOR_ZCODE' || handoff.toHandle === null;
+  const freshResearch = handoff.phase === 'PAUSED_FOR_FRESH_RESEARCH';
+  const reasonLine = `${(handoff.fromReason ?? '2 consecutive losses').toUpperCase()} → ${
+    freshResearch ? 'FRESH RESEARCH FIRST' : 'NEXT CANDIDATE'
+  }`;
 
   return (
     <div
@@ -45,7 +49,7 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
               </p>
             </div>
           </div>
-          <p className="label mt-2 !text-[9px]">2 CONSECUTIVE LOSSES → NEXT CANDIDATE</p>
+          <p className="label mt-2 !text-[9px]">{reasonLine}</p>
 
           {/* rotated red stamp */}
           <div
@@ -81,12 +85,22 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
               className="anim-reveal rounded-[18px] bg-orange-50 border border-orange-200 p-4"
               data-testid="waiting-zcode"
             >
-              <p className="label !text-orange-700">WAITING FOR ZCODE</p>
-              <p className="text-[12px] text-[#7d78a0] mt-1">
-                No eligible replacement in the latest recommendation. Monitoring, mirrored exits,
-                reconciliation, and emergency controls continue. Use the ZCode scheduled task’s “Run now” or
-                import a fresh recommendation.
+              <p className="label !text-orange-700">
+                {freshResearch ? 'HIRED PAUSED - FRESH RESEARCH FIRST' : 'WAITING FOR ZCODE'}
               </p>
+              {freshResearch ? (
+                <p className="text-[12px] text-[#7d78a0] mt-1">
+                  The board has refreshed since the last recommendation, so the bot will not hire
+                  from a stale ranking. The next research pass re-ranks the current board and the
+                  best candidate right now is hired automatically.
+                </p>
+              ) : (
+                <p className="text-[12px] text-[#7d78a0] mt-1">
+                  No eligible replacement in the latest recommendation. Monitoring, mirrored exits,
+                  reconciliation, and emergency controls continue. Use the ZCode scheduled task's
+                  "Run now" action or import a fresh recommendation.
+                </p>
+              )}
             </div>
           ) : (
             <div

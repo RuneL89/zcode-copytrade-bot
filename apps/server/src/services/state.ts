@@ -144,14 +144,36 @@ export interface DashboardState {
     }>;
   };
   handoff: null | {
-    phase: 'FIRED' | 'WAITING_FOR_ZCODE';
+    phase: 'FIRED' | 'WAITING_FOR_ZCODE' | 'PAUSED_FOR_FRESH_RESEARCH';
     fromHandle: string;
     fromRank: number | null;
     fromPnlText: string | null;
+    /** Why the outgoing trader was fired (rank / rotation / stall / idle). */
+    fromReason: string | null;
     toHandle: string | null;
     toRank: number | null;
     atIso: string;
     demo: boolean;
+  };
+  /**
+   * The hiring loop, for the dashboard's hire/fire panel: after a fire the bot
+   * pauses instead of hiring from a ranking that predates the latest board
+   * scan, fresh research re-ranks the current board, and the top candidate is
+   * hired automatically once that ordering is validated.
+   */
+  hiring: {
+    /** No trader active and the pause is the deliberate wait for fresh research. */
+    pausedForResearch: boolean;
+    /** One-line reason from the latest pause (stale ordering / exhausted shortlist). */
+    reason: string | null;
+    /** Board scan the ordering is compared against (null when none captured). */
+    latestScanAt: string | null;
+    /** Creation time of the newest recommendation, valid or not. */
+    recommendationAt: string | null;
+    /** A research_request control event was recorded after the pause began. */
+    researchRequested: boolean;
+    /** Constant: a validated ordering auto-hires its top eligible candidate. */
+    autoResume: true;
   };
   recommendation: {
     status: 'NONE' | 'VALID' | 'EXPIRED' | 'REJECTED' | 'ABSTAIN';

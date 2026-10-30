@@ -103,14 +103,25 @@ export interface DashboardState {
     }>;
   };
   handoff: null | {
-    phase: 'FIRED' | 'WAITING_FOR_ZCODE';
+    phase: 'FIRED' | 'WAITING_FOR_ZCODE' | 'PAUSED_FOR_FRESH_RESEARCH';
     fromHandle: string;
     fromRank: number | null;
     fromPnlText: string | null;
+    /** Why the outgoing trader was fired (rank / rotation / stall / idle). */
+    fromReason: string | null;
     toHandle: string | null;
     toRank: number | null;
     atIso: string;
     demo: boolean;
+  };
+  /** The fired → paused → research → auto-hire cycle, for the hire/fire panel. */
+  hiring: {
+    pausedForResearch: boolean;
+    reason: string | null;
+    latestScanAt: string | null;
+    recommendationAt: string | null;
+    researchRequested: boolean;
+    autoResume: true;
   };
   recommendation: {
     status: string;

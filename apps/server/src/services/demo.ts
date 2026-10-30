@@ -321,12 +321,21 @@ export class DemoEngine {
               fromPnlText: `${
                 tl.traders.find((t) => t.handle === lastHandoff.fromHandle)?.displayedPnl7dPct ?? 0
               }% 7d (displayed)`,
+              fromReason: waitingForZcode ? null : '2 consecutive losses',
               toHandle: lastHandoff.toHandle,
               toRank: lastHandoff.toRank,
               atIso: new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString(),
               demo: true,
             }
           : null,
+      hiring: {
+        pausedForResearch: waitingForZcode,
+        reason: waitingForZcode ? 'DEMO: shortlist exhausted — fresh research requested' : null,
+        latestScanAt: null,
+        recommendationAt: null,
+        researchRequested: waitingForZcode,
+        autoResume: true,
+      },
       recommendation: {
         status: 'VALID',
         ageMs: Math.round(elapsed * 1000),

@@ -114,6 +114,7 @@ export class StateBuilder {
 
     // --- app state -------------------------------------------------------
     const activation = repo.activeActivation(this.db);
+    const lastHandoff = repo.listHandoffEvents(this.db, 1)[0];
     let appState: DashboardState['appState'] = 'RUNNING';
     if (this.control.flags.emergencyStopped) appState = 'EMERGENCY_STOPPED';
     else if (repo.openReconciliationCases(this.db).length > 0 && !activation)
@@ -121,10 +122,11 @@ export class StateBuilder {
     else if (activation?.state === 'REQUIRES_RECONCILIATION') appState = 'REQUIRES_RECONCILIATION';
     else if (this.control.flags.newEntriesPaused) appState = 'PAUSED_NEW_ENTRIES';
     else if (!activation) {
-      // No active trader: waiting for a candidate (initial) or ZCode (post-firing).
-      const lastHandoff = repo.listHandoffEvents(this.db, 1)[0];
+      // No active trader: waiting for a candidate (initial), ZCode (post-firing
+      // pause), or fresh research (the ordering predates the newest scan).
       appState =
-        lastHandoff?.status === 'paused_waiting_for_zcode'
+        lastHandoff?.status === 'paused_waiting_for_zcode' ||
+        lastHandoff?.status === 'paused_for_fresh_research'
           ? 'PAUSED_WAITING_FOR_ZCODE'
           : 'PAUSED_WAITING_FOR_CANDIDATE';
     }
@@ -382,24 +384,61 @@ export class StateBuilder {
       : [];
 
     // --- handoff (drives the fired animation) --------------------------------
-    const lastHandoff = repo.listHandoffEvents(this.db, 1)[0];
     let handoff: DashboardState['handoff'] = null;
     if (lastHandoff && now - Date.parse(lastHandoff.createdAt) < 20_000) {
       const from = candidatesRows.find((c) => c.candidateId === lastHandoff.fromCandidateId);
       const to = candidatesRows.find((c) => c.candidateId === lastHandoff.toCandidateId);
+      // Fire reason from the outgoing trader's latest firing event, so the
+      // overlay shows rank/rotation/stall/idle instead of a hardcoded cause.
+      const firedActivation = activations
+        .filter((a) => a.candidateId === lastHandoff.fromCandidateId && a.state === 'FIRED')
+        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+      const fireReason = firedActivation
+        ? (repo.latestFiringEventForActivation(this.db, firedActivation.activationId)?.reason ?? null)
+        : null;
       handoff = {
-        phase: lastHandoff.status === 'activated' ? 'FIRED' : 'WAITING_FOR_ZCODE',
+        phase:
+          lastHandoff.status === 'activated'
+            ? 'FIRED'
+            : lastHandoff.status === 'paused_for_fresh_research'
+              ? 'PAUSED_FOR_FRESH_RESEARCH'
+              : 'WAITING_FOR_ZCODE',
         fromHandle: from?.handle ?? lastHandoff.fromCandidateId ?? '',
         fromRank: from?.weeklyRank ?? null,
         fromPnlText: from?.displayedWeeklyPnlUsdMicro
           ? `${(Number(from.displayedWeeklyPnlUsdMicro) / 1e6).toFixed(0)}% 7d (displayed)`
           : null,
+        fromReason: fireReason,
         toHandle: to?.handle ?? null,
         toRank: to?.weeklyRank ?? null,
         atIso: lastHandoff.createdAt,
         demo: mode === 'demo',
       };
     }
+
+    // --- hiring loop (the fired → paused → research → auto-hire cycle) ------
+    const pausedForResearch =
+      !activation &&
+      (lastHandoff?.status === 'paused_waiting_for_zcode' ||
+        lastHandoff?.status === 'paused_for_fresh_research');
+    const latestScanRow = repo.listRecentScans(this.db, 1)[0] ?? null;
+    const researchRequested = pausedForResearch
+      ? repo
+          .listControlEvents(this.db, 20)
+          .some(
+            (e) =>
+              (e.type === 'research_request' || e.type === 'replacement_request') &&
+              e.createdAt >= (lastHandoff?.createdAt ?? ''),
+          )
+      : false;
+    const hiring: DashboardState['hiring'] = {
+      pausedForResearch,
+      reason: pausedForResearch ? (lastHandoff?.detail ?? null) : null,
+      latestScanAt: latestScanRow?.observedAt ?? null,
+      recommendationAt: latest?.createdAt ?? null,
+      researchRequested,
+      autoResume: true,
+    };
 
     const pendingRecon = repo.openReconciliationCases(this.db).length;
     const health = this.lastKnownHealth;
@@ -452,6 +491,7 @@ export class StateBuilder {
         entries: candidateEntries,
       },
       handoff,
+      hiring,
       recommendation: {
         status: recStatus,
         ageMs: latest ? Math.max(0, now - Date.parse(latest.createdAt)) : null,

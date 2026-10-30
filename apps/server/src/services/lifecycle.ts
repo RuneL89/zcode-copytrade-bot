@@ -33,6 +33,11 @@ export const DAYTRADER_MAX_STALL_HOURS_DEFAULT = 20;
  * runs every 30 min, so exactly the sweep following a refresh qualifies).
  */
 export const ROTATION_WINDOW_MS = 45 * 60 * 1000;
+/**
+ * Grace on the freshness guard: an ordering written this long before the
+ * newest scan is still current (recommendations arrive seconds after a sweep).
+ */
+export const ORDERING_SCAN_TOLERANCE_MS = 5 * 60 * 1000;
 
 export interface ActivityGateInput {
   lastSwapAgeHours: number | null;
@@ -229,6 +234,17 @@ export class TraderLifecycle {
     if (repo.activeActivation(this.db)) return { status: 'IDLE' };
     const latest = this.latestValidRecommendation;
     if (!latest) return { status: 'IDLE' };
+    // Never resume from a stale ordering: the bot stays paused until the sweep
+    // produces an ordering that postdates the latest board scan.
+    const fresh = this.orderingFreshness(latest.payload.recommendationId);
+    if (!fresh.ok) {
+      repo.audit(this.db, 'activation', 'idle hire deferred: stale ordering, fresh research requested', {
+        recommendationId: latest.payload.recommendationId,
+        detail: fresh.detail,
+      });
+      this.requestFreshResearch(fresh.scanObservedAt, fresh.detail);
+      return { status: 'NO_CANDIDATE' };
+    }
     for (const c of latest.payload.orderedCandidates) {
       const act = await this.activate(c.candidateId, 'zcode_shortlist', true);
       if (act.ok) {
@@ -350,6 +366,7 @@ export class TraderLifecycle {
     }
 
     const outcome = await this.resolveReplacement(activation.candidateId);
+    this.setFiringHandoffStatus(activationId, outcome.status);
     if (outcome.status === 'ACTIVATED') {
       repo.audit(this.db, 'firing', `fired ${activation.candidateId}; activated ${outcome.candidateId}`, {
         activationId,
@@ -370,10 +387,109 @@ export class TraderLifecycle {
     return outcome;
   }
 
+  /**
+   * Freshness guard for hiring: an ordering may only be spent while it
+   * postdates the newest board scan. A recommendation written hours ago ranks
+   * traders the board has since replaced; spending it hires the best candidate
+   * from hours ago. On refusal the bot pauses and the sweep's research trigger
+   * produces a fresh ordering, which the idle-hire path then activates.
+   *
+   * Stands down when no scan exists or the scan itself is stale, so a broken
+   * capture pipeline can never freeze hiring forever.
+   */
+  private orderingFreshness(recommendationId: string): {
+    ok: boolean;
+    detail: string;
+    scanObservedAt: string | null;
+  } {
+    const scan = repo.listRecentScans(this.db, 1)[0] ?? null;
+    if (!scan) return { ok: true, detail: 'no board scan to compare', scanObservedAt: null };
+    const scanMs = Date.parse(scan.observedAt);
+    if (!Number.isFinite(scanMs) || Date.now() - scanMs > SCAN_FRESH_MS) {
+      return { ok: true, detail: 'board scan stale: guard stands down', scanObservedAt: scan.observedAt };
+    }
+    const rec = repo.getRecommendation(this.db, recommendationId);
+    if (!rec || !Number.isFinite(Date.parse(rec.createdAt))) {
+      return { ok: true, detail: 'recommendation timestamp unknown', scanObservedAt: scan.observedAt };
+    }
+    const recMs = Date.parse(rec.createdAt);
+    // Small tolerance: an ordering written just before a scan is still current.
+    if (recMs + ORDERING_SCAN_TOLERANCE_MS < scanMs) {
+      return {
+        ok: false,
+        detail: `ordering written ${rec.createdAt} predates the latest scan ${scan.observedAt}`,
+        scanObservedAt: scan.observedAt,
+      };
+    }
+    return { ok: true, detail: 'ordering postdates the latest scan', scanObservedAt: scan.observedAt };
+  }
+
+  /**
+   * Leave a research_request control event the sweep can act on. Throttled to
+   * one request per board scan: the idle-hire path runs on every state rebuild
+   * while the bot is paused and must not flood control_events.
+   */
+  private requestFreshResearch(scanObservedAt: string | null, detail: string): void {
+    if (scanObservedAt) {
+      const alreadyRequested = repo
+        .listControlEvents(this.db, 20)
+        .some((e) => e.type === 'research_request' && e.createdAt >= scanObservedAt);
+      if (alreadyRequested) return;
+    }
+    repo.controlEvent(this.db, 'research_request', detail, 'worker');
+  }
+
+  /** Record how a fire's handoff ended, so the audit trail shows the pause. */
+  private setFiringHandoffStatus(activationId: string, outcomeStatus: string): void {
+    const event = repo.latestFiringEventForActivation(this.db, activationId);
+    if (!event || event.handoffStatus !== 'pending') return;
+    repo.updateFiringEvent(this.db, event.id, { handoffStatus: this.handoffStatusFor(outcomeStatus) });
+  }
+
+  /** Handoff-status label for a fire: activated, or which kind of pause. */
+  private handoffStatusFor(outcomeStatus: string): string {
+    if (outcomeStatus === 'ACTIVATED') return 'activated';
+    const lastHandoff = repo.listHandoffEvents(this.db, 1)[0];
+    return lastHandoff?.status === 'paused_for_fresh_research'
+      ? 'paused_for_fresh_research'
+      : 'paused_waiting_for_zcode';
+  }
+
   /** Consume the ordered shortlist after firing (zcode mode default). */
   async resolveReplacement(firedCandidateId: string): Promise<HandoffOutcome> {
     const snapshotCandidates = this.snapshots.currentSnapshot()?.candidates ?? [];
     const latest = this.latestValidRecommendation;
+
+    if (this.risk.CANDIDATE_REPLACEMENT_MODE !== 'deterministic_fallback' && latest) {
+      const fresh = this.orderingFreshness(latest.payload.recommendationId);
+      if (!fresh.ok) {
+        repo.audit(this.db, 'firing', 'replacement deferred: stale ordering, fresh research requested', {
+          firedCandidateId,
+          recommendationId: latest.payload.recommendationId,
+          detail: fresh.detail,
+        });
+        // Persist the pause so the dashboard shows the fired → research →
+        // auto-hire state instead of silently keeping the old handoff event.
+        repo.insertHandoffEvent(this.db, {
+          fromCandidateId: firedCandidateId,
+          toCandidateId: null,
+          status: 'paused_for_fresh_research',
+          recommendationId: latest.payload.recommendationId,
+          source: 'zcode_shortlist',
+          detail: fresh.detail,
+          createdAt: new Date().toISOString(),
+        });
+        repo.recordChoice(this.db, {
+          recommendationId: latest.payload.recommendationId,
+          chosenCandidateId: null,
+          firedFromCandidateId: firedCandidateId,
+          result: 'PAUSED_FOR_FRESH_RESEARCH',
+          skippedJson: '[]',
+        });
+        this.requestFreshResearch(fresh.scanObservedAt, fresh.detail);
+        return { status: 'PAUSED_WAITING_FOR_ZCODE', skipped: [] };
+      }
+    }
 
     if (this.risk.CANDIDATE_REPLACEMENT_MODE === 'deterministic_fallback') {
       const ranked = rankCandidatesDeterministically(snapshotCandidates, this.eligibilityCtx());
@@ -634,7 +750,7 @@ export class TraderLifecycle {
     const event = repo.latestFiringEventForActivation(this.db, activationId);
     if (event) {
       repo.updateFiringEvent(this.db, event.id, {
-        handoffStatus: outcome.status === 'ACTIVATED' ? 'activated' : 'paused_waiting_for_zcode',
+        handoffStatus: this.handoffStatusFor(outcome.status),
         closeCompletedAt: new Date().toISOString(),
       });
     }

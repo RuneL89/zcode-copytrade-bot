@@ -1,25 +1,33 @@
 import type { DashboardState } from '../types';
-import { signedUsd, usd } from '../types';
+import { signedUsd, usd, timeAgo } from '../types';
 import { Avatar } from './charts';
 
 export function ActiveTraderCard({ state }: { state: DashboardState }) {
   const t = state.activeTrader;
   if (!t) {
+    const pausedForResearch =
+      state.appState === 'PAUSED_WAITING_FOR_ZCODE' && (state.hiring?.pausedForResearch ?? false);
     return (
       <section className="card p-5 mb-4" aria-label="active trader">
         <p className="label">NOW COPYING</p>
-        <p className="mt-2 text-[15px] font-semibold">
-          {state.appState === 'PAUSED_WAITING_FOR_ZCODE'
-            ? 'WAITING FOR ZCODE'
-            : state.appState === 'PAUSED_WAITING_FOR_CANDIDATE'
-              ? 'WAITING FOR A CANDIDATE'
-              : 'NO ACTIVE TRADER'}
-        </p>
-        <p className="text-[12px] text-[#7d78a0] mt-1">
-          {state.appState === 'PAUSED_WAITING_FOR_ZCODE'
-            ? 'Recommendation exhausted, stale, or missing. Use the ZCode scheduled task’s “Run now” action or import a fresh recommendation in Settings. Exits and monitoring continue.'
-            : 'Activate a candidate from Settings, or wait for a fresh ZCode recommendation.'}
-        </p>
+        {pausedForResearch ? (
+          <HiringPausedPanel state={state} />
+        ) : (
+          <>
+            <p className="mt-2 text-[15px] font-semibold">
+              {state.appState === 'PAUSED_WAITING_FOR_ZCODE'
+                ? 'WAITING FOR ZCODE'
+                : state.appState === 'PAUSED_WAITING_FOR_CANDIDATE'
+                  ? 'WAITING FOR A CANDIDATE'
+                  : 'NO ACTIVE TRADER'}
+            </p>
+            <p className="text-[12px] text-[#7d78a0] mt-1">
+              {state.appState === 'PAUSED_WAITING_FOR_ZCODE'
+                ? 'Recommendation exhausted, stale, or missing. Use the ZCode scheduled task’s “Run now” action or import a fresh recommendation in Settings. Exits and monitoring continue.'
+                : 'Activate a candidate from Settings, or wait for a fresh ZCode recommendation.'}
+            </p>
+          </>
+        )}
       </section>
     );
   }
@@ -77,6 +85,77 @@ export function ActiveTraderCard({ state }: { state: DashboardState }) {
 
       <HirePerformanceCard state={state} />
     </section>
+  );
+}
+
+/**
+ * The deliberate post-fire pause: the outgoing trader is gone, hiring is held
+ * so research can rank the CURRENT board, and the top candidate of that fresh
+ * ordering is hired automatically. The three chips are the whole loop — fired,
+ * researching, auto-hire — with the evidence times underneath.
+ */
+function HiringPausedPanel({ state }: { state: DashboardState }) {
+  const h = state.hiring;
+  const steps: Array<{ label: string; tone: 'done' | 'active' | 'todo'; hint: string }> = [
+    { label: 'FIRED', tone: 'done', hint: 'positions closed' },
+    {
+      label: h?.researchRequested ? 'RESEARCHING ✓' : 'RESEARCHING…',
+      tone: 'active',
+      hint: h?.researchRequested ? 'run requested' : 'next sweep',
+    },
+    { label: 'AUTO-HIRE', tone: 'todo', hint: 'best candidate now' },
+  ];
+  return (
+    <div className="mt-2" data-testid="hiring-paused">
+      <p className="text-[15px] font-semibold text-orange-700">HIRED PAUSED — FRESH RESEARCH FIRST</p>
+
+      <div className="mt-3 flex items-center gap-1.5" aria-label="hiring pipeline">
+        {steps.map((s, i) => (
+          <div key={s.label} className="flex items-center gap-1.5">
+            {i > 0 && <span className="text-[#c6c2dd] text-[11px]">→</span>}
+            <span
+              className={`rounded-full px-2.5 py-1 text-[9px] font-bold tracking-wide ${
+                s.tone === 'done'
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : s.tone === 'active'
+                    ? 'bg-orange-100 text-orange-700'
+                    : 'bg-white/70 text-[#7d78a0] border border-white'
+              }`}
+            >
+              {s.label}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[12px] text-[#7d78a0] mt-2.5 leading-snug">
+        The board has moved on since the last recommendation, so the bot won’t hire from a stale
+        ranking. The next sweep re-ranks the current board and the best candidate{' '}
+        <span className="font-semibold">right now</span> is hired automatically — no action needed.
+        Monitoring and emergency controls stay on.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]" data-testid="hiring-evidence">
+        <div>
+          <p className="label !text-[8.5px]">BOARD SCAN</p>
+          <p className="money font-semibold">
+            {h?.latestScanAt ? `${timeAgo(h.latestScanAt)} ago` : '—'}
+          </p>
+        </div>
+        <div>
+          <p className="label !text-[8.5px]">LAST ORDERING</p>
+          <p className="money font-semibold">
+            {h?.recommendationAt ? `${timeAgo(h.recommendationAt)} old` : '—'}
+          </p>
+        </div>
+      </div>
+
+      {h?.reason && (
+        <p className="mt-2 text-[10px] text-[#a29dbf] break-words" data-testid="hiring-pause-reason">
+          {h.reason}
+        </p>
+      )}
+    </div>
   );
 }
 
