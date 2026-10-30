@@ -411,6 +411,29 @@ export class Runtime {
     void this.resolveTokenSymbols().catch(() => undefined);
     void this.refreshFeeLedger().catch(() => undefined);
 
+    // Signature-less reconciliation cases were provably never submitted, so
+    // retrying their closes at boot is safe and unsticks a paused handoff.
+    // Skipped when the wallet is disarmed (the close would only re-report
+    // "wallet locked").
+    if (this.config.mode !== 'live' || this.liveExecutor) {
+      void this.lifecycle
+        .retrySignaturelessCloses('boot_reconciliation_retry')
+        .then((r) => {
+          if (r.retried > 0) {
+            repo.audit(
+              this.db.db,
+              'reconciliation',
+              `boot retry-close: ${r.retried} retried, ${r.closed} closed, ${r.failed} failed, ${r.skipped} skipped`,
+              r,
+            );
+            this.rebuildState();
+          }
+        })
+        .catch((e: Error) => {
+          repo.audit(this.db.db, 'reconciliation', `boot retry-close failed: ${e.message}`, {});
+        });
+    }
+
     if (this.snapshots.currentSnapshot() === null && repo.listCandidates(this.db.db).length > 0) {
       this.rebuildSnapshot();
     } else if (this.snapshots.currentSnapshot() === null) {

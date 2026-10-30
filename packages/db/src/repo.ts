@@ -669,6 +669,17 @@ export function updateFiringEvent(db: Db, id: number, patch: Partial<FiringEvent
   db.update(schema.firingEvents).set(patch).where(eq(schema.firingEvents.id, id)).run();
 }
 
+/** Most recent firing row for an activation (handoff bookkeeping). */
+export function latestFiringEventForActivation(db: Db, activationId: string) {
+  return db
+    .select()
+    .from(schema.firingEvents)
+    .where(eq(schema.firingEvents.activationId, activationId))
+    .orderBy(desc(schema.firingEvents.id))
+    .limit(1)
+    .get();
+}
+
 export function insertHandoffEvent(db: Db, input: HandoffEventInsert): void {
   db.insert(schema.handoffEvents).values(input).run();
 }

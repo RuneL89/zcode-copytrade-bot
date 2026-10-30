@@ -473,6 +473,19 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     return { ok: true, result };
   });
 
+  // Retries reconciliation cases whose intent has NO signature (provably never
+  // submitted) and completes the fire the failed close blocked. Cases with a
+  // signature are never retried: their outcome is genuinely ambiguous.
+  controlRoute('/api/control/retry-reconciliation-closes', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { confirm?: string };
+    if (body.confirm !== 'RETRY-CLOSE') {
+      return { error: 'retry-reconciliation-closes requires {"confirm":"RETRY-CLOSE"}' };
+    }
+    const result = await rt.lifecycle.retrySignaturelessCloses('manual_reconciliation_retry');
+    rt.rebuildState();
+    return { ok: true, result };
+  });
+
   app.post('/api/control/arm-live', requireAuth(sessions), requireCsrf, async (c) => {
     if (rt.config.mode !== 'live') return c.json({ error: 'MODE is not live' }, 400);
     const readiness = rt.readiness();

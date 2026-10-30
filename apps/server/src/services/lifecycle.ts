@@ -496,6 +496,182 @@ export class TraderLifecycle {
     return this.snapshots.currentSnapshot()?.candidates.find((c) => c.candidateId === candidateId) ?? null;
   }
 
+  // --- reconciliation retry (signature-less cases only) ----------------------
+
+  /**
+   * Retry closes for reconciliation cases whose intent has NO transaction
+   * signature. Such an intent provably never reached the chain, so re-running
+   * the exit cannot double-sell; the engine sells the wallet's real balance.
+   * Cases WITH a signature are never retried (ambiguous outcome).
+   *
+   * A successful close resolves its case and completes the fire it blocked:
+   * the activation becomes FIRED and the replacement walk runs, so the bot can
+   * leave REQUIRES_RECONCILIATION without a hand edit.
+   */
+  async retrySignaturelessCloses(reason = 'reconciliation_retry'): Promise<{
+    retried: number;
+    closed: number;
+    failed: number;
+    skipped: number;
+    handoff: Array<{ activationId: string; status: string }>;
+  }> {
+    const out: {
+      retried: number;
+      closed: number;
+      failed: number;
+      skipped: number;
+      handoff: Array<{ activationId: string; status: string }>;
+    } = { retried: 0, closed: 0, failed: 0, skipped: 0, handoff: [] };
+    if (!this.engine) return out;
+
+    const touched = new Set<string>();
+    for (const c of repo.openReconciliationCases(this.db)) {
+      if (!c.intentId || !c.positionId) {
+        out.skipped++; // summary case: resolved below once nothing is held
+        continue;
+      }
+      const intent = repo.getIntent(this.db, c.intentId);
+      if (!intent || intent.txSignature || intent.state !== 'requires_reconciliation') {
+        out.skipped++; // has a signature (ambiguous) or already resolved elsewhere
+        continue;
+      }
+      const position = repo.getPosition(this.db, c.positionId);
+      if (!position || position.status !== 'requires_reconciliation') {
+        out.skipped++;
+        continue;
+      }
+      out.retried++;
+      const result = await this.engine.closePosition(c.positionId, reason);
+      if (result === 'closed') {
+        out.closed++;
+        touched.add(position.activationId);
+        repo.resolveReconciliationCase(this.db, c.id);
+        repo.audit(this.db, 'reconciliation', `retry-close filled; case ${c.id} resolved`, {
+          positionId: c.positionId,
+          intentId: c.intentId,
+          reason,
+        });
+      } else {
+        out.failed++;
+        repo.audit(this.db, 'reconciliation', `retry-close ${result}; case ${c.id} stays open`, {
+          positionId: c.positionId,
+          intentId: c.intentId,
+        });
+      }
+    }
+
+    for (const activationId of touched) {
+      const res = await this.completeBlockedFire(activationId);
+      out.handoff.push({ activationId, status: res.status });
+    }
+
+    // Clear the parent "fire close-out" summary case once no position is held.
+    const stillHeld = repo
+      .listPositions(this.db, 1000)
+      .filter((p) => ['open', 'partially_closed', 'requires_reconciliation'].includes(p.status));
+    if (stillHeld.length === 0) {
+      for (const c of repo.openReconciliationCases(this.db)) {
+        if (!c.intentId && !c.positionId) {
+          repo.resolveReconciliationCase(this.db, c.id);
+          repo.audit(this.db, 'reconciliation', `summary case ${c.id} resolved: no positions held`, {});
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Finish a fire that was blocked by reconciliation: only once the activation
+   * holds nothing does it become FIRED and hand off to the ordering. Refuses
+   * when any position or attributable case remains.
+   */
+  async completeBlockedFire(activationId: string): Promise<{ status: string }> {
+    const activation = repo.getActivation(this.db, activationId);
+    if (!activation) return { status: 'NOT_FOUND' };
+    if (activation.state !== 'REQUIRES_RECONCILIATION') return { status: 'NOT_BLOCKED' };
+
+    const held = repo
+      .listPositions(this.db, 1000)
+      .filter(
+        (p) =>
+          p.activationId === activationId &&
+          ['open', 'partially_closed', 'requires_reconciliation'].includes(p.status),
+      );
+    if (held.length > 0) {
+      repo.audit(this.db, 'reconciliation', `fire still blocked: ${held.length} position(s) not closed`, {
+        activationId,
+      });
+      return { status: 'STILL_BLOCKED' };
+    }
+    const blockingCases = repo.openReconciliationCases(this.db).filter((c) => {
+      if (c.positionId) {
+        return repo.getPosition(this.db, c.positionId)?.activationId === activationId;
+      }
+      if (c.intentId) {
+        return repo.getIntent(this.db, c.intentId)?.activationId === activationId;
+      }
+      return false;
+    });
+    if (blockingCases.length > 0) {
+      repo.audit(this.db, 'reconciliation', `fire still blocked: ${blockingCases.length} case(s) open`, {
+        activationId,
+      });
+      return { status: 'STILL_BLOCKED' };
+    }
+
+    if (!this.latestValidRecommendation) this.refreshRecommendationFromDb();
+    repo.updateActivation(this.db, activationId, {
+      state: 'FIRED',
+      endedAt: new Date().toISOString(),
+      endReason: 'fired',
+    });
+    repo.audit(this.db, 'firing', `blocked fire completed after reconciliation: ${activation.candidateId}`, {
+      activationId,
+    });
+
+    const outcome = await this.resolveReplacement(activation.candidateId);
+    const event = repo.latestFiringEventForActivation(this.db, activationId);
+    if (event) {
+      repo.updateFiringEvent(this.db, event.id, {
+        handoffStatus: outcome.status === 'ACTIVATED' ? 'activated' : 'paused_waiting_for_zcode',
+        closeCompletedAt: new Date().toISOString(),
+      });
+    }
+    if (outcome.status === 'ACTIVATED') {
+      repo.audit(this.db, 'firing', `fired ${activation.candidateId}; activated ${outcome.candidateId}`, {
+        activationId,
+        source: outcome.source,
+      });
+    } else {
+      repo.controlEvent(
+        this.db,
+        'replacement_request',
+        'no eligible candidate; use the ZCode scheduled task "Run now" or import a fresh recommendation',
+        'worker',
+      );
+      repo.audit(this.db, 'firing', 'fired; PAUSED_WAITING_FOR_ZCODE', {
+        activationId,
+        skipped: outcome.skipped,
+      });
+    }
+    return { status: outcome.status };
+  }
+
+  /** Load the freshest unexpired validated recommendation, when one exists. */
+  private refreshRecommendationFromDb(): void {
+    const row = repo.latestValidRecommendation(this.db);
+    if (!row || Date.parse(row.expiresAt) <= Date.now()) return;
+    const entries = repo.listRecommendationCandidates(this.db, row.recommendationId);
+    if (entries.length === 0) return;
+    this.latestValidRecommendation = {
+      payload: {
+        recommendationId: row.recommendationId,
+        orderedCandidates: entries.map((e) => ({ candidateId: e.candidateId, rank: e.rank })),
+        expiresAt: row.expiresAt,
+      },
+    };
+  }
+
   // --- rotation -------------------------------------------------------------
 
   /**
