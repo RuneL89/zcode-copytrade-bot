@@ -12,7 +12,7 @@ stateDiagram-v2
     Handoff --> Paused: no acceptable candidate
     Paused --> Watching: fresh shortlist or manual pick
     note right of Watching : a winning unit resets the loss count, a breakeven leaves it unchanged. The rank rule stands down when the newest scan is older than 2h
-    note right of Firing : a rotation only fires when nothing is open. There is no cooldown, a fired trader is hireable again the moment they qualify
+    note right of Firing : a rotation only fires when nothing is open. The only hiring ban is the immediate rehire. The just-fired trader stays un-hireable until a different trader is activated, with no timed cooldown
     state "Watching the trader" as Watching
     state "Firing, atomically" as Firing
     state "Handoff" as Handoff

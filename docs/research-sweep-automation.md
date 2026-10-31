@@ -72,8 +72,9 @@ skipped and audited. Since 2026-10-29 this is enabled in live mode
 Each snapshot rebuild runs the rank watch: the active trader is fired when absent
 from the latest captured scan once, or outside displayed top-3 in two consecutive
 scans; both branches stand down when the latest scan is older than 2 hours. Every
-hire requires board presence on the latest scan, and there is no fired-trader
-cooldown anymore. Audit category `rank-watch`; details in `docs/RUNBOOK.md`.
+hire requires board presence on the latest scan, and the only hiring ban is the
+just-fired exclusion (no timed cooldown). Audit category `rank-watch`; details in
+`docs/RUNBOOK.md`.
 
 ## Operational notes
 

@@ -128,8 +128,10 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Order-intent transitions are guarded (`packages/core/orderState.ts`); there
   is no transition from signed/submitted back to quotable. Preserve that.
 - Firing is transactional: mark FIRING + cancel unsigned intents atomically,
-  then position policy, cooldown, shortlist consumption (see
-  `apps/server/src/services/lifecycle.ts`).
+  then position policy, shortlist consumption (see
+  `apps/server/src/services/lifecycle.ts`). The just-fired exclusion is the
+  only hiring ban: the most recently fired trader is un-hireable by automatic
+  paths until a different trader is activated; no timed cooldowns.
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.

@@ -99,11 +99,13 @@ Guards worth knowing:
   no market action from a rotation.
 - A fresh board with no resolved wallets (Dawn not yet run) can never rotate: the
   hireable check fails and the current trader stays.
-- **There is no fired-trader cooldown anymore** (removed 2026-10-30): a fired
-  trader is rehireable the moment he qualifies again. The only exclusion is that
-  the just-fired candidate is skipped in the replacement walk of his own fire
-  (`JUST_FIRED` skip reason), so a two-loss fire cannot instantly re-enter the
-  same trader.
+- **The only hiring ban is the just-fired exclusion** (operator decision,
+  2026-10-31; supersedes the 2026-10-30 no-cooldown note): the trader fired most
+  recently is un-hireable by every automatic path until a different trader has
+  been activated — in his own replacement walk (`JUST_FIRED` skip reason) and in
+  the idle/cold-start hire that follows a paused fire. Derived from the
+  activation rows, so it survives restarts; there is no timed cooldown of any
+  kind, and manual activation from the dashboard overrides.
 - **Live rotation is ENABLED as of 2026-10-29** (`ROTATE_ON_REFRESH=true` in
   `.env`, restart required after any change). Remove that line to return to
   paper-only rotation; an ignored intent is audited as

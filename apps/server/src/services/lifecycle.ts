@@ -6,6 +6,7 @@ import type { RiskConfig } from '@zcode-bot/config';
 import {
   checkEligibility,
   consumeShortlist,
+  deriveJustFiredExclusion,
   rankCandidatesDeterministically,
   type RecommendationPayload,
   type ResearchSnapshot,
@@ -245,7 +246,18 @@ export class TraderLifecycle {
       this.requestFreshResearch(fresh.scanObservedAt, fresh.detail);
       return { status: 'NO_CANDIDATE' };
     }
+    const exclusion = deriveJustFiredExclusion(repo.listActivations(this.db, 200));
+    let justFiredSkipped = false;
     for (const c of latest.payload.orderedCandidates) {
+      // Just-fired exclusion (the ONLY hiring ban): the trader fired most
+      // recently stays un-hireable until a different trader is activated, so a
+      // paused fire cannot be answered by rehiring the very trader who was
+      // fired — even when a fresh ordering ranks him first.
+      if (exclusion && c.candidateId === exclusion.candidateId) {
+        justFiredSkipped = true;
+        this.recordJustFiredSkip(latest.payload.recommendationId, c.candidateId, exclusion.firedAt);
+        continue;
+      }
       const act = await this.activate(c.candidateId, 'zcode_shortlist', true);
       if (act.ok) {
         repo.audit(
@@ -259,7 +271,36 @@ export class TraderLifecycle {
         return { status: 'ACTIVATED', candidateId: c.candidateId };
       }
     }
+    if (justFiredSkipped) {
+      repo.audit(
+        this.db,
+        'activation',
+        'idle hire paused: the just-fired trader stays excluded until a different trader is activated',
+        {
+          recommendationId: latest.payload.recommendationId,
+          excludedCandidateId: exclusion!.candidateId,
+        },
+      );
+      this.requestFreshResearch(fresh.scanObservedAt, 'idle hire blocked by the just-fired exclusion');
+    }
     return { status: 'NO_CANDIDATE' };
+  }
+
+  /** Record a JUST_FIRED rejection once per recommendation (idle-hire walks repeat per rebuild). */
+  private recordJustFiredSkip(recommendationId: string, candidateId: string, firedAt: string): void {
+    const already = repo
+      .listCandidateRejections(this.db, 20)
+      .some(
+        (r) =>
+          r.recommendationId === recommendationId && r.candidateId === candidateId && r.reason === 'JUST_FIRED',
+      );
+    if (already) return;
+    repo.recordCandidateRejection(this.db, {
+      recommendationId,
+      candidateId,
+      reason: 'JUST_FIRED',
+      detail: `idle hire skips the just-fired trader (fired ${firedAt}) until a different trader is activated`,
+    });
   }
 
   // --- firing ---------------------------------------------------------------
@@ -268,9 +309,9 @@ export class TraderLifecycle {
    * Atomic firing sequence:
    * 1. mark FIRING + cancel pending unsigned intents (one SQLite transaction)
    * 2. apply FIRE_POSITION_POLICY
-   * 3. cooldown registration
-   * 4. finalize FIRED
-   * 5. consume the ordered shortlist -> activate next or PAUSED_WAITING_FOR_ZCODE
+   * 3. finalize FIRED (no cooldown registration — the just-fired exclusion is
+   *    derived from the activation rows; see deriveJustFiredExclusion)
+   * 4. consume the ordered shortlist -> activate next or PAUSED_WAITING_FOR_ZCODE
    * Unknown close outcomes -> REQUIRES_RECONCILIATION (no retry, no handoff).
    */
   async fire(
@@ -338,8 +379,11 @@ export class TraderLifecycle {
       }
     }
 
-    // No cooldown: a fired trader is rehireable the moment the board and the
-    // ordering say he qualifies again (operator decision, 2026-10-30).
+    // No cooldown registration: the just-fired exclusion is derived from the
+    // activation rows themselves (deriveJustFiredExclusion) — this trader
+    // stays un-hireable by automatic paths until a DIFFERENT trader is
+    // activated, and there is no timed cooldown (operator decision, 2026-10-31).
+    // Manual activation overrides.
 
     if (!handoffBlocked) {
       repo.updateActivation(this.db, activationId, {
@@ -459,6 +503,10 @@ export class TraderLifecycle {
   async resolveReplacement(firedCandidateId: string): Promise<HandoffOutcome> {
     const snapshotCandidates = this.snapshots.currentSnapshot()?.candidates ?? [];
     const latest = this.latestValidRecommendation;
+    // Derived exclusion — in a handoff this is always the just-fired candidate
+    // himself; the union covers blocked-fire completions where the FIRED row
+    // is finalized after the walk starts.
+    const exclusion = deriveJustFiredExclusion(repo.listActivations(this.db, 200));
 
     if (this.risk.CANDIDATE_REPLACEMENT_MODE !== 'deterministic_fallback' && latest) {
       const fresh = this.orderingFreshness(latest.payload.recommendationId);
@@ -495,7 +543,9 @@ export class TraderLifecycle {
       const ranked = rankCandidatesDeterministically(snapshotCandidates, this.eligibilityCtx());
       for (const { candidate, score } of ranked) {
         if (!Number.isFinite(score)) break;
-        if (candidate.candidateId === firedCandidateId) continue;
+        if (candidate.candidateId === firedCandidateId || candidate.candidateId === exclusion?.candidateId) {
+          continue;
+        }
         const act = await this.activate(candidate.candidateId, 'deterministic_fallback', false);
         if (act.ok) {
           repo.insertHandoffEvent(this.db, {
@@ -546,10 +596,13 @@ export class TraderLifecycle {
     // Walk the whole ordering, not just the first eligible candidate: activate()
     // can still reject an eligible candidate (activity gate, missing wallet), and
     // stopping there would strand a firing that ranks 2..N could have covered.
-    // The just-fired candidate himself is skipped for THIS handoff only — with
-    // no cooldown anywhere, that exclusion is what stops a two-loss fire from
-    // instantly re-entering the same trader. The next fire, rotation, or
-    // recommendation can hire him again at any time.
+    // The just-fired candidate is skipped — the ONLY hiring ban (operator
+    // decision, 2026-10-31): he stays un-hireable by automatic paths until a
+    // different trader is activated, so a two-loss fire cannot instantly
+    // re-enter the same trader and a paused fire cannot be answered by rehiring
+    // him from a fresh ordering. There is no timed cooldown; once someone else
+    // holds the seat he is an ordinary candidate again. Manual activation
+    // overrides.
     const skipped: Array<{ candidateId: string; reason: string }> = outcome.skipped.map((s) => ({
       candidateId: s.candidateId,
       reason: s.reason,
@@ -557,7 +610,7 @@ export class TraderLifecycle {
     const byId = new Map(snapshotCandidates.map((c) => [c.candidateId, c]));
     const ordered = latest ? [...latest.payload.orderedCandidates].sort((a, b) => a.rank - b.rank) : [];
     for (const entry of ordered) {
-      if (entry.candidateId === firedCandidateId) {
+      if (entry.candidateId === firedCandidateId || entry.candidateId === exclusion?.candidateId) {
         skipped.push({ candidateId: entry.candidateId, reason: 'JUST_FIRED' });
         continue;
       }

@@ -282,7 +282,7 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     expect(handoffs[0]!.status).toBe('activated');
   });
 
-  it('rehires from the ordering after a fire (no cooldown) and pauses entries when idle', async () => {
+  it('rehires from the ordering after a fire (just-fired exclusion, no timed cooldown) and pauses entries when idle', async () => {
     // Fire moonpie too: two more losing round trips.
     const moonAct = repo.activeActivation(handle.db)!;
     firedCount = 0;
@@ -293,9 +293,9 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     expect(firedCount).toBeGreaterThanOrEqual(1);
     await waitFor(() => repo.getActivation(handle.db, moonAct.activationId)?.state === 'FIRED');
 
-    // No cooldown anywhere: moonpie is skipped as JUST_FIRED for this handoff,
-    // and the walk rehires the next ordering entry (cand_ape, fired one fire
-    // ago but eligible again).
+    // The just-fired moonpie is skipped as JUST_FIRED for this handoff, and the
+    // walk rehires the next ordering entry (cand_ape, fired one fire ago whose
+    // ban was lifted when moonpie held the seat in between).
     await waitFor(() => repo.activeActivation(handle.db)?.candidateId === 'cand_ape');
     expect(repo.getActivation(handle.db, moonAct.activationId)?.state).toBe('FIRED');
     const handoffs = repo.listHandoffEvents(handle.db, 1)[0]!;

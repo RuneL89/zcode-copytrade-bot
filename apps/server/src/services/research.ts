@@ -5,6 +5,7 @@ import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
   ACTIVITY_FRESH_MS,
+  deriveJustFiredExclusion,
   snapshotHash,
   validateRecommendation,
   type ResearchSnapshot,
@@ -15,8 +16,6 @@ import type { RiskConfig } from '@zcode-bot/config';
 
 /** A candidate whose leaderboard observation is older than this is "stale". */
 const STALE_CANDIDATE_AGE_MS = 24 * 60 * 60 * 1000;
-/** How long after a firing the sanitized recentlyFired flag stays set (informational only). */
-const RECENTLY_FIRED_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Machine-readable prefix the researcher uses to request a leaderboard refresh. */
 export const POOL_STALE_PREFIX = 'POOL_STALE';
 
@@ -46,7 +45,9 @@ export class SnapshotService {
       list.push(a);
       byCandidate.set(a.candidateId, list);
     }
-    const firedRecently = new Set(this.recentlyFiredCandidateIds(now));
+    // The single hiring ban, mirrored exactly: the just-fired trader the
+    // engine will refuse until a different trader is activated. No window.
+    const justFired = deriveJustFiredExclusion(repo.listActivations(this.db, 200));
 
     const sanitized: SanitizedCandidate[] = candidates.map((c) => {
       return {
@@ -62,7 +63,7 @@ export class SnapshotService {
           verification: a.verification === 'verified' ? 'verified' : 'reported',
         })),
         enabled: c.enabled,
-        recentlyFired: firedRecently.has(c.candidateId),
+        justFired: justFired?.candidateId === c.candidateId,
         recentEligibilityFailures: [],
         publicStats: {
           winRatePct: c.winRatePct ?? null,
@@ -156,19 +157,6 @@ export class SnapshotService {
       candidates: sanitized.length,
     });
     return snapshot;
-  }
-
-  /**
-   * Candidates fired recently (sanitized flag only). Informational for the
-   * researcher: fired traders carry NO cooldown and are rehireable the moment
-   * they qualify again.
-   */
-  recentlyFiredCandidateIds(now: Date): string[] {
-    const since = new Date(now.getTime() - RECENTLY_FIRED_WINDOW_MS).toISOString();
-    const activations = repo.listActivations(this.db, 200);
-    return activations
-      .filter((a) => a.state === 'FIRED' && a.endedAt !== null && a.endedAt >= since)
-      .map((a) => a.candidateId);
   }
 
   currentSnapshot(): ResearchSnapshot | null {

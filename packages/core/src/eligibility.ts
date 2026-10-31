@@ -126,3 +126,40 @@ export function checkEligibility(candidate: SanitizedCandidate, ctx: Eligibility
   }
   return { eligible: true, reason: 'ELIGIBLE' };
 }
+
+/** Minimal structural view of a trader activation row (schema-free). */
+export interface ActivationLike {
+  candidateId: string;
+  state: string;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+/**
+ * The just-fired exclusion (operator decision, 2026-10-31): the ONLY hiring
+ * ban. After a fire, the fired trader is un-hireable by automatic paths until
+ * a DIFFERENT trader has been activated — no timed cooldown of any kind.
+ * Manual activation overrides.
+ *
+ * Derived from the activation rows so it survives restarts with no extra
+ * state: F = the FIRED activation with the most recent endedAt; the exclusion
+ * is active while no activation with a different candidateId started at or
+ * after F.endedAt. Returns null when nobody is currently excluded.
+ */
+export function deriveJustFiredExclusion(
+  activations: ActivationLike[],
+): { candidateId: string; firedAt: string } | null {
+  let lastFired: ActivationLike | null = null;
+  for (const a of activations) {
+    if (a.state !== 'FIRED' || !a.endedAt) continue;
+    if (!lastFired || a.endedAt > lastFired.endedAt!) lastFired = a;
+  }
+  if (!lastFired) return null;
+  const filled = activations.some(
+    (a) =>
+      a.candidateId !== lastFired!.candidateId &&
+      a.startedAt !== null &&
+      a.startedAt >= lastFired!.endedAt!,
+  );
+  return filled ? null : { candidateId: lastFired.candidateId, firedAt: lastFired.endedAt! };
+}

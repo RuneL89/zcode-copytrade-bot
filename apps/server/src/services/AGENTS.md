@@ -8,7 +8,7 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File              | Owns                                                                                                                                                                 |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`       | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
-| `lifecycle.ts`    | Activation, atomic firing/handoff, replacement, day-trader activity gates, board-presence hire guard (no cooldowns).                                                 |
+| `lifecycle.ts`    | Activation, atomic firing/handoff, replacement, day-trader activity gates, board-presence hire guard, just-fired hire exclusion (no timed cooldowns).                 |
 | `monitor.ts`      | Leader polling timer, cursor persistence, dedupe, restart reconciliation.                                                                                            |
 | `dawn-targets.ts` | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
 | `executors.ts`    | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
@@ -38,8 +38,10 @@ never monitors, sizes, exits, fires, signs, or reconciles.
   or `monitor.ts`; other services expose functions and must not start their own
   unbounded loops. `engine.ts` is invoked per event, never on its own timer.
 - **Firing is transactional.** Mark `FIRING` and cancel unsigned intents
-  atomically, then apply position policy, cooldown, and shortlist consumption
-  in that order. A crash must not leave a half-fired trader.
+  atomically, then apply position policy and shortlist consumption in that
+  order; the just-fired exclusion is derived from the activation rows
+  (`deriveJustFiredExclusion`), never registered. A crash must not leave a
+  half-fired trader.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.

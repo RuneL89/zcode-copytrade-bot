@@ -43,7 +43,7 @@ const SNAPSHOT: ResearchSnapshot = {
         },
       ],
       enabled: true,
-      recentlyFired: false,
+      justFired: false,
       recentEligibilityFailures: [],
       publicStats: { winRatePct: 61, tradesCount: 120, avgTradeUsdMicro: null, activityCheckedAt: null },
       observedAt: new Date().toISOString(),

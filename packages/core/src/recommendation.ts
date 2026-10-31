@@ -27,7 +27,8 @@ export interface SanitizedCandidate {
   avatarUrl: string | null;
   addresses: SanitizedCandidateAddress[];
   enabled: boolean;
-  recentlyFired: boolean;
+  /** True only while this candidate is the just-fired exclusion (deriveJustFiredExclusion) — the engine refuses to hire him until a different trader is activated. */
+  justFired: boolean;
   recentEligibilityFailures: string[];
   /** Aggregate PUBLIC trading statistics as reported; null when unavailable. */
   publicStats: {

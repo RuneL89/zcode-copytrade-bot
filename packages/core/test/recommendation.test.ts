@@ -40,7 +40,7 @@ function cand(candidateId: string, handle: string, weeklyRank: number, enabled: 
       },
     ],
     enabled,
-    recentlyFired: false,
+    justFired: false,
     recentEligibilityFailures: [],
     publicStats: {
       winRatePct: 61,

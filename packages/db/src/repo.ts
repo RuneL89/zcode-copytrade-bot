@@ -438,6 +438,16 @@ export function recordCandidateRejection(
     .run();
 }
 
+/** Most recent rejection per row, newest first — used to dedupe idle-hire rejections. */
+export function listCandidateRejections(db: Db, limit = 20) {
+  return db
+    .select()
+    .from(schema.candidateRejections)
+    .orderBy(desc(schema.candidateRejections.createdAt))
+    .limit(limit)
+    .all();
+}
+
 // --- activations / cursors / events ---------------------------------------------
 
 export function createActivation(db: Db, input: ActivationInsert): void {
