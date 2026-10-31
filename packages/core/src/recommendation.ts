@@ -42,6 +42,15 @@ export interface SanitizedCandidate {
     lastSwapAt: string | null;
     /** Helius activity refresh stamp (6h server timer); freshness evidence for swaps24h/lastSwapAt. */
     activityCheckedAt: string | null;
+    /**
+     * Actively-trading signal (hire priority, not a gate): the most recent
+     * on-chain BUY when it fell inside ACTIVE_BUY_WINDOW_HOURS at check time,
+     * else null (no buy in window, or the direction check failed — the tier
+     * then treats the candidate as not active and the merit order decides).
+     */
+    lastBuyAt: string | null;
+    /** Computed at snapshot build from lastBuyAt vs the configured window. */
+    activelyTrading: boolean;
     /** Dawn stats card stamp (GUI fetches only); NOT a freshness signal for the activity fields. */
     statsCheckedAt: string | null;
     /** Dawn compact card: PnL per period (unrealized marks, unverified). */

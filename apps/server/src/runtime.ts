@@ -88,6 +88,8 @@ export class Runtime {
   private lastAutoDawnAt = 0;
   /** Last auto-triggered activity refresh (same throttle pattern as Dawn). */
   private lastAutoActivityAt = 0;
+  private lastTopBoardActivityAt = 0;
+  private topBoardActivityBusy = false;
   /** Re-entrancy guard for the rank-watch fire check inside snapshot rebuilds. */
   private rankWatchBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
@@ -609,7 +611,86 @@ export class Runtime {
     this.rankWatchCheck();
     this.maybeAutoDawn();
     this.maybeAutoActivity();
+    this.refreshTopBoardActivity();
     repo.pruneLeaderboardObservations(this.db.db, 30);
+  }
+
+  /**
+   * Actively-trading tier freshness (operator decision, 2026-10-31): the
+   * researcher's ordering ranks candidates whose most recent BUY is inside
+   * ACTIVE_BUY_WINDOW_HOURS first, so the top-7 board candidates get a
+   * direction-aware activity refresh on every snapshot cycle instead of
+   * waiting for the 6-hour pool timer. Throttled to one run per 20 minutes;
+   * fresh rows are written through the debounced rebuild, so the NEXT
+   * snapshot carries them (the current one publishes immediately with the
+   * previous data — never blocks, never double-hires).
+   */
+  private refreshTopBoardActivity(): void {
+    if (!this.helius?.configured || this.demo?.running) return;
+    if (this.topBoardActivityBusy) return;
+    const TOP_BOARD_MIN_INTERVAL_MS = 20 * 60 * 1000;
+    if (Date.now() - this.lastTopBoardActivityAt < TOP_BOARD_MIN_INTERVAL_MS) return;
+    const scan = repo.listRecentScans(this.db.db, 1)[0];
+    if (!scan) return;
+    // The researcher's universe is the latest scan; when the scan itself is
+    // stale the tier guard stands down (same rule as the rank watch).
+    if (Date.now() - Date.parse(scan.observedAt) > SCAN_FRESH_MS) return;
+    const byHandle = new Map(
+      repo
+        .listCandidates(this.db.db)
+        .filter((c) => c.enabled)
+        .map((c) => [c.handle, c]),
+    );
+    const wallets = new Map<string, string>();
+    for (const a of repo.listCandidateAddresses(this.db.db)) {
+      if (a.chain === 'solana' && !wallets.has(a.candidateId)) wallets.set(a.candidateId, a.address);
+    }
+    const staleCutoff = Date.now() - TOP_BOARD_MIN_INTERVAL_MS;
+    const targets = scan.rows
+      .slice(0, 7)
+      .map((row) => byHandle.get(row.handle))
+      .filter(
+        (c): c is NonNullable<typeof c> =>
+          c !== undefined &&
+          wallets.has(c.candidateId) &&
+          (c.activityCheckedAt === null || Date.parse(c.activityCheckedAt) < staleCutoff),
+      );
+    if (targets.length === 0) return;
+    this.lastTopBoardActivityAt = Date.now();
+    this.topBoardActivityBusy = true;
+    void (async () => {
+      try {
+        let checked = 0;
+        for (const cand of targets) {
+          const address = wallets.get(cand.candidateId);
+          if (!address) continue;
+          try {
+            const activity = await this.helius.walletActivity24h(address);
+            const lastSwapAt =
+              activity.lastSwapAgeHours === null
+                ? null
+                : new Date(Date.now() - activity.lastSwapAgeHours * 3600_000).toISOString();
+            const buy = await this.helius.lastBuyWithinWindow(address, this.config.risk.ACTIVE_BUY_WINDOW_HOURS);
+            repo.updateCandidateActivity(this.db.db, cand.candidateId, {
+              swaps24h: activity.swaps24h,
+              lastSwapAt,
+              // Unknown (ok:false) keeps the previous value — fail open.
+              lastBuyAt: buy.ok ? buy.lastBuyAt : (cand.lastBuyAt ?? null),
+              checkedAt: new Date().toISOString(),
+            });
+            checked++;
+          } catch (e) {
+            repo.audit(this.db.db, 'activity', cand.handle + ': ' + (e as Error).message, {});
+          }
+        }
+        if (checked > 0) {
+          repo.audit(this.db.db, 'activity', `top-board activity refresh: ${checked} checked`, {});
+          this.scheduleSnapshotRebuild();
+        }
+      } finally {
+        this.topBoardActivityBusy = false;
+      }
+    })();
   }
 
   /**
@@ -1264,9 +1345,12 @@ export class Runtime {
           activity.lastSwapAgeHours === null
             ? null
             : new Date(Date.now() - activity.lastSwapAgeHours * 3600_000).toISOString();
+        const buy = await this.helius.lastBuyWithinWindow(address, this.config.risk.ACTIVE_BUY_WINDOW_HOURS);
         repo.updateCandidateActivity(this.db.db, cand.candidateId, {
           swaps24h: activity.swaps24h,
           lastSwapAt,
+          // Unknown (ok:false) keeps the previous value — fail open.
+          lastBuyAt: buy.ok ? buy.lastBuyAt : (cand.lastBuyAt ?? null),
           checkedAt: nowIso,
         });
         checked++;

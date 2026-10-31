@@ -75,6 +75,7 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
   repo.updateCandidateActivity(handle.db, 'cand_ape', {
     swaps24h: 12,
     lastSwapAt: new Date(Date.now() - stallHours * 3600_000).toISOString(),
+    lastBuyAt: null,
     checkedAt: new Date(Date.now() - activityFreshHours * 3600_000).toISOString(),
   });
   snapshots.build();

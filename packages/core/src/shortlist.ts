@@ -105,3 +105,22 @@ export function rankCandidatesDeterministically(
     })
     .sort((a, b) => b.score - a.score || (a.candidate.candidateId < b.candidate.candidateId ? -1 : 1));
 }
+
+/**
+ * Actively-trading tier (operator decision, 2026-10-31): candidates whose
+ * snapshot says `activelyTrading` are hired before the rest, each side
+ * preserving its original order. When nobody is active the whole ordering
+ * lands in `inactive` and the existing merit order decides — the fallback.
+ * Fails open by construction: unknown/missing activity counts as not active.
+ */
+export function partitionByActivelyTrading<T>(
+  entries: readonly T[],
+  isActive: (entry: T) => boolean,
+): { active: T[]; inactive: T[] } {
+  const active: T[] = [];
+  const inactive: T[] = [];
+  for (const entry of entries) {
+    (isActive(entry) ? active : inactive).push(entry);
+  }
+  return { active, inactive };
+}

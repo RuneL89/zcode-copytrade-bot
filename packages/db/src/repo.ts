@@ -201,16 +201,22 @@ export function updateCandidateStats(db: Db, candidateId: string, stats: Candida
     .run();
 }
 
-/** Store Helius on-chain activity — the same numbers the pre-hire gate uses. */
+/**
+ * Store Helius on-chain activity — the same numbers the pre-hire gate uses.
+ * `lastBuyAt` carries the actively-trading signal: an ISO timestamp when a buy
+ * was found inside ACTIVE_BUY_WINDOW_HOURS, null when none was (or the
+ * direction check failed — callers keep the previous value in that case).
+ */
 export function updateCandidateActivity(
   db: Db,
   candidateId: string,
-  activity: { swaps24h: number; lastSwapAt: string | null; checkedAt: string },
+  activity: { swaps24h: number; lastSwapAt: string | null; lastBuyAt: string | null; checkedAt: string },
 ): void {
   db.update(schema.traderCandidates)
     .set({
       swaps24h: activity.swaps24h,
       lastSwapAt: activity.lastSwapAt,
+      lastBuyAt: activity.lastBuyAt,
       activityCheckedAt: activity.checkedAt,
       updatedAt: activity.checkedAt,
     })

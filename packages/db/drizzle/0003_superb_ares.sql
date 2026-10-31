@@ -1,0 +1,1 @@
+ALTER TABLE `trader_candidates` ADD `last_buy_at` text;

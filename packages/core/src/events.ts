@@ -127,6 +127,38 @@ function isFundingMint(mint: string, decimals: number): boolean {
 /** Deltas below this absolute base amount are treated as dust and ignored. */
 const DUST_THRESHOLD_BASE = 1n;
 
+/**
+ * Result of scanning classified leader history for a recent buy.
+ * `lastBuyAt` is set only when the most recent buy falls inside the scanned
+ * window (sell-only or quiet wallets get null). `boundaryReached` tells the
+ * caller it can stop paging: every row seen predates the cutoff.
+ */
+export interface LastBuyScan {
+  lastBuyAt: string | null;
+  boundaryReached: boolean;
+}
+
+/**
+ * Actively-trading scan (operator decision, 2026-10-31): the most recent BUY
+ * — not any swap — inside the window is what marks a leader as actively
+ * trading. Sells, failed txs, transfers and ambiguous rows are walked past.
+ * `summaries` MUST be ordered newest-first (the caller sorts the RPC page);
+ * the first `swap_buy` encountered is therefore the most recent buy.
+ */
+export function scanForRecentBuy(summaries: LeaderTxSummary[], cutoffMs: number): LastBuyScan {
+  for (const tx of summaries) {
+    if (tx.blockTime === null) continue;
+    const t = tx.blockTime * 1000;
+    if (t < cutoffMs) {
+      return { lastBuyAt: null, boundaryReached: true };
+    }
+    if (classifyLeaderEvent(tx).kind === 'swap_buy') {
+      return { lastBuyAt: new Date(t).toISOString(), boundaryReached: false };
+    }
+  }
+  return { lastBuyAt: null, boundaryReached: false };
+}
+
 export function classifyLeaderEvent(tx: LeaderTxSummary): LeaderClassifiedEvent {
   const base = {
     signature: tx.signature,

@@ -1,4 +1,4 @@
-import type { LeaderTxSummary, TokenDelta } from '@zcode-bot/core';
+import { scanForRecentBuy, type LeaderTxSummary, type TokenDelta } from '@zcode-bot/core';
 
 /**
  * Helius Solana monitor.
@@ -340,6 +340,73 @@ export class HeliusProvider {
       swaps24h,
       lastSwapAgeHours: newestBlockTime === null ? null : (Date.now() - newestBlockTime) / 3600000,
     };
+  }
+
+  /**
+   * Actively-trading check (operator decision, 2026-10-31): walk the address's
+   * transactions newest-first and classify each until the most recent BUY is
+   * found or the window boundary is crossed. Sells, transfers, failed and
+   * ambiguous rows are walked past — only a buy marks the wallet as actively
+   * trading. Bounded work: paging stops at the boundary, and a page cap keeps
+   * a hyperactive wallet from running away with quota.
+   *
+   * Fail-open by contract: RPC errors and an exhausted page cap return
+   * ok:false (unknown), which callers treat as "not known to be active" and
+   * fall back to the merit order.
+   */
+  async lastBuyWithinWindow(
+    address: string,
+    windowHours: number,
+  ): Promise<{ ok: boolean; lastBuyAt: string | null }> {
+    const cutoffMs = Date.now() - windowHours * 3600 * 1000;
+    const PAGE = 50;
+    const MAX_PAGES = 10;
+    try {
+      let before: string | undefined;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const result = await this.rpc<{
+          data: Array<{
+            signature?: string | null;
+            slot: number;
+            transactionIndex?: number;
+            blockTime: number | null;
+            err: unknown;
+            transaction?: { signatures?: string[] } | null;
+            meta?: unknown;
+          }>;
+        }>('getTransactionsForAddress', [
+          address,
+          {
+            transactionDetails: 'full',
+            sortOrder: 'desc',
+            limit: PAGE,
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 1,
+            ...(before ? { before } : {}),
+          },
+        ]);
+        const rows = (result?.data ?? [])
+          .map((r) => ({
+            signature: signatureOf(r),
+            slot: r.slot,
+            transactionIndex: r.transactionIndex ?? 0,
+            blockTime: r.blockTime,
+            err: r.err != null,
+            raw: r,
+          }))
+          .filter((r) => r.signature.length > 0);
+        if (rows.length === 0) return { ok: true, lastBuyAt: null }; // no history left
+        const summaries = rows.map((r) => HeliusProvider.toLeaderTxSummary(address, r));
+        const scan = scanForRecentBuy(summaries, cutoffMs);
+        if (scan.lastBuyAt !== null) return { ok: true, lastBuyAt: scan.lastBuyAt };
+        if (scan.boundaryReached) return { ok: true, lastBuyAt: null };
+        before = rows[rows.length - 1]!.signature;
+        if (rows.length < PAGE) return { ok: true, lastBuyAt: null }; // history exhausted
+      }
+      return { ok: false, lastBuyAt: null }; // page cap: unknown, fail open
+    } catch {
+      return { ok: false, lastBuyAt: null };
+    }
   }
 
   /**

@@ -157,6 +157,13 @@ Research ZCode Bot replacement candidates.
    sha256 hash. Set createdAt/expiresAt (expiresAt = createdAt + 3 hours).
    Confidence is informational; it can never override the worker's
    eligibility and risk checks.
+   - Actively-trading tier (2026-10-31): candidates whose snapshot
+     `publicStats.activelyTrading` is true (most recent on-chain BUY inside
+     `ACTIVE_BUY_WINDOW_HOURS`, default 4) are ordered BEFORE the rest, each
+     tier ranked by the day's merit; when zero qualified candidates are
+     active, the tier is dropped and merit decides. The engine independently
+     re-verifies the signal at hire time and fails open on unknown. Sell-only
+     activity does not count as actively trading.
    - Optional `rotateIfFlat: true` may be set on an ordering when the pool is
      fresher than the current hire: the worker then fires that trader only if it
      holds no open position (and only if some candidate on the ordering is

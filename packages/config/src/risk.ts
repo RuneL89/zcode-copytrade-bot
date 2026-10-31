@@ -58,6 +58,13 @@ export const riskConfigSchema = z.object({
   LEADER_STALL_FIRE_HOURS: positiveInt('LEADER_STALL_FIRE_HOURS'),
   /** Pre-hire gate: minimum on-chain swaps in the leader wallet's last 24h. */
   MIN_LEADER_SWAPS_24H: positiveInt('MIN_LEADER_SWAPS_24H'),
+  /**
+   * Actively-trading tier (hire priority, not a gate): a candidate whose most
+   * recent on-chain BUY is within this window is hired ahead of the merit
+   * order. Sell-only or quiet wallets are not "actively trading"; Helius
+   * failures fail open to the merit order.
+   */
+  ACTIVE_BUY_WINDOW_HOURS: positiveInt('ACTIVE_BUY_WINDOW_HOURS'),
   PRICE_MAX_AGE_SECONDS: positiveInt('PRICE_MAX_AGE_SECONDS'),
   RECOMMENDATION_TTL_MS: positiveInt('RECOMMENDATION_TTL_MS'),
   LOSS_STREAK_UNIT: lossStreakUnitSchema,
@@ -89,6 +96,7 @@ export const DEFAULT_RISK: RiskConfig = {
   // (the pre-hire gate above still uses MAX_LEADER_STALL_HOURS).
   LEADER_STALL_FIRE_HOURS: 8,
   MIN_LEADER_SWAPS_24H: 5,
+  ACTIVE_BUY_WINDOW_HOURS: 4,
   PRICE_MAX_AGE_SECONDS: 45,
   RECOMMENDATION_TTL_MS: 10800000,
   LOSS_STREAK_UNIT: 'fully_closed_position',
@@ -115,6 +123,7 @@ export const settingsPatchSchema = z
     MAX_LEADER_STALL_HOURS: z.number().int().positive().optional(),
     LEADER_STALL_FIRE_HOURS: z.number().int().positive().optional(),
     MIN_LEADER_SWAPS_24H: z.number().int().positive().optional(),
+    ACTIVE_BUY_WINDOW_HOURS: z.number().int().positive().optional(),
     PRICE_MAX_AGE_SECONDS: z.number().int().positive().optional(),
     RECOMMENDATION_TTL_MS: z.number().int().positive().optional(),
     LOSS_STREAK_UNIT: lossStreakUnitSchema.optional(),

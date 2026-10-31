@@ -45,6 +45,9 @@ export const traderCandidates = sqliteTable('trader_candidates', {
   swaps24h: integer('swaps_24h'),
   lastSwapAt: text('last_swap_at'),
   activityCheckedAt: text('activity_checked_at'),
+  // Direction-aware: most recent on-chain BUY within ACTIVE_BUY_WINDOW_HOURS
+  // (null = none found in the window, or the check has not run/failed).
+  lastBuyAt: text('last_buy_at'),
   observedAt: text('observed_at').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),

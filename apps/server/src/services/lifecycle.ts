@@ -7,6 +7,7 @@ import {
   checkEligibility,
   consumeShortlist,
   deriveJustFiredExclusion,
+  partitionByActivelyTrading,
   rankCandidatesDeterministically,
   type RecommendationPayload,
   type ResearchSnapshot,
@@ -248,27 +249,60 @@ export class TraderLifecycle {
     }
     const exclusion = deriveJustFiredExclusion(repo.listActivations(this.db, 200));
     let justFiredSkipped = false;
-    for (const c of latest.payload.orderedCandidates) {
-      // Just-fired exclusion (the ONLY hiring ban): the trader fired most
-      // recently stays un-hireable until a different trader is activated, so a
-      // paused fire cannot be answered by rehiring the very trader who was
-      // fired — even when a fresh ordering ranks him first.
-      if (exclusion && c.candidateId === exclusion.candidateId) {
-        justFiredSkipped = true;
-        this.recordJustFiredSkip(latest.payload.recommendationId, c.candidateId, exclusion.firedAt);
-        continue;
-      }
-      const act = await this.activate(c.candidateId, 'zcode_shortlist', true);
-      if (act.ok) {
-        repo.audit(
-          this.db,
-          'activation',
-          `cold-start hire from recommendation ${latest.payload.recommendationId}`,
-          {
-            candidateId: c.candidateId,
-          },
-        );
-        return { status: 'ACTIVATED', candidateId: c.candidateId };
+    // Actively-trading tier (operator decision, 2026-10-31): candidates whose
+    // snapshot says activelyTrading are hired before the rest — the bot copies
+    // day traders, not holders. Live verification at hire demotes a candidate
+    // whose wallet disagrees with the snapshot; unknown fails open. When
+    // nobody is active the whole ordering lands in the second pass and the
+    // existing merit order decides.
+    const byId = new Map(
+      (this.snapshots.currentSnapshot()?.candidates ?? []).map((c) => [c.candidateId, c]),
+    );
+    const { active, inactive } = partitionByActivelyTrading(latest.payload.orderedCandidates, (c) => {
+      const candidate = byId.get(c.candidateId);
+      return candidate?.publicStats.activelyTrading === true;
+    });
+    const passes = [active, inactive];
+    for (const [passIndex, pass] of passes.entries()) {
+      for (const c of pass) {
+        // Just-fired exclusion (the ONLY hiring ban): the trader fired most
+        // recently stays un-hireable until a different trader is activated, so
+        // a paused fire cannot be answered by rehiring the very trader who was
+        // fired — even when a fresh ordering ranks him first.
+        if (exclusion && c.candidateId === exclusion.candidateId) {
+          justFiredSkipped = true;
+          this.recordSkipOnce(
+            latest.payload.recommendationId,
+            c.candidateId,
+            'JUST_FIRED',
+            `idle hire skips the just-fired trader (fired ${exclusion.firedAt}) until a different trader is activated`,
+          );
+          continue;
+        }
+        if (passIndex === 0) {
+          const trading = await this.verifyActiveTrading(c.candidateId);
+          if (trading === 'inactive') {
+            this.recordSkipOnce(
+              latest.payload.recommendationId,
+              c.candidateId,
+              'NOT_ACTIVELY_TRADING',
+              'live check at hire: no buy inside ACTIVE_BUY_WINDOW_HOURS',
+            );
+            continue;
+          }
+        }
+        const act = await this.activate(c.candidateId, 'zcode_shortlist', true);
+        if (act.ok) {
+          repo.audit(
+            this.db,
+            'activation',
+            `cold-start hire from recommendation ${latest.payload.recommendationId}`,
+            {
+              candidateId: c.candidateId,
+            },
+          );
+          return { status: 'ACTIVATED', candidateId: c.candidateId };
+        }
       }
     }
     if (justFiredSkipped) {
@@ -286,21 +320,41 @@ export class TraderLifecycle {
     return { status: 'NO_CANDIDATE' };
   }
 
-  /** Record a JUST_FIRED rejection once per recommendation (idle-hire walks repeat per rebuild). */
-  private recordJustFiredSkip(recommendationId: string, candidateId: string, firedAt: string): void {
+  /** Record a skip rejection once per recommendation (idle-hire walks repeat per rebuild). */
+  private recordSkipOnce(
+    recommendationId: string,
+    candidateId: string,
+    reason: string,
+    detail: string,
+  ): void {
     const already = repo
       .listCandidateRejections(this.db, 20)
-      .some(
-        (r) =>
-          r.recommendationId === recommendationId && r.candidateId === candidateId && r.reason === 'JUST_FIRED',
-      );
+      .some((r) => r.recommendationId === recommendationId && r.candidateId === candidateId && r.reason === reason);
     if (already) return;
-    repo.recordCandidateRejection(this.db, {
-      recommendationId,
-      candidateId,
-      reason: 'JUST_FIRED',
-      detail: `idle hire skips the just-fired trader (fired ${firedAt}) until a different trader is activated`,
-    });
+    repo.recordCandidateRejection(this.db, { recommendationId, candidateId, reason, detail });
+  }
+
+  /**
+   * Live actively-trading verification at hire time (operator decision,
+   * 2026-10-31). 'active' = the wallet's most recent BUY is inside
+   * ACTIVE_BUY_WINDOW_HOURS; 'inactive' = the walk proved it is not (sell-only
+   * or quiet); 'unknown' = Helius unconfigured, erroring, or page-capped.
+   * Unknown fails open — the candidate stays hireable; the merit ordering and
+   * the 20h/5-swap gate still protect the hire.
+   */
+  private async verifyActiveTrading(candidateId: string): Promise<'active' | 'inactive' | 'unknown'> {
+    if (!this.helius?.configured) return 'unknown';
+    const address = repo
+      .listCandidateAddresses(this.db, candidateId)
+      .find((a) => a.chain === 'solana')?.address;
+    if (!address) return 'unknown';
+    try {
+      const buy = await this.helius.lastBuyWithinWindow(address, this.risk.ACTIVE_BUY_WINDOW_HOURS);
+      if (!buy.ok) return 'unknown';
+      return buy.lastBuyAt !== null ? 'active' : 'inactive';
+    } catch {
+      return 'unknown';
+    }
   }
 
   // --- firing ---------------------------------------------------------------
@@ -540,28 +594,41 @@ export class TraderLifecycle {
     }
 
     if (this.risk.CANDIDATE_REPLACEMENT_MODE === 'deterministic_fallback') {
-      const ranked = rankCandidatesDeterministically(snapshotCandidates, this.eligibilityCtx());
-      for (const { candidate, score } of ranked) {
-        if (!Number.isFinite(score)) break;
-        if (candidate.candidateId === firedCandidateId || candidate.candidateId === exclusion?.candidateId) {
-          continue;
-        }
-        const act = await this.activate(candidate.candidateId, 'deterministic_fallback', false);
-        if (act.ok) {
-          repo.insertHandoffEvent(this.db, {
-            fromCandidateId: firedCandidateId,
-            toCandidateId: candidate.candidateId,
-            status: 'activated',
-            recommendationId: null,
-            source: 'deterministic_fallback',
-            detail: 'DETERMINISTIC FALLBACK used (explicitly enabled in config); visibly labeled in UI',
-            createdAt: new Date().toISOString(),
-          });
-          return {
-            status: 'ACTIVATED',
-            candidateId: candidate.candidateId,
-            source: 'deterministic_fallback',
-          };
+      const ranked = rankCandidatesDeterministically(snapshotCandidates, this.eligibilityCtx()).filter(
+        ({ score }) => Number.isFinite(score),
+      );
+      // Same actively-trading tier as the zcode walk: actives first, merit
+      // within each tier, merit fallback when nobody is active.
+      const { active: activeTier, inactive: inactiveTier } = partitionByActivelyTrading(ranked, ({ candidate }) => {
+        return candidate.publicStats.activelyTrading === true;
+      });
+      const passes = [activeTier, inactiveTier];
+      for (const [passIndex, pass] of passes.entries()) {
+        for (const { candidate } of pass) {
+          if (candidate.candidateId === firedCandidateId || candidate.candidateId === exclusion?.candidateId) {
+            continue;
+          }
+          if (passIndex === 0) {
+            const trading = await this.verifyActiveTrading(candidate.candidateId);
+            if (trading === 'inactive') continue;
+          }
+          const act = await this.activate(candidate.candidateId, 'deterministic_fallback', false);
+          if (act.ok) {
+            repo.insertHandoffEvent(this.db, {
+              fromCandidateId: firedCandidateId,
+              toCandidateId: candidate.candidateId,
+              status: 'activated',
+              recommendationId: null,
+              source: 'deterministic_fallback',
+              detail: 'DETERMINISTIC FALLBACK used (explicitly enabled in config); visibly labeled in UI',
+              createdAt: new Date().toISOString(),
+            });
+            return {
+              status: 'ACTIVATED',
+              candidateId: candidate.candidateId,
+              source: 'deterministic_fallback',
+            };
+          }
         }
       }
       repo.insertHandoffEvent(this.db, {
@@ -609,38 +676,56 @@ export class TraderLifecycle {
     }));
     const byId = new Map(snapshotCandidates.map((c) => [c.candidateId, c]));
     const ordered = latest ? [...latest.payload.orderedCandidates].sort((a, b) => a.rank - b.rank) : [];
-    for (const entry of ordered) {
-      if (entry.candidateId === firedCandidateId || entry.candidateId === exclusion?.candidateId) {
-        skipped.push({ candidateId: entry.candidateId, reason: 'JUST_FIRED' });
-        continue;
+    // Actively-trading tier (operator decision, 2026-10-31): actives first,
+    // each side preserving rank order; live verification demotes a candidate
+    // whose wallet disagrees with the snapshot; unknown fails open. When
+    // nobody is active the second pass is the whole ordering and the merit
+    // order decides.
+    const { active: activeTier, inactive: inactiveTier } = partitionByActivelyTrading(ordered, (entry) => {
+      return byId.get(entry.candidateId)?.publicStats.activelyTrading === true;
+    });
+    const passes = [activeTier, inactiveTier];
+    for (const [passIndex, pass] of passes.entries()) {
+      for (const entry of pass) {
+        if (entry.candidateId === firedCandidateId || entry.candidateId === exclusion?.candidateId) {
+          skipped.push({ candidateId: entry.candidateId, reason: 'JUST_FIRED' });
+          continue;
+        }
+        const candidate = byId.get(entry.candidateId);
+        if (!candidate) continue;
+        const eligibility = checkEligibility(candidate, this.eligibilityCtx());
+        if (!eligibility.eligible) continue;
+        if (outcome.skipped.some((s) => s.candidateId === entry.candidateId)) continue;
+        if (passIndex === 0) {
+          const trading = await this.verifyActiveTrading(entry.candidateId);
+          if (trading === 'inactive') {
+            skipped.push({ candidateId: entry.candidateId, reason: 'NOT_ACTIVELY_TRADING' });
+            continue;
+          }
+        }
+        const act = await this.activate(entry.candidateId, 'zcode_shortlist', true);
+        if (!act.ok) {
+          skipped.push({ candidateId: entry.candidateId, reason: act.reason ?? 'ACTIVATION_FAILED' });
+          continue;
+        }
+        repo.insertHandoffEvent(this.db, {
+          fromCandidateId: firedCandidateId,
+          toCandidateId: entry.candidateId,
+          status: 'activated',
+          recommendationId: latest?.payload.recommendationId ?? null,
+          source: 'zcode_shortlist',
+          detail: null,
+          createdAt: new Date().toISOString(),
+        });
+        repo.recordChoice(this.db, {
+          recommendationId: latest?.payload.recommendationId ?? null,
+          chosenCandidateId: entry.candidateId,
+          firedFromCandidateId: firedCandidateId,
+          result: 'ACTIVATE',
+          skippedJson: JSON.stringify(skipped),
+        });
+        return { status: 'ACTIVATED', candidateId: entry.candidateId, source: 'zcode_shortlist' };
       }
-      const candidate = byId.get(entry.candidateId);
-      if (!candidate) continue;
-      const eligibility = checkEligibility(candidate, this.eligibilityCtx());
-      if (!eligibility.eligible) continue;
-      if (outcome.skipped.some((s) => s.candidateId === entry.candidateId)) continue;
-      const act = await this.activate(entry.candidateId, 'zcode_shortlist', true);
-      if (!act.ok) {
-        skipped.push({ candidateId: entry.candidateId, reason: act.reason ?? 'ACTIVATION_FAILED' });
-        continue;
-      }
-      repo.insertHandoffEvent(this.db, {
-        fromCandidateId: firedCandidateId,
-        toCandidateId: entry.candidateId,
-        status: 'activated',
-        recommendationId: latest?.payload.recommendationId ?? null,
-        source: 'zcode_shortlist',
-        detail: null,
-        createdAt: new Date().toISOString(),
-      });
-      repo.recordChoice(this.db, {
-        recommendationId: latest?.payload.recommendationId ?? null,
-        chosenCandidateId: entry.candidateId,
-        firedFromCandidateId: firedCandidateId,
-        result: 'ACTIVATE',
-        skippedJson: JSON.stringify(skipped),
-      });
-      return { status: 'ACTIVATED', candidateId: entry.candidateId, source: 'zcode_shortlist' };
     }
 
     repo.insertHandoffEvent(this.db, {

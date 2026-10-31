@@ -7,7 +7,7 @@ flowchart TD
     F --> G["snapshot-rebuild CLI<br/>writes snapshot.json"]
     G --> R["rank watch<br/>fires on decay, hires need the scan"]
     R --> H["MCP get_research_snapshot<br/>three tools only"]
-    H --> I["ZCode orders by 24h PnL<br/>positive fresh day gate"]
+    H --> I["ZCode tiers active traders first,<br/>then 24h PnL, fresh day gate"]
     I --> J["submit_candidate_recommendation<br/>atomic inbox file"]
     J --> K["worker validates id and hash<br/>then hires or pauses"]
     I -.->|POOL_STALE abstain| A

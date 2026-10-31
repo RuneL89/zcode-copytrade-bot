@@ -163,6 +163,20 @@ orderings); the rank-fire rule is the momentum mechanism. The freshness guard
 (5-minute tolerance, 2h stand-down) and the POOL_TOO_THIN abstention stage are
 unchanged, and the same guard applies to cold start and idle resume.
 
+### Actively-trading tier (2026-10-31)
+
+Hire selection prefers day traders over holders: candidates whose wallet shows a
+**buy** — not any swap — inside `ACTIVE_BUY_WINDOW_HOURS` (default 4, tunable in
+Settings) are hired ahead of the rest, each tier ranked by the usual merit
+(pnl24h, then activity freshness). The top-7 board candidates get a
+direction-aware Helius refresh on every snapshot cycle (~30 min), so the tier is
+current; sell-only or quiet wallets are not "actively trading". When nobody
+qualifies, the whole ordering falls back to the merit order — the bot still
+hires, it just stops preferring freshness. The engine re-verifies the candidate
+live at hire time; a Helius failure fails **open** (unknown behaves as
+not-active, the 20h/5-swap pre-hire gate still applies). Skipped candidates are
+recorded with the `NOT_ACTIVELY_TRADING` reason.
+
 ### Stall watcher (wired 2026-10-29)
 
 The hourly discipline sweep fires the hired leader when their wallet has shown no

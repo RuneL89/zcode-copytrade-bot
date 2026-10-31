@@ -154,6 +154,7 @@ describe('snapshot freshness semantics', () => {
     repo.updateCandidateActivity(handle.db, 'cand_old', {
       swaps24h: 12,
       lastSwapAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+      lastBuyAt: null,
       checkedAt: new Date(Date.now() - 3600_000).toISOString(),
     });
     repo.upsertCandidateAddress(handle.db, 'cand_old', {

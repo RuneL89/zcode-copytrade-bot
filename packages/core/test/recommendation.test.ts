@@ -47,6 +47,8 @@ function cand(candidateId: string, handle: string, weeklyRank: number, enabled: 
       tradesCount: 120,
       avgTradeUsdMicro: '4000000',
       activityCheckedAt: null,
+      lastBuyAt: null,
+      activelyTrading: false,
     },
     observedAt: new Date(Date.now() - 600_000).toISOString(),
   };

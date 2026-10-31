@@ -58,9 +58,12 @@ async function main() {
         activity.lastSwapAgeHours === null
           ? null
           : new Date(Date.now() - activity.lastSwapAgeHours * 3600_000).toISOString();
+      const buy = await helius.lastBuyWithinWindow(address, config.risk.ACTIVE_BUY_WINDOW_HOURS);
       repo.updateCandidateActivity(db.db, cand.candidateId, {
         swaps24h: activity.swaps24h,
         lastSwapAt,
+        // Unknown (ok:false) keeps the previous value — fail open.
+        lastBuyAt: buy.ok ? buy.lastBuyAt : (cand.lastBuyAt ?? null),
         checkedAt: nowIso,
       });
       const passesGate =
