@@ -19,6 +19,7 @@ import { loadAppConfig } from '../bootstrap.js';
 import { openDatabase, repo } from '@zcode-bot/db';
 import { audit } from '@zcode-bot/db/repo.js';
 import { DawnNeedsLoginError, DawnTraderLookupProvider, DEFAULT_DAWN_CONFIG } from '@zcode-bot/providers';
+import { isDawnParked } from '../services/dawn-park.js';
 
 function sanitizeCandidateId(handle: string): string {
   return 'cand_' + handle.toLowerCase().replace(/[^a-z0-9_]+/g, '_');
@@ -71,7 +72,21 @@ async function main() {
     const staleStats = all.filter(
       (c) => have.has(c.candidateId) && (c.statsCheckedAt == null || c.statsCheckedAt < staleCutoff),
     );
-    targets = [...walletless, ...staleStats].slice(0, limit).map((c) => ({
+    // Honour the silent-Dawn parks (operator directive, 2026-11-01): a handle
+    // that already produced no card twice is skipped, and one silent 3+ times
+    // is parked for a week. Re-asking only burns 2×45s of browser time each.
+    const candidates = [...walletless, ...staleStats];
+    const parked = candidates.filter((c) => isDawnParked(db.db, c.candidateId));
+    const open = candidates.filter((c) => !isDawnParked(db.db, c.candidateId));
+    if (parked.length > 0) {
+      console.log(
+        `skipping ${parked.length} parked handle(s) (silent on Dawn): ${parked
+          .slice(0, 6)
+          .map((c) => c.handle)
+          .join(', ')}${parked.length > 6 ? ', …' : ''}`,
+      );
+    }
+    targets = open.slice(0, limit).map((c) => ({
       candidateId: c.candidateId,
       handle: c.handle,
       profileUrl: (c as { profileUrl?: string | null }).profileUrl ?? undefined,

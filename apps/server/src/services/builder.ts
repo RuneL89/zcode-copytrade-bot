@@ -444,7 +444,8 @@ export class StateBuilder {
       .sort()
       .pop();
     const researchDispatched = Boolean(
-      researchRequestAt && recentControl.some((e) => e.type === 'research_dispatched' && e.createdAt >= researchRequestAt),
+      researchRequestAt &&
+      recentControl.some((e) => e.type === 'research_dispatched' && e.createdAt >= researchRequestAt),
     );
 
     // Idle-fire deadline while a flat hire is counting down (same baseline the
@@ -504,6 +505,10 @@ export class StateBuilder {
     // same pipeline; IDLE_COUNTDOWN makes that explicit for the dashboard.
     if (stage === 'HIRED' && idleFireAtIso) stage = 'IDLE_COUNTDOWN';
 
+    // A board with direction data but no buyer cannot produce a hireable
+    // candidate no matter how often research re-ranks it (2026-11-01).
+    const buying = this.lifecycle.scanBuyingTally();
+
     const hiring: DashboardState['hiring'] = {
       stage,
       stageSince,
@@ -516,6 +521,9 @@ export class StateBuilder {
       researchRequested,
       researchDispatched,
       idleFireAtIso,
+      noBuyerOnBoard: buying.checked > 0 && buying.buyers === 0,
+      buyersOnBoard: buying.buyers,
+      checkedOnBoard: buying.checked,
       autoResume: true,
     };
 

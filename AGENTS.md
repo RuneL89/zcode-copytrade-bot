@@ -35,7 +35,7 @@ reconciliation) belongs to the worker process.
 | `apps/zcode-mcp`     | Restricted MCP server for ZCode research (3 tools only)                                                                                            |
 | `packages/core`      | Domain: money (micro-USD bigints), 0.25x sizing, proportional exits, loss streaks, state machines, recommendation validation, event classification |
 | `packages/db`        | Drizzle ORM + SQLite (WAL), migrations, repositories                                                                                               |
-| `packages/providers` | Leaderboard import + FOMO web adapter, Helius, Jupiter, pricing, notifications                                                                     |
+| `packages/providers` | Leaderboard import + FOMO web adapter, Dawn, Helius, free public Solana RPC (activity refresh), Jupiter, pricing, notifications                    |
 | `packages/config`    | Zod-validated env + risk configuration                                                                                                             |
 | `fixtures`           | Example leaderboard imports, fictional demo timeline                                                                                               |
 

@@ -40,17 +40,26 @@ export interface SanitizedCandidate {
     realizedOnchainUsd: number | null;
     swaps24h: number | null;
     lastSwapAt: string | null;
-    /** Helius activity refresh stamp (6h server timer); freshness evidence for swaps24h/lastSwapAt. */
+    /** Activity refresh stamp (public RPC primary, Helius fallback); freshness evidence for swaps24h/lastSwapAt. */
     activityCheckedAt: string | null;
     /**
-     * Actively-trading signal (hire priority, not a gate): the most recent
-     * on-chain BUY when it fell inside ACTIVE_BUY_WINDOW_HOURS at check time,
-     * else null (no buy in window, or the direction check failed — the tier
-     * then treats the candidate as not active and the merit order decides).
+     * Most recent on-chain BUY within the checker's lookback (any age), from
+     * the activity refresh. Null means "none found" when activityCheckStatus is
+     * 'ok', and "unknown" when it is 'failed' or null.
      */
     lastBuyAt: string | null;
-    /** Computed at snapshot build from lastBuyAt vs the configured window. */
-    activelyTrading: boolean;
+    /** Direction counts within the checker's 24h lookback (public-RPC path; null = unknown). */
+    buys24h: number | null;
+    sells24h: number | null;
+    /** 'ok' = last activity check succeeded; 'failed' = every source errored; null = never checked. */
+    activityCheckStatus: 'ok' | 'failed' | null;
+    /**
+     * Computed at snapshot build: true/false from lastBuyAt vs
+     * ACTIVE_BUY_WINDOW_HOURS when the last check succeeded ('ok'), null when
+     * the direction signal is unknown (failed or never checked). Null is a
+     * concern for the researcher, never a disqualification.
+     */
+    activelyTrading: boolean | null;
     /** Dawn stats card stamp (GUI fetches only); NOT a freshness signal for the activity fields. */
     statsCheckedAt: string | null;
     /** Dawn compact card: PnL per period (unrealized marks, unverified). */

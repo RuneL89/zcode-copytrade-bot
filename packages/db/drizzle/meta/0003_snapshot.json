@@ -39,9 +39,7 @@
       "indexes": {
         "app_user_username_unique": {
           "name": "app_user_username_unique",
-          "columns": [
-            "username"
-          ],
+          "columns": ["username"],
           "isUnique": true
         }
       },
@@ -92,9 +90,7 @@
       "indexes": {
         "idx_audit_created": {
           "name": "idx_audit_created",
-          "columns": [
-            "created_at"
-          ],
+          "columns": ["created_at"],
           "isUnique": false
         }
       },
@@ -153,11 +149,7 @@
       "indexes": {
         "uniq_candidate_address": {
           "name": "uniq_candidate_address",
-          "columns": [
-            "candidate_id",
-            "chain",
-            "address"
-          ],
+          "columns": ["candidate_id", "chain", "address"],
           "isUnique": true
         }
       },
@@ -503,16 +495,12 @@
       "indexes": {
         "idx_position_status": {
           "name": "idx_position_status",
-          "columns": [
-            "status"
-          ],
+          "columns": ["status"],
           "isUnique": false
         },
         "idx_position_activation": {
           "name": "idx_position_activation",
-          "columns": [
-            "activation_id"
-          ],
+          "columns": ["activation_id"],
           "isUnique": false
         }
       },
@@ -969,9 +957,7 @@
       "indexes": {
         "idx_obs_handle": {
           "name": "idx_obs_handle",
-          "columns": [
-            "handle"
-          ],
+          "columns": ["handle"],
           "isUnique": false
         }
       },
@@ -1159,16 +1145,12 @@
       "indexes": {
         "uniq_event_dedupe": {
           "name": "uniq_event_dedupe",
-          "columns": [
-            "dedupe_key"
-          ],
+          "columns": ["dedupe_key"],
           "isUnique": true
         },
         "idx_event_slot": {
           "name": "idx_event_slot",
-          "columns": [
-            "slot"
-          ],
+          "columns": ["slot"],
           "isUnique": false
         }
       },
@@ -1325,16 +1307,12 @@
       "indexes": {
         "uniq_intent_idem": {
           "name": "uniq_intent_idem",
-          "columns": [
-            "idempotency_key"
-          ],
+          "columns": ["idempotency_key"],
           "isUnique": true
         },
         "idx_intent_state": {
           "name": "idx_intent_state",
-          "columns": [
-            "state"
-          ],
+          "columns": ["state"],
           "isUnique": false
         }
       },
@@ -1861,9 +1839,7 @@
       "indexes": {
         "idx_activation_candidate": {
           "name": "idx_activation_candidate",
-          "columns": [
-            "candidate_id"
-          ],
+          "columns": ["candidate_id"],
           "isUnique": false
         }
       },

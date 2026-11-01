@@ -75,12 +75,22 @@ export class SnapshotService {
           lastSwapAt: c.lastSwapAt ?? null,
           activityCheckedAt: c.activityCheckedAt ?? null,
           lastBuyAt: c.lastBuyAt ?? null,
-          // Recomputed at build so stale rows degrade to the merit tier
-          // (fail-open by construction).
+          buys24h: c.buys24h ?? null,
+          sells24h: c.sells24h ?? null,
+          activityCheckStatus:
+            c.activityCheckStatus === 'failed' ? 'failed' : c.activityCheckStatus === 'ok' ? 'ok' : null,
+          // Three-state, recomputed at build: true/false only from a SUCCESSFUL
+          // check ('ok'); a failed or missing check degrades to null (unknown —
+          // a concern for the researcher, never a disqualification).
+          // TRUE only for a measured reading with an attributable coin ENTRY
+          // inside the window; FALSE when measured with no entry; NULL when the
+          // check failed or never ran (unknown — a concern, never a ban).
           activelyTrading:
-            c.lastBuyAt !== null &&
-            Number.isFinite(Date.parse(c.lastBuyAt)) &&
-            now.getTime() - Date.parse(c.lastBuyAt) <= this.risk.ACTIVE_BUY_WINDOW_HOURS * 3600_000,
+            c.activityCheckStatus === 'ok'
+              ? c.lastBuyAt !== null &&
+                Number.isFinite(Date.parse(c.lastBuyAt)) &&
+                now.getTime() - Date.parse(c.lastBuyAt) <= this.risk.ACTIVE_BUY_WINDOW_HOURS * 3600_000
+              : null,
           statsCheckedAt: c.statsCheckedAt ?? null,
           pnl24hUsd: c.pnl24hUsd ?? null,
           pnl7dUsd: c.pnl7dUsd ?? null,

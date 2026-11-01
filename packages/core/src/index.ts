@@ -8,6 +8,7 @@ export * from './eligibility.js';
 export * from './boardRank.js';
 export * from './shortlist.js';
 export * from './events.js';
+export * from './activity.js';
 export * from './eventOrder.js';
 export * from './orderState.js';
 export * from './risk.js';

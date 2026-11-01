@@ -95,7 +95,10 @@ export const DEFAULT_RISK: RiskConfig = {
   // Fired when a HIRED leader's wallet goes silent this long while we hold
   // (the pre-hire gate above still uses MAX_LEADER_STALL_HOURS).
   LEADER_STALL_FIRE_HOURS: 8,
-  MIN_LEADER_SWAPS_24H: 5,
+  // Copyable coin movements (entries + exits) required in 24h to qualify a
+  // candidate (operator decision, 2026-11-01: 3, not 5 — the count now means
+  // real coin movements instead of raw transactions).
+  MIN_LEADER_SWAPS_24H: 3,
   ACTIVE_BUY_WINDOW_HOURS: 4,
   PRICE_MAX_AGE_SECONDS: 45,
   RECOMMENDATION_TTL_MS: 10800000,

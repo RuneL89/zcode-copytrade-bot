@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clockFromSeconds, signedUsd, splitEquity, usd } from '../src/types';
+import { clockFromSeconds, dirPair, signedUsd, splitEquity, usd } from '../src/types';
 
 describe('dashboard money formatting', () => {
   it('formats micro-USD without float drift', () => {
@@ -24,5 +24,12 @@ describe('dashboard money formatting', () => {
     expect(clockFromSeconds(0)).toBe('00:00:00');
     expect(clockFromSeconds(3661)).toBe('01:01:01');
     expect(clockFromSeconds(24 * 3600 - 1)).toBe('23:59:59');
+  });
+
+  it('renders the on-chain direction pair with explicit unknowns', () => {
+    expect(dirPair(6, 3)).toBe('6b · 3s');
+    expect(dirPair(0, 0)).toBe('0b · 0s');
+    expect(dirPair(6, null)).toBe('6b · ?s');
+    expect(dirPair(null, null)).toBe('—');
   });
 });

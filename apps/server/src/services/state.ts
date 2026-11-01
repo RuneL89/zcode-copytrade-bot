@@ -192,6 +192,17 @@ export interface DashboardState {
     researchDispatched: boolean;
     /** When the idle fire is due, while a flat hire is counting down. */
     idleFireAtIso: string | null;
+    /**
+     * True when the newest board scan has direction data and NONE of its
+     * candidates bought inside ACTIVE_BUY_WINDOW_HOURS: nobody is hireable, and
+     * fresh research cannot change that. The dashboard says so instead of
+     * implying a hire is imminent.
+     */
+    noBuyerOnBoard: boolean;
+    /** How many of the latest scan's candidates bought inside the window. */
+    buyersOnBoard: number;
+    /** How many of the latest scan's candidates have a successful activity check. */
+    checkedOnBoard: number;
     /** Constant: a validated ordering auto-hires its top eligible candidate. */
     autoResume: true;
   };

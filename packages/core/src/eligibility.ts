@@ -157,9 +157,7 @@ export function deriveJustFiredExclusion(
   if (!lastFired) return null;
   const filled = activations.some(
     (a) =>
-      a.candidateId !== lastFired!.candidateId &&
-      a.startedAt !== null &&
-      a.startedAt >= lastFired!.endedAt!,
+      a.candidateId !== lastFired!.candidateId && a.startedAt !== null && a.startedAt >= lastFired!.endedAt!,
   );
   return filled ? null : { candidateId: lastFired.candidateId, firedAt: lastFired.endedAt! };
 }

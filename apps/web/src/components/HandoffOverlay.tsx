@@ -3,7 +3,7 @@ import type { DashboardState } from '../types';
 import { Avatar } from './charts';
 
 /**
- * Fired-trader handoff animation:
+ * Fired-trader handoff animation (tightened to ~3.1s):
  *   1. dim the background        (scrim)
  *   2. raise the outgoing card   (anim-raise)
  *   3. UNFOLLOWED state          (label)
@@ -17,39 +17,42 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
   const [visible, setVisible] = useState(true);
   useEffect(() => {
     setVisible(true);
-    const timer = setTimeout(() => setVisible(false), 4600);
+    const timer = setTimeout(() => setVisible(false), 3_200);
     return () => clearTimeout(timer);
   }, [handoff.atIso, handoff.fromHandle, handoff.toHandle]);
 
   if (!visible) return null;
   const waiting = handoff.phase === 'WAITING_FOR_ZCODE' || handoff.toHandle === null;
   const freshResearch = handoff.phase === 'PAUSED_FOR_FRESH_RESEARCH';
-  const reasonLine = `${(handoff.fromReason ?? '2 consecutive losses').toUpperCase()} → ${
-    freshResearch ? 'FRESH RESEARCH FIRST' : 'NEXT CANDIDATE'
+  const reasonLine = `${(handoff.fromReason ?? '2 consecutive losses').toLowerCase()} → ${
+    freshResearch ? 'fresh research first' : 'next candidate'
   }`;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-5 anim-scrim"
-      style={{ background: 'rgba(24, 20, 44, 0.45)', backdropFilter: 'blur(4px)' }}
+      style={{ background: 'rgba(4, 5, 8, 0.7)', backdropFilter: 'blur(6px)' }}
       role="alert"
       aria-live="assertive"
       data-testid="handoff-overlay"
     >
       <div className="w-full max-w-[400px]">
-        <div className="card !bg-white/85 p-5 anim-raise relative overflow-hidden" data-testid="handoff-card">
-          <p className="label !text-rose-600">UNFOLLOWED</p>
+        <div
+          className="card !bg-glassstrong p-5 anim-raise relative overflow-hidden"
+          data-testid="handoff-card"
+        >
+          <p className="tag !text-neg">UNFOLLOWED</p>
           <div className="mt-2 flex items-center gap-3">
             <Avatar name={handoff.fromHandle} size={44} />
             <div>
               <p className="text-[16px] font-bold">@{handoff.fromHandle}</p>
-              <p className="text-[11px] text-[#7d78a0]">
+              <p className="text-[11px] text-muted">
                 {handoff.fromRank !== null ? `#${handoff.fromRank} weekly · ` : ''}
                 {handoff.fromPnlText ?? 'PnL —'}
               </p>
             </div>
           </div>
-          <p className="label mt-2 !text-[9px]">{reasonLine}</p>
+          <p className="label mt-2 !text-[10px] !text-faint">{reasonLine}</p>
 
           {/* rotated red stamp */}
           <div
@@ -58,8 +61,8 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
             aria-label="trader fired"
           >
             <span
-              className="inline-block border-[3px] border-rose-600 text-rose-600 rounded-md px-3 py-1 text-[20px] font-black tracking-[0.2em]"
-              style={{ transform: 'rotate(-14deg)', background: 'rgba(255,235,235,0.7)' }}
+              className="inline-block border-[3px] border-neg text-neg rounded-md px-3 py-1 text-[20px] font-black tracking-[0.2em] mono"
+              style={{ transform: 'rotate(-12deg)', background: 'rgba(255, 107, 107, 0.08)' }}
             >
               FIRED
             </span>
@@ -68,11 +71,11 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
           {/* downward execution arrow */}
           <div className="anim-arrow flex justify-center my-2" aria-hidden="true">
             <svg width="26" height="34" viewBox="0 0 26 34">
-              <path d="M13 2v24" stroke="#2a2740" strokeWidth="2.5" strokeLinecap="round" />
+              <path d="M13 2v24" stroke="var(--color-ink)" strokeWidth="2.5" strokeLinecap="round" />
               <path
                 d="M6 22l7 8 7-8"
                 fill="none"
-                stroke="#2a2740"
+                stroke="var(--color-ink)"
                 strokeWidth="2.5"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -81,45 +84,39 @@ export function HandoffOverlay({ handoff }: { handoff: NonNullable<DashboardStat
           </div>
 
           {waiting ? (
-            <div
-              className="anim-reveal rounded-[18px] bg-orange-50 border border-orange-200 p-4"
-              data-testid="waiting-zcode"
-            >
-              <p className="label !text-orange-700">
-                {freshResearch ? 'HIRED PAUSED - FRESH RESEARCH FIRST' : 'WAITING FOR ZCODE'}
+            <div className="anim-reveal panel border-warnborder bg-warndim p-3.5" data-testid="waiting-zcode">
+              <p className="tag !text-warn">
+                {freshResearch ? 'HIRED PAUSED — FRESH RESEARCH FIRST' : 'WAITING FOR ZCODE'}
               </p>
               {freshResearch ? (
-                <p className="text-[12px] text-[#7d78a0] mt-1">
-                  The board has refreshed since the last recommendation, so the bot will not hire
-                  from a stale ranking. The next research pass re-ranks the current board and the
-                  best candidate right now is hired automatically.
+                <p className="text-[12px] text-muted mt-1">
+                  The board has refreshed since the last recommendation, so the bot will not hire from a stale
+                  ranking. The next research pass re-ranks the current board and the best candidate right now
+                  is hired automatically.
                 </p>
               ) : (
-                <p className="text-[12px] text-[#7d78a0] mt-1">
+                <p className="text-[12px] text-muted mt-1">
                   No eligible replacement in the latest recommendation. Monitoring, mirrored exits,
-                  reconciliation, and emergency controls continue. Use the ZCode scheduled task's
-                  "Run now" action or import a fresh recommendation.
+                  reconciliation, and emergency controls continue. Use the ZCode scheduled task's "Run now"
+                  action or import a fresh recommendation.
                 </p>
               )}
             </div>
           ) : (
-            <div
-              className="anim-reveal rounded-[18px] bg-white/80 border border-white p-4 flex items-center gap-3"
-              data-testid="now-copying"
-            >
+            <div className="anim-reveal panel p-3.5 flex items-center gap-3" data-testid="now-copying">
               <Avatar name={handoff.toHandle!} size={40} />
               <div>
-                <p className="label !text-emerald-700">NOW COPYING</p>
+                <p className="tag !text-pos">NOW COPYING</p>
                 <p className="text-[15px] font-bold">@{handoff.toHandle}</p>
-                <p className="text-[11px] text-[#7d78a0]">
-                  {handoff.toRank !== null ? `#${handoff.toRank} weekly · ` : ''}copy 0.25x · exits when he
-                  sells
+                <p className="text-[11px] text-muted">
+                  {handoff.toRank !== null ? `#${handoff.toRank} weekly · ` : ''}copy 0.25x · exits when the
+                  leader sells
                 </p>
               </div>
             </div>
           )}
 
-          <p className="label !text-[8.5px] mt-3 text-center">
+          <p className="label !text-[9px] !text-faint mt-3 text-center">
             {handoff.demo ? 'FICTIONAL DEMO · NOT A PERFORMANCE CLAIM' : 'EXECUTED BY ZCODE BOT WORKER'}
           </p>
         </div>

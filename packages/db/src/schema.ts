@@ -41,13 +41,22 @@ export const traderCandidates = sqliteTable('trader_candidates', {
   recentSells: integer('recent_sells'),
   coinsTraded: integer('coins_traded'),
   lastTradeAgeHours: real('last_trade_age_hours'),
-  // Helius on-chain activity (the same numbers the pre-hire gate enforces).
+  // On-chain activity (the same numbers the pre-hire gate enforces). Primary
+  // source: free public Solana RPC; Helius is the fallback.
   swaps24h: integer('swaps_24h'),
   lastSwapAt: text('last_swap_at'),
   activityCheckedAt: text('activity_checked_at'),
-  // Direction-aware: most recent on-chain BUY within ACTIVE_BUY_WINDOW_HOURS
-  // (null = none found in the window, or the check has not run/failed).
+  // Direction-aware: most recent on-chain BUY within the checker's lookback at
+  // ANY age. Null ambiguity ("no buy" vs "check failed") is resolved by
+  // activity_check_status ('ok' | 'failed').
   lastBuyAt: text('last_buy_at'),
+  // Direction counts within the checker's 24h lookback (public-RPC path only;
+  // null when the fallback source could not classify directions).
+  buys24h: integer('buys_24h'),
+  sells24h: integer('sells_24h'),
+  // 'ok' = last check succeeded (columns are current); 'failed' = every source
+  // errored (older column values were preserved).
+  activityCheckStatus: text('activity_check_status'),
   observedAt: text('observed_at').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),

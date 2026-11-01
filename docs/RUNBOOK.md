@@ -168,14 +168,16 @@ unchanged, and the same guard applies to cold start and idle resume.
 Hire selection prefers day traders over holders: candidates whose wallet shows a
 **buy** — not any swap — inside `ACTIVE_BUY_WINDOW_HOURS` (default 4, tunable in
 Settings) are hired ahead of the rest, each tier ranked by the usual merit
-(pnl24h, then activity freshness). The top-7 board candidates get a
-direction-aware Helius refresh on every snapshot cycle (~30 min), so the tier is
-current; sell-only or quiet wallets are not "actively trading". When nobody
-qualifies, the whole ordering falls back to the merit order — the bot still
-hires, it just stops preferring freshness. The engine re-verifies the candidate
-live at hire time; a Helius failure fails **open** (unknown behaves as
-not-active, the 20h/5-swap pre-hire gate still applies). Skipped candidates are
-recorded with the `NOT_ACTIVELY_TRADING` reason.
+(lastBuyAt freshness, then pnl24h). The top-7 board candidates get a
+direction-aware refresh on every snapshot cycle (~30 min) — free public Solana
+RPC primary, Helius fallback — so the tier is current; sell-only or quiet
+wallets are not "actively trading". When nobody qualifies, the whole ordering
+falls back to the merit order. Every hire is direction-verified in BOTH passes
+(since 2026-10-31 — the merit pass used to skip the check, which is how a
+wallet 15h past its last buy got hired during a rate-limit storm): the live
+walk decides; when the walk fails, the last SUCCESSFUL refresh decides (fail
+closed on data); only a failed or never-run check fails open. Skipped
+candidates are recorded with the `NOT_ACTIVELY_TRADING` reason.
 
 ### Stall watcher (wired 2026-10-29)
 
@@ -190,15 +192,15 @@ closes any open positions and the replacement takes the slot. This is what makes
 The rank-fire rule above usually fires first; the stall watcher is the backstop
 for when the board itself is unavailable.
 
-### Wallet resolution runs itself — except one state
+### Wallet resolution runs in the data sweep — except one state
 
-The runtime resolves missing wallets through Dawn once 2 minutes after every boot,
-then every 6 hours, and **immediately after any snapshot rebuild that still sees
-walletless enabled candidates** (throttled to one auto-run per 20 minutes, added
-2026-10-30 — this is what gives a fresh board import same-cycle wallet
-resolution). Every run is audited: `lookup run starting (N walletless,
-M stale-stats)`, `resolved N address(es), M unresolved`, or
-`lookup skipped: another run already in progress`. The one state that needs you:
+Since 2026-10-31 the 30-minute data-sweep cron resolves missing wallets via
+`tsx src/cli/dawn-lookup.ts --all-missing --limit 20` right after each board
+import (walletless candidates only). The server itself no longer schedules
+Dawn — no boot run, no 6h timer, no post-rebuild auto-run; manual operator
+runs still work. Every run is audited: `lookup run starting`, `resolved N
+address(es), M unresolved`, or `lookup skipped: another run already in
+progress`. The one state that needs you:
 
 > `Telegram session needs login; QR login window opened`
 
@@ -327,14 +329,16 @@ at $100 capital / $10 bets). Rare 429s fail closed: a mark skips one cycle
 to the Developer tier **only if** request volume ever requires it (roughly 40+
 concurrent positions at current sizing) **and** profits justify the cost.
 
-### Helius credits (decision: 36 s polling, free plan)
+### Helius credits (decision: 36 s polling, free plan; bulk refresh off Helius since 2026-10-31)
 
 Helius free plan = 1M credits/month. Credit costs: standard RPC (`getBalance`,
 `getLatestBlockhash`) 1 credit; `getSignaturesForAddress` 10; the monitor's
 `getTransactionsForAddress` 10-credit minimum per call. At the current
 `LEADER_POLL_INTERVAL_MS=36000` the runtime burns ~27,900 credits/day
-(~2,400 polls + health + SOL balance + activity refresh) → the free million
-lasts ~36 days. Live mode starts on the same free plan; if credits ever get
+(~2,400 polls + health + SOL balance) → the free million lasts ~36 days.
+The candidate activity refresh (the bursty part that once burned 429s) moved
+to the free public Solana RPC (`PUBLIC_SOLANA_RPC_URL`); Helius is only its
+fallback. Live mode starts on the same free plan; if credits ever get
 tight (higher capital, faster copying wanted), the options are a slower poll
 or the Developer tier ($49/mo, 10M credits — ~3+ months at 8 s polling).
 Watch per-method usage in the Helius dashboard; a burnt budget shows up as

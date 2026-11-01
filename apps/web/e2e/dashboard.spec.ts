@@ -7,30 +7,31 @@ test.describe('demo dashboard (fictional)', () => {
 
     // Header
     await expect(page.getByRole('heading', { name: 'ZCode Bot' })).toBeVisible();
-    await expect(page.getByText('COPY TRADING · FOMO')).toBeVisible();
+    await expect(page.getByText('Copy trading · FOMO')).toBeVisible();
     await expect(page.getByTestId('badge-demo')).toBeVisible();
 
     // Fictional banner persists throughout
-    await expect(page.getByTestId('demo-banner')).toContainText('FICTIONAL DEMO · NOT A PERFORMANCE CLAIM');
+    await expect(page.getByTestId('demo-banner')).toContainText('Fictional demo · not a performance claim');
 
     // Equity hero with source labeling
-    await expect(page.getByTestId('equity-source')).toContainText('FICTIONAL DEMO FIXTURES');
+    await expect(page.getByTestId('equity-source')).toContainText('Fictional demo fixtures');
 
-    // Active trader card with copy scale + fire rule
+    // Active trader card with copy scale + fire rule + pipeline
     await expect(page.getByTestId('active-trader')).toBeVisible();
     await expect(page.getByTestId('active-trader').getByText('COPY 0.25x')).toBeVisible();
     await expect(page.getByTestId('active-trader').getByText(/FIRE AT 2 L/)).toBeVisible();
+    await expect(page.getByTestId('hiring-pipeline')).toBeVisible();
 
     // Charts + candidates panel
-    await expect(page.getByText('EVERY COPIED CLOSE')).toBeVisible();
+    await expect(page.getByText('Every copied close · ledger all-time')).toBeVisible();
     await expect(page.getByTestId('candidates-panel')).toBeVisible();
-    await expect(page.getByText('WHO WE COPY')).toBeVisible();
+    await expect(page.getByText('Who we copy')).toBeVisible();
   });
 
   test('28s replay: two fired handoffs, final stats exact', async ({ page }) => {
     await completeSetup(page);
     // Restart the replay deterministically from the banner button.
-    await page.getByRole('button', { name: /REPLAY 28s/ }).click();
+    await page.getByRole('button', { name: /Replay 28s/i }).click();
 
     // Equity starts at the fictional $52.00.
     await expect(page.locator('p.money').first()).toContainText('52', { timeout: 10_000 });
@@ -51,27 +52,32 @@ test.describe('demo dashboard (fictional)', () => {
     await expect
       .poll(async () => page.locator('p.money').first().innerText(), { timeout: 25_000 })
       .toContain('4,939');
-    await expect(page.getByRole('region', { name: 'equity' }).getByText('48', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('region', { name: 'trade history' }).getByText('48', { exact: true }),
+    ).toBeVisible();
   });
 
   test('settings, ops and audit routes render on separate views', async ({ page }) => {
     await completeSetup(page);
-    await page.getByRole('button', { name: 'OPS', exact: true }).click();
+    await page.getByRole('button', { name: 'Ops', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Operations' })).toBeVisible();
     await expect(page.getByTestId('ops-status')).toBeVisible();
-    await expect(page.getByText('OUTPUT', { exact: true })).toBeVisible();
+    await expect(page.getByText('Output', { exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Commands' }).click();
     await expect(page.getByTestId('op-backup-data')).toBeVisible();
 
-    await page.getByRole('button', { name: 'SETTINGS', exact: true }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-    await expect(page.getByText('MANUAL FOMO LEADERBOARD IMPORT')).toBeVisible();
-    await expect(page.getByText('LIVE READINESS')).toBeVisible();
+    await page.getByRole('tab', { name: 'Imports' }).click();
+    await expect(page.getByText('Manual FOMO leaderboard import')).toBeVisible();
+    await page.getByRole('tab', { name: 'Live' }).click();
+    await expect(page.getByText('Live readiness & arming')).toBeVisible();
 
-    await page.getByRole('button', { name: 'AUDIT', exact: true }).click();
+    await page.getByRole('button', { name: 'Audit', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Audit' })).toBeVisible();
-    await expect(page.getByText('EVENT LOG')).toBeVisible();
+    await expect(page.getByText('Event log')).toBeVisible();
 
-    await page.getByRole('button', { name: 'TRADE', exact: true }).click();
+    await page.getByRole('button', { name: 'Trade', exact: true }).click();
     await expect(page.getByTestId('active-trader')).toBeVisible();
   });
 });

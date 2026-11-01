@@ -150,10 +150,18 @@ for the subagent-exclusivity rule.
 The pool is restricted to **day traders**: fast, currently-active, positive today. Decisions:
 
 - **Capture** (the sweep, automated): the always-visible top rows of the 24H board — no scrolling, **every 30-minute run unconditionally**. Clipboard URL per row, imported by `fomo-import`, snapshot rebuilt by `snapshot-rebuild`. Manual capture follows the same shape. The import writes the row's displayed 24h PnL into `pnl_24h_usd` (stamped with the scan time), so a newly seen trader carries a fresh positive-day figure immediately; Dawn's card later replaces it.
-- **Activity gate (Helius, hard):** ≥5 swaps in the last 24h on-chain, last swap ≤20h — confirmed before every hire. Data arrives fast: a board import triggers an automatic activity refresh for any wallet-having candidate with missing or stale stamps (throttled to one per 20 min), alongside the boot + 6h schedule.
+- **Activity gate (on-chain, hard):** ≥5 swaps in the last 24h on-chain, last swap ≤20h — confirmed before every hire. Data arrives fast: a board import triggers an automatic activity refresh for any wallet-having candidate with missing or stale stamps (throttled to one per 20 min), alongside the boot + 6h schedule. **Primary source since 2026-10-31: the free public Solana RPC** (direction-aware: buys/sells counts + most-recent-buy at any age); Helius is the fallback and keeps the 8-second leader monitor exclusively. Never spend Helius credits on the bulk refresh.
+- **Direction gate (engine, hard, 2026-10-31):** every hire — both the actively-trading tier AND the merit pass — verifies the wallet's most recent BUY is inside `ACTIVE_BUY_WINDOW_HOURS` (live walk; the cached evidence decides when the walk fails, and only a failed/never-run check fails open). A wallet proven quiet is not a day-trader hire, whichever tier it sits in.
 - **Momentum gate (researcher, hard):** `pnl24hUsd > 0` with `statsCheckedAt` within 12h. A trader with a non-positive or unknown day is not qualified, however good the week looks — the system holds ≤16h, so only the current window is copyable.
 - **Board-presence hire guard (engine, hard, 2026-10-30):** every hire requires the handle to be on the latest captured scan; combined with the rank-fire rule below, the board decides both holding and hiring.
-- **Wallet resolution (Dawn):** runs automatically — boot +2 min, then every 6h, oldest stats first, plus an auto-run after any rebuild that still sees walletless candidates (one per 20 min max), so new faces from a fresh import are resolved the same cycle. One polite message per candidate → wallet + paper PnL marks + win rate stored (realized PnL is null for everyone: the rich card is unreachable).
+- **Wallet resolution (Dawn):** owned by the 30-minute data sweep since
+  2026-10-31 (operator decision): every sweep runs
+  `tsx src/cli/dawn-lookup.ts --all-missing --limit 20` — walletless candidates
+  only — right after the board import. The server NO LONGER auto-runs Dawn
+  (no boot run, no 6h timer, no post-rebuild auto-run); operator-initiated
+  manual runs still work. One polite message per candidate → wallet + paper
+  PnL marks + win rate stored (realized PnL is null for everyone: the rich
+  card is unreachable).
 - **Rank-fire rule (engine, 2026-10-30):** the hired trader is fired when he is absent from the latest scan once, or outside displayed top-3 in two consecutive scans; both branches stand down when the latest scan is older than 2h. No fired-trader cooldown exists — a fired trader is rehireable the moment he qualifies again.
 - **Stall watcher (wired 2026-10-29):** a hired leader whose wallet shows no on-chain activity for `LEADER_STALL_FIRE_HOURS` (8h, tunable in Settings) while we hold is fired — regardless of open-position winners — and replaced from the shortlist. Judged only when the Helius activity stamp is fresh; backstop for board outages.
 - **Ranking (researcher):** board-first — the latest scan's handles are the hireable universe (the snapshot's `latestScan` names them; the engine rejects everything else), qualify on the activity gate + positive fresh day, then order by 24h PnL descending (tie-break: fresher activity check, then more swaps). Divergence concerns (all-time >> 30d, day-hot/week-cold) are recorded, not enforced — the engine's reactive controls (rank-fire, 2-loss fire, 12h idle fire, 16h time exit, 8h stall fire) are the real protection.
@@ -173,16 +181,20 @@ the clipboard; numbers come from the row or the profile page, never from OCR.
    (`tools/gui/profile-stats.ps1` and the `avg_hold_hours`/`trades_count_7d`
    columns it filled are retired — the Stage-1 gate they fed was never enforced
    and was removed 2026-10-29; the columns remain in the DB, unused.)
-3. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts --limit 30` - Helius
-   `walletActivity24h` per wallet -> `swaps_24h`, `last_swap_at` + stamp
-   `activity_checked_at` (the activity-freshness evidence); addresses that
-   pass the pre-hire gate are upgraded to verification "verified".
-   Also runs on a 6h server timer and via the Ops action "Refresh candidate activity now".
+3. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts [--limit 30] [--source public|helius]` -
+   activity refresh per wallet: free public Solana RPC primary (direction-aware:
+   `swaps_24h`, `last_swap_at`, `buys_24h`/`sells_24h`, `last_buy_at` = most
+   recent BUY within the lookback at any age, `activity_check_status`),
+   Helius fallback. Addresses that pass the pre-hire gate are upgraded to
+   verification "verified". Also runs on the 6h server timer, on snapshot
+   rebuilds (top-7, throttled), and via the Ops action "Refresh candidate
+   activity now". `tsx src/cli/wallet-activity.ts <address> [--hours N]` is the
+   ad-hoc single-wallet verifier (read-only, no DB writes).
 4. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` -
    Dawn compact card -> PnL 24h/7d/30d/all-time + ranks, lifetime trades, volume,
    recent buys/sells, coins, last-trade age; win rate/realized when present.
-   The runtime also runs this automatically: once 2 minutes after every boot and
-   then every 6h, oldest stats first, with an audit line for every outcome
+   Run by the 30-minute data sweep for walletless candidates only (see
+   Day-trader mode above); audit lines record every outcome
    (`lookup run starting`, `resolved N address(es)`, `Telegram session needs
 login; QR login window opened`, or `lookup skipped: another run already in
 progress`). A dead Telegram session is the one state that needs a human: scan
@@ -225,13 +237,14 @@ realized/win stay null on our path; profitability ranking uses the PnL periods.
 
 ### Ranking rule (researcher, re-ratified 2026-10-29)
 
-Qualify on activity (`swaps24h` >= 5 and last swap <= 20h, or the compact-card
+Qualify on copyable activity (`swaps24h` >= 3 copyable coin movements and last copyable trade <= 20h — fee payouts and dust never count, or the compact-card
 equivalents `lastTradeAgeHours` / `recentBuys + recentSells`) AND a positive
 fresh day: `pnl24hUsd > 0` with `statsCheckedAt` within 12h. Then order by
 `pnl24hUsd` desc, tie-break fresher `activityCheckedAt`, then higher `swaps24h`.
 The system holds <=16h, so the day is the only window that gets copied; 7d/30d
 figures are context. Judge how fresh the
-activity numbers are by `activityCheckedAt` (6h Helius timer); `statsCheckedAt`
+activity numbers are by `activityCheckedAt` (public-RPC refresh: top-7 on
+snapshot rebuilds + 6h pool timer); `statsCheckedAt`
 only advances on Dawn fetches and says nothing about the activity fields.
 Divergence (all-time >> 30d, day-hot/week-cold) is flagged as point-farm
 suspicion in `concerns` — never a silent filter.

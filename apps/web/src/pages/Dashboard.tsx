@@ -22,17 +22,17 @@ export function Dashboard({
       <Header state={state} connected={connected} />
       {state.fictional && (
         <div
-          className="card !bg-amber-50/80 border-amber-200 p-2.5 mb-4 flex items-center justify-between gap-2"
+          className="card !bg-warndim !border-warnborder p-2.5 mb-3.5 flex items-center justify-between gap-2"
           data-testid="demo-banner"
         >
-          <p className="label !text-amber-700 !text-[9px] leading-snug">
-            FICTIONAL DEMO · NOT A PERFORMANCE CLAIM
+          <p className="label !text-warn !text-[10px] leading-snug">
+            Fictional demo · not a performance claim
           </p>
           <button
             onClick={onDemoReplay}
-            className="label !text-[9px] !text-amber-800 border border-amber-300 rounded-full px-3 py-1 hover:bg-amber-100 transition-colors"
+            className="label !text-[10px] !text-warn border border-warnborder chip hover:bg-warndim cursor-pointer"
           >
-            ↻ REPLAY 28s
+            ↻ Replay 28s
           </button>
         </div>
       )}
@@ -43,14 +43,14 @@ export function Dashboard({
       <ClosesChart state={state} />
       <CandidatesPanel state={state} />
       <footer className="pb-24 text-center">
-        <p className="label !text-[8.5px]">
-          ZCODE BOT · MODE {state.mode.toUpperCase()} · {state.armed ? 'LIVE ARMED' : 'NOT ARMED'} · WORKER{' '}
-          {state.health.workerRunning ? 'OK' : 'DOWN'} · HELIUS {state.health.helius} · JUPITER{' '}
-          {state.health.jupiter}
+        <p className="label !text-[9.5px] !text-faint">
+          ZCode Bot · mode {state.mode} · {state.armed ? 'live armed' : 'not armed'} · worker{' '}
+          {state.health.workerRunning ? 'ok' : 'down'} · helius {state.health.helius.toLowerCase()} · jupiter{' '}
+          {state.health.jupiter.toLowerCase()}
         </p>
         {state.health.pendingReconciliations > 0 && (
-          <p className="label !text-[8.5px] !text-fuchsia-700 mt-1">
-            {state.health.pendingReconciliations} RECONCILIATION CASE(S) OPEN
+          <p className="label !text-[9.5px] !text-info mt-1">
+            {state.health.pendingReconciliations} reconciliation case(s) open
           </p>
         )}
       </footer>

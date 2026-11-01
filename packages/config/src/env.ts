@@ -24,6 +24,11 @@ export const envSchema = z.object({
   HELIUS_WEBHOOK_SECRET: z.string().default(''),
   LEADER_POLL_INTERVAL_MS: intervalMs.default(8000),
 
+  // Free public Solana JSON-RPC for the candidate activity refresh (research
+  // phase). Unset = the well-known public endpoint; empty string disables it
+  // and the refresh falls back to Helius. The trading monitor never uses this.
+  PUBLIC_SOLANA_RPC_URL: z.string().default('https://api.mainnet-beta.solana.com'),
+
   JUPITER_BASE_URL: z.string().url().default('https://lite-api.jup.ag'),
   JUPITER_API_KEY: z.string().default(''),
 
@@ -43,7 +48,8 @@ export const envSchema = z.object({
   DAWN_BOT_USERNAME: z.string().optional(),
   DAWN_WEB_URL: z.string().url().default('https://web.telegram.org/k/'),
   DAWN_BROWSER_CHANNEL: z.enum(['chrome', 'msedge']).optional(),
-  DAWN_LOOKUP_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
+  // Scheduled Dawn runs moved to the 30-minute data sweep (CLI-driven);
+  // DAWN_MAX_LOOKUPS_PER_RUN still caps each run.
   DAWN_MAX_LOOKUPS_PER_RUN: z.coerce.number().int().positive().default(25),
 
   // Helius activity refresh (day-trader ranking + pre-hire gate alignment).

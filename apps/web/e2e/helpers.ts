@@ -23,7 +23,7 @@ export async function completeSetup(page: Page) {
     await page.locator('input[type="password"]').first().fill('e2e-password-123');
     await page.getByRole('button', { name: 'Sign in' }).click();
   }
-  await expect(page.getByText('FICTIONAL DEMO', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/fictional demo/i).first()).toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -62,5 +62,5 @@ export async function login(page: Page) {
   await inputs.first().fill('admin');
   await page.locator('input[type="password"]').first().fill('e2e-password-123');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.getByText('FICTIONAL DEMO', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/fictional demo/i).first()).toBeVisible({ timeout: 30_000 });
 }

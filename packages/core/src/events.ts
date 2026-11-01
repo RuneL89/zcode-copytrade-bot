@@ -54,6 +54,12 @@ export interface LeaderTxSummary {
   nativeDeltaBase: bigint;
   /** Non-zero token deltas across token accounts owned by the leader. */
   tokenDeltas: TokenDelta[];
+  /**
+   * Mints that moved on token accounts NOT owned by the leader (pool vaults,
+   * program/PDA accounts). Signer-attributed measurements use these to count a
+   * routed trade as activity without ever claiming it as an entry.
+   */
+  foreignTokenMints?: string[];
   /** Program IDs invoked (outer + inner instructions). */
   programs: string[];
 }

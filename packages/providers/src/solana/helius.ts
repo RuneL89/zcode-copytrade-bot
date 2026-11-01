@@ -354,6 +354,60 @@ export class HeliusProvider {
    * ok:false (unknown), which callers treat as "not known to be active" and
    * fall back to the merit order.
    */
+  /**
+   * Newest-first transactions with full parsed bodies, paged. Used by the
+   * copyable-activity measure: Helius returns up to `limit` transactions per
+   * call, so a 100-transaction sample costs 2-3 requests instead of 100 —
+   * which is what makes deep sampling survivable on a rate-limited public node.
+   * Throws on transport failure so the caller can decide to fall back.
+   */
+  async recentTransactions(
+    address: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<
+    Array<{
+      signature: string;
+      slot: number;
+      transactionIndex: number;
+      blockTime: number | null;
+      err: boolean;
+      raw: Record<string, unknown>;
+    }>
+  > {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 100);
+    const result = await this.rpc<{
+      data: Array<{
+        signature?: string | null;
+        slot: number;
+        transactionIndex?: number;
+        blockTime: number | null;
+        err: unknown;
+        transaction?: { signatures?: string[] } | null;
+        meta?: unknown;
+      }>;
+    }>('getTransactionsForAddress', [
+      address,
+      {
+        transactionDetails: 'full',
+        sortOrder: 'desc',
+        limit,
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 1,
+        ...(opts.before ? { before: opts.before } : {}),
+      },
+    ]);
+    return (result?.data ?? [])
+      .map((r) => ({
+        signature: signatureOf(r),
+        slot: r.slot,
+        transactionIndex: r.transactionIndex ?? 0,
+        blockTime: r.blockTime,
+        err: r.err != null,
+        raw: r as unknown as Record<string, unknown>,
+      }))
+      .filter((r) => r.signature.length > 0);
+  }
+
   async lastBuyWithinWindow(
     address: string,
     windowHours: number,
@@ -498,6 +552,132 @@ export class HeliusProvider {
       err: tx.err,
       nativeDeltaBase: nativeDelta,
       tokenDeltas,
+      programs: [...programs],
+    };
+  }
+
+  /**
+   * Signer-attributed summary used by the copyable-activity measure
+   * (operator decision, 2026-11-01). Differs from `toLeaderTxSummary` in two
+   * deliberate ways:
+   *
+   *  - returns null unless the wallet actually SIGNED the transaction, because
+   *    activity is "anything he authorised", not "anything touching his ATAs";
+   *  - additionally reports `foreignTokenMints`: mints that moved on accounts
+   *    he does not own (pool vaults, program/PDA accounts). A routed buy shows
+   *    up there, which lets it count as activity without ever being claimed as
+   *    an attributable entry — its size and direction stay honest unknowns.
+   *
+   * Deliberately separate from `toLeaderTxSummary`: the live copy engine keeps
+   * its stricter owner-scoped semantics until it is migrated on its own.
+   */
+  static toSignerTxSummary(leaderAddress: string, tx: FetchedLeaderTx): LeaderTxSummary | null {
+    const raw = tx.raw as {
+      transaction?: {
+        message?: {
+          accountKeys?: Array<string | { pubkey: string; signer?: boolean }>;
+          instructions?: ParsedInstruction[];
+        };
+      };
+      meta?: {
+        err?: unknown;
+        preBalances?: number[];
+        postBalances?: number[];
+        preTokenBalances?: TokenBalance[];
+        postTokenBalances?: TokenBalance[];
+        innerInstructions?: Array<{ instructions?: ParsedInstruction[] }>;
+        loadedAddresses?: { writable?: string[]; readonly?: string[] };
+      };
+    };
+    const meta = raw.meta ?? {};
+    const message = raw.transaction?.message;
+    const rawKeys = message?.accountKeys ?? [];
+    // Signers: jsonParsed responses flag each key ({pubkey, signer}); the
+    // enhanced getTransactionsForAddress response returns bare strings plus
+    // message.header.numRequiredSignatures. Honour both, or attribution is
+    // silently empty on one of the two transports.
+    const header = (message as { header?: { numRequiredSignatures?: number } } | undefined)?.header;
+    const requiredSigners = Math.min(
+      Math.max(header?.numRequiredSignatures ?? 1, 0),
+      rawKeys.length,
+    );
+    const signerKeys = new Set<string>();
+    for (let i = 0; i < requiredSigners; i++) {
+      const key = rawKeys[i];
+      if (key) signerKeys.add(typeof key === 'string' ? key : key.pubkey);
+    }
+    const signed =
+      signerKeys.has(leaderAddress) ||
+      rawKeys.some((k) => typeof k !== 'string' && k.pubkey === leaderAddress && k.signer === true);
+    if (!signed) return null;
+
+    const staticKeys = rawKeys.map((k) => (typeof k === 'string' ? k : k.pubkey));
+    const loaded = meta.loadedAddresses ?? {};
+    const accountKeys = [...staticKeys, ...(loaded.writable ?? []), ...(loaded.readonly ?? [])];
+
+    const programs = new Set<string>();
+    const addPrograms = (instrs?: ParsedInstruction[]) => {
+      for (const ins of instrs ?? []) {
+        if (ins.programId) {
+          programs.add(ins.programId);
+          continue;
+        }
+        const idx = ins.programIdIndex;
+        if (typeof idx === 'number') {
+          const pid = accountKeys[idx];
+          if (pid) programs.add(pid);
+        }
+      }
+    };
+    addPrograms(message?.instructions);
+    for (const inner of meta.innerInstructions ?? []) addPrograms(inner.instructions);
+
+    let nativeDelta = 0n;
+    const leaderIdx = accountKeys.indexOf(leaderAddress);
+    if (leaderIdx >= 0 && meta.preBalances && meta.postBalances) {
+      nativeDelta = BigInt(meta.postBalances[leaderIdx] ?? 0) - BigInt(meta.preBalances[leaderIdx] ?? 0);
+    }
+
+    const owned = new Map<string, { pre: bigint; post: bigint; decimals: number }>();
+    const foreign = new Map<string, bigint>();
+    const collect = (list: TokenBalance[] | undefined, side: 'pre' | 'post') => {
+      for (const tb of list ?? []) {
+        const amount = BigInt(tb.uiTokenAmount?.amount ?? '0');
+        if (tb.owner === leaderAddress) {
+          const cur = owned.get(tb.mint) ?? { pre: 0n, post: 0n, decimals: tb.uiTokenAmount?.decimals ?? 0 };
+          cur[side] = cur[side] + amount;
+          cur.decimals = tb.uiTokenAmount?.decimals ?? cur.decimals;
+          owned.set(tb.mint, cur);
+        } else {
+          const cur = foreign.get(tb.mint) ?? 0n;
+          foreign.set(tb.mint, side === 'pre' ? cur - amount : cur + amount);
+        }
+      }
+    };
+    collect(meta.preTokenBalances, 'pre');
+    collect(meta.postTokenBalances, 'post');
+
+    const tokenDeltas: TokenDelta[] = [];
+    for (const [mint, v] of owned) {
+      const delta = v.post - v.pre;
+      if (delta !== 0n)
+        tokenDeltas.push({ mint, decimals: v.decimals, preBase: v.pre, postBase: v.post, deltaBase: delta });
+    }
+    const foreignTokenMints = [...foreign.entries()]
+      .filter(([mint, delta]) => delta !== 0n && !owned.has(mint))
+      .map(([mint]) => mint);
+
+    return {
+      chain: 'solana',
+      leaderAddress,
+      signature: tx.signature,
+      slot: tx.slot,
+      transactionIndex: tx.transactionIndex,
+      blockTime: tx.blockTime,
+      err: tx.err,
+      nativeDeltaBase: nativeDelta,
+      tokenDeltas,
+      foreignTokenMints,
       programs: [...programs],
     };
   }

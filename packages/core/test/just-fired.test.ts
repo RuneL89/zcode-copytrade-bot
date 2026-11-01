@@ -16,9 +16,7 @@ describe('deriveJustFiredExclusion', () => {
   });
 
   it('excludes the just-fired trader while nobody else has been hired', () => {
-    const activations = [
-      act('cand_jim', 'FIRED', '2026-10-31T08:00:00Z', '2026-10-31T12:00:00Z'),
-    ];
+    const activations = [act('cand_jim', 'FIRED', '2026-10-31T08:00:00Z', '2026-10-31T12:00:00Z')];
     expect(deriveJustFiredExclusion(activations)).toEqual({
       candidateId: 'cand_jim',
       firedAt: '2026-10-31T12:00:00Z',

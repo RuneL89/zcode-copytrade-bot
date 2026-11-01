@@ -18,7 +18,9 @@ operator CLIs.
   loading, public-key lookup, and file-permission checks. It never signs;
   signing happens only in the executor/withdrawal paths.
 - Operator CLIs: `src/cli/` — `wallet-create`, `wallet-send`, `setup-token`,
-  `demo`, `fomo-import`, `dawn-lookup`, `candidate-activity`.
+  `demo`, `fomo-import`, `dawn-lookup`, `candidate-activity` (`--source
+public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
+  single-wallet check, read-only).
 - Demo fixture generation: `scripts/generate-demo-fixtures.ts`.
 
 ## Local Contracts

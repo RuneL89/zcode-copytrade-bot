@@ -25,7 +25,7 @@ test('mobile 375px layout: no clipped cards, readable labels', async ({ page }) 
 
 test('handoff overlay fits the mobile viewport', async ({ page }) => {
   await completeSetup(page);
-  await page.getByRole('button', { name: /REPLAY 28s/ }).click();
+  await page.getByRole('button', { name: /Replay 28s/i }).click();
   const overlay = page.getByTestId('handoff-overlay');
   await expect(overlay).toBeVisible({ timeout: 12_000 });
   const fits = await overlay.evaluate((el) => {

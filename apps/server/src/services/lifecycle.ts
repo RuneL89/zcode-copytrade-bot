@@ -40,14 +40,23 @@ export const ROTATION_WINDOW_MS = 45 * 60 * 1000;
  * newest scan is still current (recommendations arrive seconds after a sweep).
  */
 export const ORDERING_SCAN_TOLERANCE_MS = 5 * 60 * 1000;
+/**
+ * How fresh a copyable-activity reading must be for the hire gate to spend it.
+ * The top-board refresh runs every 15 minutes, so 30 leaves room for one missed
+ * cycle; anything older is a refresh problem and is refused as ACTIVITY_STALE
+ * (never silently read as a quiet wallet).
+ */
+export const ACTIVITY_GATE_FRESH_MS = 30 * 60 * 1000;
 
 export interface ActivityGateInput {
-  lastSwapAgeHours: number | null;
-  swaps24h: number;
+  /** Hours since the wallet's newest copyable coin movement. */
+  lastTradeAgeHours: number | null;
+  /** Copyable coin movements (entry or exit) in the last 24h. */
+  copyableTrades24h: number;
 }
 export interface ActivityGateConfig {
   maxStallHours: number;
-  minSwaps24h: number;
+  minTrades24h: number;
 }
 export interface ActivityGateResult {
   ok: boolean;
@@ -55,31 +64,44 @@ export interface ActivityGateResult {
   detail?: string;
 }
 
-/** Pure day-trader activity gate (unit-tested). Null input = no on-chain activity at all. */
+/**
+ * Pure day-trader activity gate (unit-tested). "Activity" means copyable coin
+ * movements — an entry or exit on a priceable coin — never raw transactions
+ * (operator decision, 2026-11-01: fee payouts and dust are not trading).
+ */
 export function evaluateActivityGate(
   input: ActivityGateInput | null,
   cfg: ActivityGateConfig,
 ): ActivityGateResult {
-  if (!input || input.lastSwapAgeHours === null) {
-    return { ok: false, reason: 'LEADER_STALLED', detail: 'no on-chain activity found in the last 24h' };
+  if (!input || input.lastTradeAgeHours === null) {
+    return {
+      ok: false,
+      reason: 'LEADER_STALLED',
+      detail: 'no copyable coin movement in the last 24h',
+    };
   }
-  if (input.lastSwapAgeHours > cfg.maxStallHours) {
+  if (input.lastTradeAgeHours > cfg.maxStallHours) {
     return {
       ok: false,
       reason: 'LEADER_STALLED',
       detail:
-        'last on-chain swap ' +
-        input.lastSwapAgeHours.toFixed(1) +
+        'last copyable trade ' +
+        input.lastTradeAgeHours.toFixed(1) +
         'h ago (limit ' +
         cfg.maxStallHours +
         'h)',
     };
   }
-  if (input.swaps24h < cfg.minSwaps24h) {
+  if (input.copyableTrades24h < cfg.minTrades24h) {
     return {
       ok: false,
       reason: 'LOW_ACTIVITY',
-      detail: 'only ' + input.swaps24h + ' swap(s) in the last 24h (minimum ' + cfg.minSwaps24h + ')',
+      detail:
+        'only ' +
+        input.copyableTrades24h +
+        ' copyable trade(s) in the last 24h (minimum ' +
+        cfg.minTrades24h +
+        ')',
     };
   }
   return { ok: true };
@@ -182,18 +204,51 @@ export class TraderLifecycle {
       if (!repo.getCandidate(this.db, candidateId)) return { ok: false, reason: 'unknown candidateId' };
     }
 
-    // Day-trader pre-hire gate: the candidate's wallet must show recent
-    // on-chain activity (fresh + frequent enough). Single choke point —
-    // covers shortlist replacement, cold-start hire, deterministic
-    // fallback and manual dashboard activation. Fail-open only when the
-    // Helius provider is not configured (tests).
-    if (this.helius?.configured) {
-      const solAddress = repo.listCandidateAddresses(this.db, candidateId).find((a) => a.chain === 'solana');
-      const activity = solAddress ? await this.helius.walletActivity24h(solAddress.address) : null;
-      const gate = evaluateActivityGate(activity ?? null, {
-        maxStallHours: this.risk.MAX_LEADER_STALL_HOURS,
-        minSwaps24h: this.risk.MIN_LEADER_SWAPS_24H,
-      });
+    // Day-trader pre-hire gate (operator decision, 2026-11-01): judge the
+    // STORED copyable-trade reading, and require it to be fresh. A missing or
+    // stale reading is a refresh problem, not a quiet wallet, so it gets its
+    // own rejection code — silence here used to leave the bot flat with no
+    // visible cause. Single choke point: shortlist replacement, cold-start
+    // hire, deterministic fallback and manual dashboard activation.
+    const candForGate = repo.getCandidate(this.db, candidateId);
+    // Never measured (null status) is unknown, not "quiet": the boot refresh
+    // stamps every wallet within ~2 minutes of startup, so this only covers the
+    // window before the first measurement (and test fixtures).
+    if (candForGate && candForGate.activityCheckStatus !== null) {
+      if (candForGate.activityCheckStatus !== 'ok') {
+        repo.recordCandidateRejection(this.db, {
+          recommendationId: null,
+          candidateId,
+          reason: 'ACTIVITY_UNMEASURED',
+          detail: 'the last copyable-activity check failed — no fresh measurement to judge',
+        });
+        return { ok: false, reason: 'ACTIVITY_UNMEASURED: last check failed' };
+      }
+      const checkedMs = candForGate.activityCheckedAt ? Date.parse(candForGate.activityCheckedAt) : NaN;
+      if (!Number.isFinite(checkedMs) || Date.now() - checkedMs > ACTIVITY_GATE_FRESH_MS) {
+        const ageMin = Number.isFinite(checkedMs)
+          ? ((Date.now() - checkedMs) / 60_000).toFixed(0) + ' min old'
+          : 'never checked';
+        repo.recordCandidateRejection(this.db, {
+          recommendationId: null,
+          candidateId,
+          reason: 'ACTIVITY_STALE',
+          detail: `activity reading is ${ageMin} (limit ${ACTIVITY_GATE_FRESH_MS / 60_000} min) — refresh required`,
+        });
+        return { ok: false, reason: `ACTIVITY_STALE: reading ${ageMin}` };
+      }
+      const gate = evaluateActivityGate(
+        {
+          lastTradeAgeHours: candForGate.lastSwapAt
+            ? (Date.now() - Date.parse(candForGate.lastSwapAt)) / 3_600_000
+            : null,
+          copyableTrades24h: candForGate.swaps24h ?? 0,
+        },
+        {
+          maxStallHours: this.risk.MAX_LEADER_STALL_HOURS,
+          minTrades24h: this.risk.MIN_LEADER_SWAPS_24H,
+        },
+      );
       if (!gate.ok) {
         const reason = gate.reason ?? 'LOW_ACTIVITY';
         const detail = gate.detail ?? 'activity gate rejected the candidate';
@@ -240,6 +295,23 @@ export class TraderLifecycle {
     // produces an ordering that postdates the latest board scan.
     const fresh = this.orderingFreshness(latest.payload.recommendationId);
     if (!fresh.ok) {
+      // Buying-check escape from the research loop: when the newest board scan
+      // has NO candidate that bought inside the window, a fresh ordering cannot
+      // make anybody hireable — every candidate would be rejected by the same
+      // direction gate. Requesting research anyway burned a subagent run per
+      // board scan (2026-11-01). Defer, and say why.
+      const buying = this.scanBuyingTally();
+      // Only PROVEN-quiet boards suppress the request: with no direction data
+      // at all (checked === 0) the researcher can still rank usefully.
+      if (buying.checked > 0 && buying.buyers === 0) {
+        repo.audit(
+          this.db,
+          'activation',
+          `idle hire deferred: latest scan has no buying candidate (0/${buying.total}) — research would be wasted`,
+          { recommendationId: latest.payload.recommendationId, detail: fresh.detail },
+        );
+        return { status: 'NO_CANDIDATE' };
+      }
       repo.audit(this.db, 'activation', 'idle hire deferred: stale ordering, fresh research requested', {
         recommendationId: latest.payload.recommendationId,
         detail: fresh.detail,
@@ -251,13 +323,11 @@ export class TraderLifecycle {
     let justFiredSkipped = false;
     // Actively-trading tier (operator decision, 2026-10-31): candidates whose
     // snapshot says activelyTrading are hired before the rest — the bot copies
-    // day traders, not holders. Live verification at hire demotes a candidate
-    // whose wallet disagrees with the snapshot; unknown fails open. When
-    // nobody is active the whole ordering lands in the second pass and the
-    // existing merit order decides.
-    const byId = new Map(
-      (this.snapshots.currentSnapshot()?.candidates ?? []).map((c) => [c.candidateId, c]),
-    );
+    // day traders, not holders. Every hire is direction-verified (live walk,
+    // cached evidence as fallback); a wallet proven quiet is skipped in either
+    // pass; unknown fails open. When nobody is active the whole ordering lands
+    // in the second pass and the existing merit order decides.
+    const byId = new Map((this.snapshots.currentSnapshot()?.candidates ?? []).map((c) => [c.candidateId, c]));
     const { active, inactive } = partitionByActivelyTrading(latest.payload.orderedCandidates, (c) => {
       const candidate = byId.get(c.candidateId);
       return candidate?.publicStats.activelyTrading === true;
@@ -279,17 +349,22 @@ export class TraderLifecycle {
           );
           continue;
         }
-        if (passIndex === 0) {
-          const trading = await this.verifyActiveTrading(c.candidateId);
-          if (trading === 'inactive') {
-            this.recordSkipOnce(
-              latest.payload.recommendationId,
-              c.candidateId,
-              'NOT_ACTIVELY_TRADING',
-              'live check at hire: no buy inside ACTIVE_BUY_WINDOW_HOURS',
-            );
-            continue;
-          }
+        // Direction gate (every pass since 2026-10-31 — the merit pass used to
+        // bypass it, which is how a wallet 15h past its last buy got hired
+        // during a Helius 429 storm): a wallet PROVEN quiet (live walk, or the
+        // cached evidence when the walk fails) is not a day-trader hire.
+        // 'unknown' still fails open.
+        const trading = await this.verifyActiveTrading(c.candidateId);
+        if (trading === 'inactive') {
+          this.recordSkipOnce(
+            latest.payload.recommendationId,
+            c.candidateId,
+            'NOT_ACTIVELY_TRADING',
+            passIndex === 0
+              ? 'live check at hire: no buy inside ACTIVE_BUY_WINDOW_HOURS'
+              : 'hire check: no buy inside ACTIVE_BUY_WINDOW_HOURS (live or last successful check)',
+          );
+          continue;
         }
         const act = await this.activate(c.candidateId, 'zcode_shortlist', true);
         if (act.ok) {
@@ -329,32 +404,32 @@ export class TraderLifecycle {
   ): void {
     const already = repo
       .listCandidateRejections(this.db, 20)
-      .some((r) => r.recommendationId === recommendationId && r.candidateId === candidateId && r.reason === reason);
+      .some(
+        (r) =>
+          r.recommendationId === recommendationId && r.candidateId === candidateId && r.reason === reason,
+      );
     if (already) return;
     repo.recordCandidateRejection(this.db, { recommendationId, candidateId, reason, detail });
   }
 
   /**
    * Live actively-trading verification at hire time (operator decision,
-   * 2026-10-31). 'active' = the wallet's most recent BUY is inside
-   * ACTIVE_BUY_WINDOW_HOURS; 'inactive' = the walk proved it is not (sell-only
-   * or quiet); 'unknown' = Helius unconfigured, erroring, or page-capped.
-   * Unknown fails open — the candidate stays hireable; the merit ordering and
-   * the 20h/5-swap gate still protect the hire.
+   * 2026-11-01: an ENTRY — a copyable coin inflow — is what "actively buying"
+   * means; a swap count or a fee payout proves nothing).
+   *
+   * Reads the stored reading and requires it to be fresh. 'inactive' is only
+   * ever returned for a MEASURED reading with no entry inside the window; an
+   * unmeasured or stale reading is 'unknown', which fails open (the engine
+   * proceeds) rather than branding an unreadable wallet as passive.
    */
-  private async verifyActiveTrading(candidateId: string): Promise<'active' | 'inactive' | 'unknown'> {
-    if (!this.helius?.configured) return 'unknown';
-    const address = repo
-      .listCandidateAddresses(this.db, candidateId)
-      .find((a) => a.chain === 'solana')?.address;
-    if (!address) return 'unknown';
-    try {
-      const buy = await this.helius.lastBuyWithinWindow(address, this.risk.ACTIVE_BUY_WINDOW_HOURS);
-      if (!buy.ok) return 'unknown';
-      return buy.lastBuyAt !== null ? 'active' : 'inactive';
-    } catch {
-      return 'unknown';
-    }
+  private verifyActiveTrading(candidateId: string): 'active' | 'inactive' | 'unknown' {
+    const cand = repo.getCandidate(this.db, candidateId);
+    if (!cand || cand.activityCheckStatus !== 'ok') return 'unknown';
+    const checkedMs = cand.activityCheckedAt ? Date.parse(cand.activityCheckedAt) : NaN;
+    if (!Number.isFinite(checkedMs) || Date.now() - checkedMs > ACTIVITY_GATE_FRESH_MS) return 'unknown';
+    const entryMs = cand.lastBuyAt ? Date.parse(cand.lastBuyAt) : NaN;
+    if (!Number.isFinite(entryMs)) return 'inactive'; // measured: no entry in the 24h window
+    return Date.now() - entryMs <= this.risk.ACTIVE_BUY_WINDOW_HOURS * 3600_000 ? 'active' : 'inactive';
   }
 
   // --- firing ---------------------------------------------------------------
@@ -523,6 +598,29 @@ export class TraderLifecycle {
   }
 
   /**
+   * Buying tally over the newest board scan: how many of its handles have
+   * direction data proving a buy inside ACTIVE_BUY_WINDOW_HOURS, and how many
+   * have a successful check at all (total). Used to decide whether asking for
+   * fresh research can possibly produce a hireable candidate.
+   */
+  scanBuyingTally(): { buyers: number; total: number; checked: number } {
+    const scan = repo.listRecentScans(this.db, 1)[0] ?? null;
+    if (!scan) return { buyers: 0, total: 0, checked: 0 };
+    const cutoff = Date.now() - this.risk.ACTIVE_BUY_WINDOW_HOURS * 3600_000;
+    let buyers = 0;
+    let checked = 0;
+    for (const row of scan.rows) {
+      const cand = repo.listCandidates(this.db).find((c) => c.handle === row.handle && c.enabled);
+      if (!cand) continue;
+      if (cand.activityCheckStatus === 'ok') checked++;
+      if (cand.activityCheckStatus !== 'ok') continue;
+      const t = cand.lastBuyAt ? Date.parse(cand.lastBuyAt) : NaN;
+      if (Number.isFinite(t) && t >= cutoff) buyers++;
+    }
+    return { buyers, total: scan.rows.length, checked };
+  }
+
+  /**
    * Leave a research_request control event the sweep can act on. Throttled to
    * one request per board scan: the idle-hire path runs on every state rebuild
    * while the bot is paused and must not flood control_events.
@@ -599,13 +697,19 @@ export class TraderLifecycle {
       );
       // Same actively-trading tier as the zcode walk: actives first, merit
       // within each tier, merit fallback when nobody is active.
-      const { active: activeTier, inactive: inactiveTier } = partitionByActivelyTrading(ranked, ({ candidate }) => {
-        return candidate.publicStats.activelyTrading === true;
-      });
+      const { active: activeTier, inactive: inactiveTier } = partitionByActivelyTrading(
+        ranked,
+        ({ candidate }) => {
+          return candidate.publicStats.activelyTrading === true;
+        },
+      );
       const passes = [activeTier, inactiveTier];
       for (const [passIndex, pass] of passes.entries()) {
         for (const { candidate } of pass) {
-          if (candidate.candidateId === firedCandidateId || candidate.candidateId === exclusion?.candidateId) {
+          if (
+            candidate.candidateId === firedCandidateId ||
+            candidate.candidateId === exclusion?.candidateId
+          ) {
             continue;
           }
           if (passIndex === 0) {
@@ -1050,13 +1154,24 @@ export class TraderLifecycle {
       if (!candidate) continue;
       const eligibility = checkEligibility(candidate, this.eligibilityCtx());
       if (!eligibility.eligible) continue;
-      if (this.helius?.configured) {
-        const sol = repo.listCandidateAddresses(this.db, entry.candidateId).find((a) => a.chain === 'solana');
-        const activity = sol ? await this.helius.walletActivity24h(sol.address) : null;
-        const gate = evaluateActivityGate(activity ?? null, {
-          maxStallHours: this.risk.MAX_LEADER_STALL_HOURS,
-          minSwaps24h: this.risk.MIN_LEADER_SWAPS_24H,
-        });
+      // Same stored copyable-activity gate as the hire choke point. A never-
+      // measured wallet (null status) stays unknown → allowed, exactly like the
+      // hire path; a failed or stale reading cannot judge the wallet.
+      const row = repo.getCandidate(this.db, entry.candidateId);
+      if (row && row.activityCheckStatus !== null) {
+        if (row.activityCheckStatus !== 'ok') continue;
+        const checkedMs = row.activityCheckedAt ? Date.parse(row.activityCheckedAt) : NaN;
+        if (!Number.isFinite(checkedMs) || Date.now() - checkedMs > ACTIVITY_GATE_FRESH_MS) continue;
+        const gate = evaluateActivityGate(
+          {
+            lastTradeAgeHours: row.lastSwapAt ? (Date.now() - Date.parse(row.lastSwapAt)) / 3_600_000 : null,
+            copyableTrades24h: row.swaps24h ?? 0,
+          },
+          {
+            maxStallHours: this.risk.MAX_LEADER_STALL_HOURS,
+            minTrades24h: this.risk.MIN_LEADER_SWAPS_24H,
+          },
+        );
         if (!gate.ok) continue;
       }
       return entry.candidateId;

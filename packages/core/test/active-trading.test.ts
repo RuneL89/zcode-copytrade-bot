@@ -8,7 +8,11 @@ const NOW_SEC = Math.floor(Date.now() / 1000);
 const CUTOFF_MS = (NOW_SEC - 4 * 3600) * 1000; // 4h window
 
 let seq = 0;
-function txAt(ageHours: number, kind: 'buy' | 'sell' | 'transfer', blockTime: number | null = null): LeaderTxSummary {
+function txAt(
+  ageHours: number,
+  kind: 'buy' | 'sell' | 'transfer',
+  blockTime: number | null = null,
+): LeaderTxSummary {
   const t = blockTime ?? Math.floor(NOW_SEC - ageHours * 3600);
   const tokenDeltas =
     kind === 'buy'

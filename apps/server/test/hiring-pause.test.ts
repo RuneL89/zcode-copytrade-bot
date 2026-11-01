@@ -108,7 +108,17 @@ function seedRecommendation(recommendationId: string, createdAt: string) {
         expiresAt: new Date(Date.parse(createdAt) + 6 * 3600_000).toISOString(),
       }),
     },
-    [{ recommendationId, candidateId: 'cand_boardking', rank: 1, confidence: '0.9', thesis: 't', concernsJson: '[]', evidenceJson: '[]' }],
+    [
+      {
+        recommendationId,
+        candidateId: 'cand_boardking',
+        rank: 1,
+        confidence: '0.9',
+        thesis: 't',
+        concernsJson: '[]',
+        evidenceJson: '[]',
+      },
+    ],
   );
 }
 
@@ -131,10 +141,78 @@ function makeLifecycle(): TraderLifecycle {
 }
 
 function researchRequestCount(): number {
-  return repo
-    .listControlEvents(handle.db, 50)
-    .filter((e) => e.type === 'research_request').length;
+  return repo.listControlEvents(handle.db, 50).filter((e) => e.type === 'research_request').length;
 }
+
+describe('buyer-less board: no research spend on a dead ordering loop', () => {
+  /** Give the seeded board candidate a successful, buy-less activity reading. */
+  function markBuyerless() {
+    repo.updateCandidateActivity(handle.db, 'cand_boardking', {
+      swaps24h: 9,
+      lastSwapAt: new Date(Date.now() - 3600_000).toISOString(),
+      lastBuyAt: null,
+      buys24h: 0,
+      sells24h: 3,
+      status: 'ok',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+
+  it('stale ordering + no buying candidate: defers without requesting research', async () => {
+    // The 2026-11-01 loop: every scan makes the ordering stale, research runs,
+    // the fresh ordering still cannot hire anyone (nobody bought), repeat. The
+    // request must not be emitted when the board proves nobody is buying.
+    const scanAt = new Date().toISOString();
+    seedBoardCandidate(scanAt);
+    markBuyerless();
+    snapshots.build();
+    seedRecommendation('rec_no_buyer', new Date(Date.now() - 30 * 60_000).toISOString());
+    const lifecycle = makeLifecycle();
+    lifecycle.latestValidRecommendation = {
+      payload: {
+        recommendationId: 'rec_no_buyer',
+        orderedCandidates: [{ candidateId: 'cand_boardking', rank: 1 }],
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      },
+    };
+
+    const hired = await lifecycle.coldStartHire();
+
+    expect(hired.status).toBe('NO_CANDIDATE');
+    expect(researchRequestCount()).toBe(0);
+    const audit = repo.listAudit(handle.db, 20).find((e) => e.message.includes('no buying candidate'));
+    expect(audit).toBeDefined();
+  });
+
+  it('stale ordering + a buying candidate: still requests fresh research', async () => {
+    const scanAt = new Date().toISOString();
+    seedBoardCandidate(scanAt);
+    repo.updateCandidateActivity(handle.db, 'cand_boardking', {
+      swaps24h: 19,
+      lastSwapAt: new Date(Date.now() - 600_000).toISOString(),
+      lastBuyAt: new Date(Date.now() - 600_000).toISOString(),
+      buys24h: 4,
+      sells24h: 1,
+      status: 'ok',
+      checkedAt: new Date().toISOString(),
+    });
+    snapshots.build();
+    seedRecommendation('rec_buyer', new Date(Date.now() - 30 * 60_000).toISOString());
+    const lifecycle = makeLifecycle();
+    lifecycle.latestValidRecommendation = {
+      payload: {
+        recommendationId: 'rec_buyer',
+        orderedCandidates: [{ candidateId: 'cand_boardking', rank: 1 }],
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      },
+    };
+
+    const hired = await lifecycle.coldStartHire();
+
+    expect(hired.status).toBe('NO_CANDIDATE');
+    expect(researchRequestCount()).toBe(1);
+  });
+});
 
 describe('ordering-freshness pause after a fire', () => {
   it('stale ordering: fire pauses with fresh-research evidence instead of hiring', async () => {

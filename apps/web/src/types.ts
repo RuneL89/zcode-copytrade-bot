@@ -136,6 +136,10 @@ export interface DashboardState {
     researchRequested: boolean;
     researchDispatched: boolean;
     idleFireAtIso: string | null;
+    /** Latest scan checked and nobody bought inside the active window. */
+    noBuyerOnBoard: boolean;
+    buyersOnBoard: number;
+    checkedOnBoard: number;
     autoResume: true;
   };
   recommendation: {
@@ -218,6 +222,17 @@ export function solFromBase(base: string): string {
   const whole = n / 1_000_000_000n;
   const frac = (n % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '').slice(0, 2);
   return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
+/**
+ * Compact on-chain direction pair ("6b · 3s"). Null counts are unknown —
+ * "6b" when only sells are unknown, "—" when neither side was classified.
+ */
+export function dirPair(buys: number | null, sells: number | null): string {
+  if (buys === null && sells === null) return '—';
+  const b = `${buys ?? '?'}b`;
+  const s = `${sells ?? '?'}s`;
+  return `${b} · ${s}`;
 }
 
 // ---- Operations console contracts -------------------------------------------

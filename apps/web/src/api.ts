@@ -97,7 +97,10 @@ export const api = {
   audit: () => request<{ events: Array<Record<string, unknown>> }>('/api/audit'),
   rejections: () => request<{ rejections: Array<Record<string, unknown>> }>('/api/rejections'),
   recommendation: () => request<{ recommendations: Array<Record<string, unknown>> }>('/api/recommendation'),
-  candidates: () => request<{ candidates: Array<Record<string, unknown>> }>('/api/candidates'),
+  candidates: () =>
+    request<{ candidates: Array<Record<string, unknown>>; addresses: Array<Record<string, unknown>> }>(
+      '/api/candidates',
+    ),
   reconciliation: () => request<{ cases: Array<Record<string, unknown>> }>('/api/reconciliation'),
   ops: () =>
     request<{

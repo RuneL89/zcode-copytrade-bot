@@ -6,7 +6,7 @@ test('prefers-reduced-motion: handoff shows all content without animation delays
   // it before any animation starts.
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await completeSetup(page);
-  await page.getByRole('button', { name: /REPLAY 28s/ }).click();
+  await page.getByRole('button', { name: /Replay 28s/i }).click();
 
   const overlay = page.getByTestId('handoff-overlay');
   await expect(overlay).toBeVisible({ timeout: 12_000 });

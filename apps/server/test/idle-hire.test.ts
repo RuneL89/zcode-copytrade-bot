@@ -281,7 +281,9 @@ describe('actively-trading tier', () => {
   // Partial fake in the withdraw.test.ts pattern: stub only what the lifecycle
   // calls. The null provider used elsewhere fails open, which is exactly the
   // pre-change behavior these tests must not disturb.
-  function fakeHelius(lastBuyFor: (address: string) => { ok: boolean; lastBuyAt: string | null }): HeliusProvider {
+  function fakeHelius(
+    lastBuyFor: (address: string) => { ok: boolean; lastBuyAt: string | null },
+  ): HeliusProvider {
     return {
       configured: true,
       walletActivity24h: async () => ({ swaps24h: 19, lastSwapAgeHours: 1 }),
@@ -294,13 +296,18 @@ describe('actively-trading tier', () => {
       swaps24h: 19,
       lastSwapAt: new Date(Date.now() - 3600_000).toISOString(),
       lastBuyAt: ageHours === null ? null : new Date(Date.now() - ageHours * 3600_000).toISOString(),
+      buys24h: ageHours === null ? 0 : 3,
+      sells24h: 1,
+      status: 'ok',
       checkedAt: new Date().toISOString(),
     });
   }
 
   function expectRejection(candidateId: string, reason: string) {
     expect(
-      repo.listCandidateRejections(handle.db, 20).some((r) => r.candidateId === candidateId && r.reason === reason),
+      repo
+        .listCandidateRejections(handle.db, 20)
+        .some((r) => r.candidateId === candidateId && r.reason === reason),
     ).toBe(true);
   }
 
@@ -324,13 +331,14 @@ describe('actively-trading tier', () => {
     expect(hired.candidateId).toBe('cand_busy');
   });
 
-  it('falls back to the merit order when nobody is actively trading', async () => {
+  it('merit pass hires a candidate whose live wallet shows a fresh buy', async () => {
     const observedAt = seedScanCandidate();
     seedScanTrader('cand_jim', 'jim', 2, observedAt);
     seedScanTrader('cand_bob', 'bob', 3, observedAt);
-    // Nobody marked active: the second pass is the whole ordering.
+    // Nobody marked active in the snapshot: the second pass is the whole
+    // ordering, and its live check finds fresh buys -> merit order decides.
     const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
-    lifecycle.setHelius(fakeHelius(() => ({ ok: true, lastBuyAt: null })));
+    lifecycle.setHelius(fakeHelius(() => ({ ok: true, lastBuyAt: new Date().toISOString() })));
     snapshots.build();
     lifecycle.latestValidRecommendation = ordering([
       { candidateId: 'cand_jim', rank: 1 },
@@ -342,19 +350,39 @@ describe('actively-trading tier', () => {
     expect(hired.candidateId).toBe('cand_jim');
   });
 
-  it('demotes a snapshot-active candidate whose live wallet disagrees', async () => {
+  it('merit pass skips wallets whose measured reading has no entry', async () => {
+    // The 2026-10-31 kv4rl path: a quiet wallet hired from the merit pass
+    // because only the active tier was verified. Now every pass verifies, and
+    // the verdict comes from the stored copyable-trade reading.
+    const observedAt = seedScanCandidate();
+    seedScanTrader('cand_jim', 'jim', 2, observedAt);
+    seedScanTrader('cand_bob', 'bob', 3, observedAt);
+    markActivelyTrading('cand_jim', null); // measured: no coin entry
+    markActivelyTrading('cand_bob', null);
+    const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
+    snapshots.build();
+    lifecycle.latestValidRecommendation = ordering([
+      { candidateId: 'cand_jim', rank: 1 },
+      { candidateId: 'cand_bob', rank: 2 },
+    ]);
+
+    const hired = await lifecycle.coldStartHire();
+    expect(hired.status).toBe('NO_CANDIDATE');
+    expectRejection('cand_jim', 'NOT_ACTIVELY_TRADING');
+    expectRejection('cand_bob', 'NOT_ACTIVELY_TRADING');
+  });
+
+  it('demotes a snapshot-active candidate whose measured reading has no entry', async () => {
     const observedAt = seedScanCandidate();
     seedScanTrader('cand_jim', 'jim', 2, observedAt);
     seedScanTrader('cand_bob', 'bob', 3, observedAt);
     markActivelyTrading('cand_jim', 1); // snapshot says active...
+    markActivelyTrading('cand_bob', 1);
     const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
-    // ...but jim's live wallet has no buy in the window; bob's has one.
-    lifecycle.setHelius(
-      fakeHelius((address) =>
-        address.startsWith('jim') ? { ok: true, lastBuyAt: null } : { ok: true, lastBuyAt: new Date().toISOString() },
-      ),
-    );
     snapshots.build();
+    // ...but the stored reading is refreshed before the hire and shows no entry
+    // for jim. The snapshot keeps its stale flag; the hire gate must not trust it.
+    markActivelyTrading('cand_jim', null);
     lifecycle.latestValidRecommendation = ordering([
       { candidateId: 'cand_jim', rank: 1 },
       { candidateId: 'cand_bob', rank: 2 },
@@ -366,10 +394,49 @@ describe('actively-trading tier', () => {
     expectRejection('cand_jim', 'NOT_ACTIVELY_TRADING');
   });
 
-  it('fails open when the live check errors', async () => {
+  it('uses the cached direction evidence when the live check errors', async () => {
     const observedAt = seedScanCandidate();
     seedScanTrader('cand_jim', 'jim', 2, observedAt);
-    markActivelyTrading('cand_jim', 1);
+    markActivelyTrading('cand_jim', 1); // cached: bought 1h ago, check was ok
+    const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
+    lifecycle.setHelius(
+      fakeHelius(() => {
+        throw new Error('helius down');
+      }),
+    );
+    snapshots.build();
+    lifecycle.latestValidRecommendation = ordering([{ candidateId: 'cand_jim', rank: 1 }]);
+
+    const hired = await lifecycle.coldStartHire();
+    expect(hired.status).toBe('ACTIVATED');
+    expect(hired.candidateId).toBe('cand_jim');
+  });
+
+  it('rejects a stale cached wallet when the live check errors (fail closed on data)', async () => {
+    // The 2026-10-31 regression: a wallet 15h past its last buy was hired
+    // because the live walk errored and unknown failed open. Now the last
+    // SUCCESSFUL check decides.
+    const observedAt = seedScanCandidate();
+    seedScanTrader('cand_old', 'oldone', 2, observedAt);
+    markActivelyTrading('cand_old', 15); // cached: last buy 15h ago, outside the 4h window
+    const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
+    lifecycle.setHelius(
+      fakeHelius(() => {
+        throw new Error('helius down');
+      }),
+    );
+    snapshots.build();
+    lifecycle.latestValidRecommendation = ordering([{ candidateId: 'cand_old', rank: 1 }]);
+
+    const hired = await lifecycle.coldStartHire();
+    expect(hired.status).toBe('NO_CANDIDATE');
+    expectRejection('cand_old', 'NOT_ACTIVELY_TRADING');
+  });
+
+  it('fails open only when the live check errors AND nothing is cached', async () => {
+    const observedAt = seedScanCandidate();
+    seedScanTrader('cand_jim', 'jim', 2, observedAt);
+    // No activity row at all: status null -> unknown.
     const lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
     lifecycle.setHelius(
       fakeHelius(() => {
@@ -405,7 +472,7 @@ describe('actively-trading tier', () => {
     expectRejection('cand_jim', 'JUST_FIRED');
   });
 
-  it('snapshot computes activelyTrading from last_buy_at vs the window', async () => {
+  it('snapshot computes three-state activelyTrading from status + last_buy_at', async () => {
     const observedAt = seedScanCandidate();
     seedScanTrader('cand_fresh', 'freshone', 2, observedAt);
     seedScanTrader('cand_stale', 'staleone', 3, observedAt);
@@ -415,9 +482,19 @@ describe('actively-trading tier', () => {
     const snap = snapshots.build();
     const byId = new Map(snap.candidates.map((c) => [c.candidateId, c]));
     expect(byId.get('cand_fresh')!.publicStats.activelyTrading).toBe(true);
+    expect(byId.get('cand_fresh')!.publicStats.activityCheckStatus).toBe('ok');
     expect(byId.get('cand_fresh')!.publicStats.lastBuyAt).not.toBeNull();
     expect(byId.get('cand_stale')!.publicStats.activelyTrading).toBe(false);
-    expect(byId.get('cand_boardking')!.publicStats.activelyTrading).toBe(false);
+    // Never checked: unknown, not false.
+    expect(byId.get('cand_boardking')!.publicStats.activelyTrading).toBeNull();
     expect(byId.get('cand_boardking')!.publicStats.lastBuyAt).toBeNull();
+
+    // A failed check also degrades to unknown and preserves the old columns.
+    repo.markCandidateActivityFailed(handle.db, 'cand_stale', new Date().toISOString());
+    const snap2 = snapshots.build();
+    const stale2 = snap2.candidates.find((c) => c.candidateId === 'cand_stale')!;
+    expect(stale2.publicStats.activityCheckStatus).toBe('failed');
+    expect(stale2.publicStats.activelyTrading).toBeNull();
+    expect(stale2.publicStats.lastBuyAt).not.toBeNull(); // preserved
   });
 });

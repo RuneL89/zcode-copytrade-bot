@@ -15,6 +15,7 @@ import {
   HeliusProvider,
   JupiterProvider,
   JupiterPriceProvider,
+  PublicSolanaProvider,
   notifierFromEnv,
   StaticPriceProvider,
   type DawnLookupConfig,
@@ -30,6 +31,8 @@ import { TraderLifecycle } from './services/lifecycle.js';
 import { LeaderMonitor, reconcileOpenIntents } from './services/monitor.js';
 import { selectDawnTargets } from './services/dawn-targets.js';
 import { WithdrawalService, createSolanaBroadcaster, heliusRpcUrl } from './services/withdraw.js';
+import { checkWalletActivity } from './services/activity-check.js';
+import { isDawnParked } from './services/dawn-park.js';
 import { StateBuilder } from './services/builder.js';
 import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
@@ -49,6 +52,11 @@ export interface SetupToken {
   expiresAt: number;
 }
 
+/** Politeness pacing between provider calls inside refresh loops. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Runtime wires every service together. One process = one worker (exclusive
  * lock) + HTTP server. Demo mode short-circuits providers for a purely
@@ -60,6 +68,8 @@ export class Runtime {
   control: ControlService;
   store = new StateStore();
   helius: HeliusProvider;
+  /** Free public RPC for the candidate activity refresh; monitor never uses it. */
+  publicSolana: PublicSolanaProvider;
   jupiter: JupiterProvider;
   notifier: Notifier;
   feeLedger: FeeLedgerService;
@@ -81,11 +91,7 @@ export class Runtime {
   private fomoWebTimer: ReturnType<typeof setInterval> | null = null;
   /** Read-only Dawn (Telegram) trader-lookup adapter; null until DAWN_BOT_USERNAME is set. */
   dawnLookup: DawnTraderLookupProvider | null = null;
-  private dawnTimer: ReturnType<typeof setInterval> | null = null;
-  private dawnBootTimer: ReturnType<typeof setTimeout> | null = null;
   private dawnRunBusy = false;
-  /** Last auto-triggered Dawn run (throttle for the post-rebuild wallet sweep). */
-  private lastAutoDawnAt = 0;
   /** Last auto-triggered activity refresh (same throttle pattern as Dawn). */
   private lastAutoActivityAt = 0;
   private lastTopBoardActivityAt = 0;
@@ -150,6 +156,9 @@ export class Runtime {
     }
     this.control = new ControlService(this.db.db, config.env.DATA_DIR);
     this.helius = new HeliusProvider(config.env.HELIUS_API_KEY);
+    // Empty PUBLIC_SOLANA_RPC_URL disables the free path (configured=false) and
+    // the activity refresh falls back to Helius entirely.
+    this.publicSolana = new PublicSolanaProvider(config.env.PUBLIC_SOLANA_RPC_URL, 4, this.helius);
     this.jupiter = new JupiterProvider(config.env.JUPITER_BASE_URL, config.env.JUPITER_API_KEY);
     this.notifier = notifierFromEnv(config.env.TELEGRAM_BOT_TOKEN, config.env.TELEGRAM_CHAT_ID);
     this.feeLedger = new FeeLedgerService(this.db.db, this.helius);
@@ -530,27 +539,10 @@ export class Runtime {
       });
     }
 
-    // Scheduled Dawn address resolution for candidates still missing one.
-    // Boot run + interval: an interval alone restarts with every server bounce
-    // and never reaches zero (13 restarts once meant it never fired at all).
-    if (this.dawnLookup) {
-      this.dawnTimer = setInterval(() => {
-        void this.dawnLookupNow().catch((e: Error) => {
-          repo.audit(this.db.db, 'dawn-lookup', `scheduled lookup failed (fail closed): ${e.message}`, {});
-        });
-      }, this.config.env.DAWN_LOOKUP_POLL_MS);
-      this.dawnBootTimer = setTimeout(() => {
-        void this.dawnLookupNow().catch((e: Error) => {
-          repo.audit(this.db.db, 'dawn-lookup', `boot lookup failed (fail closed): ${e.message}`, {});
-        });
-      }, 120_000);
-      repo.audit(
-        this.db.db,
-        'dawn-lookup',
-        `scheduled trader lookup enabled (every ${Math.round(this.config.env.DAWN_LOOKUP_POLL_MS / 60000)} min, boot run in 2 min)`,
-        {},
-      );
-    }
+    // Scheduled Dawn address resolution moved OUT of the server (operator
+    // decision, 2026-10-31): the 30-minute data sweep drives
+    // `tsx src/cli/dawn-lookup.ts --all-missing` for walletless candidates.
+    // Manual operator runs stay available (ops action / dawnOpenLogin).
 
     // Helius activity refresh: keeps swaps24h/lastSwapAt current for ranking
     // and upgrades addresses to 'verified' when the pre-hire gate would pass.
@@ -593,8 +585,6 @@ export class Runtime {
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);
     void this.fomoWeb?.close();
-    if (this.dawnTimer) clearInterval(this.dawnTimer);
-    if (this.dawnBootTimer) clearTimeout(this.dawnBootTimer);
     void this.dawnLookup?.close();
     if (this.activityTimer) clearInterval(this.activityTimer);
     if (this.activityBootTimer) clearTimeout(this.activityBootTimer);
@@ -609,7 +599,6 @@ export class Runtime {
     this.snapshots.build();
     this.rebuildState();
     this.rankWatchCheck();
-    this.maybeAutoDawn();
     this.maybeAutoActivity();
     this.refreshTopBoardActivity();
     repo.pruneLeaderboardObservations(this.db.db, 30);
@@ -626,9 +615,10 @@ export class Runtime {
    * previous data — never blocks, never double-hires).
    */
   private refreshTopBoardActivity(): void {
-    if (!this.helius?.configured || this.demo?.running) return;
+    if (this.demo?.running) return;
+    if (!this.publicSolana.configured && !this.helius?.configured) return;
     if (this.topBoardActivityBusy) return;
-    const TOP_BOARD_MIN_INTERVAL_MS = 20 * 60 * 1000;
+    const TOP_BOARD_MIN_INTERVAL_MS = 15 * 60 * 1000;
     if (Date.now() - this.lastTopBoardActivityAt < TOP_BOARD_MIN_INTERVAL_MS) return;
     const scan = repo.listRecentScans(this.db.db, 1)[0];
     if (!scan) return;
@@ -661,30 +651,42 @@ export class Runtime {
     void (async () => {
       try {
         let checked = 0;
+        let trades = 0;
+        let entries = 0;
+        let exits = 0;
         for (const cand of targets) {
           const address = wallets.get(cand.candidateId);
           if (!address) continue;
           try {
-            const activity = await this.helius.walletActivity24h(address);
-            const lastSwapAt =
-              activity.lastSwapAgeHours === null
-                ? null
-                : new Date(Date.now() - activity.lastSwapAgeHours * 3600_000).toISOString();
-            const buy = await this.helius.lastBuyWithinWindow(address, this.config.risk.ACTIVE_BUY_WINDOW_HOURS);
+            const reading = await checkWalletActivity(this.publicSolana, this.priceProvider, address, {
+              lookbackHours: 24,
+            });
             repo.updateCandidateActivity(this.db.db, cand.candidateId, {
-              swaps24h: activity.swaps24h,
-              lastSwapAt,
-              // Unknown (ok:false) keeps the previous value — fail open.
-              lastBuyAt: buy.ok ? buy.lastBuyAt : (cand.lastBuyAt ?? null),
+              swaps24h: reading.copyableTrades24h,
+              lastSwapAt: reading.lastTradeAt,
+              lastBuyAt: reading.lastEntryAt,
+              buys24h: reading.entries24h,
+              sells24h: reading.exits24h,
+              status: 'ok',
               checkedAt: new Date().toISOString(),
             });
+            trades += reading.copyableTrades24h;
+            entries += reading.entries24h;
+            exits += reading.exits24h;
             checked++;
           } catch (e) {
+            repo.markCandidateActivityFailed(this.db.db, cand.candidateId, new Date().toISOString());
             repo.audit(this.db.db, 'activity', cand.handle + ': ' + (e as Error).message, {});
           }
+          await sleep(350);
         }
         if (checked > 0) {
-          repo.audit(this.db.db, 'activity', `top-board activity refresh: ${checked} checked`, {});
+          repo.audit(
+            this.db.db,
+            'activity',
+            `top-board activity: ${checked} measured, ${trades} trades, ${entries} entries, ${exits} exits`,
+            {},
+          );
           this.scheduleSnapshotRebuild();
         }
       } finally {
@@ -750,48 +752,15 @@ export class Runtime {
   }
 
   /**
-   * Always-Dawn rule: after any rebuild, resolve wallets for enabled
-   * candidates that still lack a Solana address — this is what catches new
-   * faces from a fresh board import within the same cycle. Throttled so a
-   * burst of rebuilds cannot hammer the Telegram browser profile.
-   */
-  private maybeAutoDawn(): void {
-    if (!this.dawnLookup || this.demo?.running) return;
-    const AUTO_DAWN_MIN_INTERVAL_MS = 20 * 60 * 1000;
-    if (Date.now() - this.lastAutoDawnAt < AUTO_DAWN_MIN_INTERVAL_MS) return;
-    const candidates = repo.listCandidates(this.db.db).filter((c) => c.enabled);
-    const wallets = new Set(
-      repo
-        .listCandidateAddresses(this.db.db)
-        .filter((a) => a.chain === 'solana')
-        .map((a) => a.candidateId),
-    );
-    const walletless = candidates.filter((c) => !wallets.has(c.candidateId));
-    if (walletless.length === 0) return;
-    this.lastAutoDawnAt = Date.now();
-    repo.audit(
-      this.db.db,
-      'dawn-lookup',
-      `auto dawn run: ${walletless.length} walletless candidate(s): ${walletless
-        .slice(0, 5)
-        .map((c) => c.handle)
-        .join(', ')}`,
-      {},
-    );
-    void this.dawnLookupNow().catch((e: Error) => {
-      repo.audit(this.db.db, 'dawn-lookup', 'auto dawn run failed: ' + e.message, {});
-    });
-  }
-
-  /**
    * Auto activity refresh: when a wallet-having enabled candidate has never
    * had an on-chain activity check (or the stamp went stale), run one now
    * instead of waiting for the 6-hour timer. This is what makes a fresh board
    * import hireable within the same cycle: the activity gate needs swaps24h.
-   * Throttled like the Dawn auto-run.
+   * Throttled.
    */
   private maybeAutoActivity(): void {
-    if (!this.helius?.configured || this.demo?.running) return;
+    if (this.demo?.running) return;
+    if (!this.publicSolana.configured && !this.helius?.configured) return;
     const AUTO_ACTIVITY_MIN_INTERVAL_MS = 20 * 60 * 1000;
     if (Date.now() - this.lastAutoActivityAt < AUTO_ACTIVITY_MIN_INTERVAL_MS) return;
     const wallets = new Set(
@@ -1301,18 +1270,19 @@ export class Runtime {
 
   /** True when this candidate is parked after repeated silent-Dawn runs. */
   private dawnNoCardRecently(candidateId: string): boolean {
-    const raw = repo.kvGet(this.db.db, `dawn.noCard:${candidateId}`);
-    if (!raw) return false;
-    const { count, at } = JSON.parse(raw) as { count: number; at: string };
-    if (count < 2) return false;
-    return Date.now() - Date.parse(at) < 6 * 3600_000;
+    // Shared escalating rule (see services/dawn-park.ts): 2 silences → 6h,
+    // 3+ → a week. The CLI uses the same helper so neither path re-attempts a
+    // handle the other already parked.
+    return isDawnParked(this.db.db, candidateId);
   }
 
   /**
    * Refresh on-chain activity for enabled candidates that already have a
-   * wallet. Stores swaps24h + lastSwapAt (the exact numbers the pre-hire gate
-   * enforces) and upgrades the address to 'verified' when the gate would pass,
-   * so the research snapshot and the gate agree. Read-only on-chain.
+   * wallet. Primary source: the free public Solana RPC (direction-aware:
+   * swaps24h/lastSwapAt + buys24h/sells24h/lastBuyAt); Helius is the fallback.
+   * These are the exact numbers the pre-hire gate enforces, so the research
+   * snapshot and the gate agree. Read-only on-chain; a total source failure
+   * marks the candidate's check 'failed' and preserves the previous columns.
    */
   async activityRefreshNow(
     limit = this.config.env.ACTIVITY_MAX_PER_RUN,
@@ -1340,32 +1310,35 @@ export class Runtime {
       const address = wallets.get(cand.candidateId);
       if (!address) continue;
       try {
-        const activity = await this.helius.walletActivity24h(address);
-        const lastSwapAt =
-          activity.lastSwapAgeHours === null
-            ? null
-            : new Date(Date.now() - activity.lastSwapAgeHours * 3600_000).toISOString();
-        const buy = await this.helius.lastBuyWithinWindow(address, this.config.risk.ACTIVE_BUY_WINDOW_HOURS);
+        const reading = await checkWalletActivity(this.publicSolana, this.priceProvider, address, {
+          lookbackHours: 24,
+        });
         repo.updateCandidateActivity(this.db.db, cand.candidateId, {
-          swaps24h: activity.swaps24h,
-          lastSwapAt,
-          // Unknown (ok:false) keeps the previous value — fail open.
-          lastBuyAt: buy.ok ? buy.lastBuyAt : (cand.lastBuyAt ?? null),
+          swaps24h: reading.copyableTrades24h,
+          lastSwapAt: reading.lastTradeAt,
+          lastBuyAt: reading.lastEntryAt,
+          buys24h: reading.entries24h,
+          sells24h: reading.exits24h,
+          status: 'ok',
           checkedAt: nowIso,
         });
         checked++;
+        const lastTradeAgeHours =
+          reading.lastTradeAt === null ? null : (Date.now() - Date.parse(reading.lastTradeAt)) / 3_600_000;
         const passesGate =
-          activity.lastSwapAgeHours !== null &&
-          activity.lastSwapAgeHours <= this.config.risk.MAX_LEADER_STALL_HOURS &&
-          activity.swaps24h >= this.config.risk.MIN_LEADER_SWAPS_24H;
+          lastTradeAgeHours !== null &&
+          lastTradeAgeHours <= this.config.risk.MAX_LEADER_STALL_HOURS &&
+          reading.copyableTrades24h >= this.config.risk.MIN_LEADER_SWAPS_24H;
         if (passesGate) {
           repo.upgradeCandidateAddressVerification(this.db.db, cand.candidateId, 'solana', address);
           verified++;
         }
       } catch (e) {
         failed++;
+        repo.markCandidateActivityFailed(this.db.db, cand.candidateId, nowIso);
         repo.audit(this.db.db, 'activity', cand.handle + ': ' + (e as Error).message, {});
       }
+      await sleep(350);
     }
     repo.audit(
       this.db.db,

@@ -6,8 +6,16 @@ import { Dashboard } from './pages/Dashboard';
 import { SettingsPage } from './pages/Settings';
 import { AuditPage } from './pages/Audit';
 import { OperationsPage } from './pages/Operations';
+import { ListIcon, PulseIcon, SlidersIcon, TerminalIcon } from './components/icons';
 
 type Route = 'dashboard' | 'settings' | 'audit' | 'ops';
+
+const NAV: Array<{ id: Route; label: string; icon: (props: { size?: number }) => React.JSX.Element }> = [
+  { id: 'dashboard', label: 'Trade', icon: PulseIcon },
+  { id: 'ops', label: 'Ops', icon: TerminalIcon },
+  { id: 'settings', label: 'Settings', icon: SlidersIcon },
+  { id: 'audit', label: 'Audit', icon: ListIcon },
+];
 
 export function App() {
   const [authState, setAuthState] = useState<'checking' | 'needsSetup' | 'loggedOut' | 'loggedIn'>(
@@ -54,34 +62,11 @@ export function App() {
   }
 
   return (
-    <div className="min-h-[100svh] max-w-[480px] mx-auto px-4">
+    <div className="relative min-h-[100svh] max-w-[480px] lg:max-w-[600px] mx-auto px-4">
       <div className="aurora" aria-hidden="true">
-        <div className="blob-mint" />
+        <div className="blob-cyan" />
         <div className="blob-violet" />
       </div>
-
-      <nav className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 card !rounded-full px-2 py-1.5 flex gap-1">
-        <NavBtn active={route === 'dashboard'} onClick={() => go('dashboard')}>
-          TRADE
-        </NavBtn>
-        <NavBtn active={route === 'ops'} onClick={() => go('ops')}>
-          OPS
-        </NavBtn>
-        <NavBtn active={route === 'settings'} onClick={() => go('settings')}>
-          SETTINGS
-        </NavBtn>
-        <NavBtn active={route === 'audit'} onClick={() => go('audit')}>
-          AUDIT
-        </NavBtn>
-        <NavBtn
-          active={false}
-          onClick={() => {
-            void api.logout().then(() => setAuthState('loggedOut'));
-          }}
-        >
-          EXIT
-        </NavBtn>
-      </nav>
 
       {route === 'dashboard' &&
         (state ? (
@@ -91,23 +76,42 @@ export function App() {
             onDemoReplay={() => void api.demoStart().catch(() => undefined)}
           />
         ) : (
-          <p className="pt-10 text-center text-[13px] text-[#7d78a0]">connecting…</p>
+          <ConnectingSkeleton />
         ))}
       {route === 'ops' && <OperationsPage onBack={() => go('dashboard')} />}
-      {route === 'settings' && <SettingsPage onBack={() => go('dashboard')} onChanged={() => undefined} />}
+      {route === 'settings' && <SettingsPage onBack={() => go('dashboard')} />}
       {route === 'audit' && <AuditPage onBack={() => go('dashboard')} />}
+
+      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 card !bg-glassstrong !rounded-full px-1.5 py-1.5 flex gap-0.5 pb-[calc(6px+env(safe-area-inset-bottom))]">
+        {NAV.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => go(id)}
+            aria-current={route === id ? 'page' : undefined}
+            className={`flex flex-col items-center justify-center gap-0.5 min-w-[64px] min-h-[44px] rounded-full transition-colors cursor-pointer ${
+              route === id ? 'bg-accentdim text-accent' : 'text-muted hover:text-ink'
+            }`}
+          >
+            <Icon size={17} />
+            <span className="text-[9.5px] font-semibold tracking-wide">{label}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
 
-function NavBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+/** Skeleton placeholders while the first SSE state is in flight. */
+function ConnectingSkeleton() {
   return (
-    <button
-      onClick={onClick}
-      className={`label !text-[9px] rounded-full px-3 py-1.5 transition-colors ${active ? 'bg-[#2a2740] text-white' : 'hover:bg-white/70'}`}
-    >
-      {children}
-    </button>
+    <div aria-live="polite" aria-label="connecting" className="pt-6">
+      {[64, 120, 88, 100].map((h, i) => (
+        <div key={i} className="card p-4 mb-3.5">
+          <div className="skeleton rounded-lg bg-inset" style={{ height: h / 3 }} />
+          <div className="skeleton rounded-lg bg-inset mt-3" style={{ height: h }} />
+        </div>
+      ))}
+    </div>
   );
 }
 

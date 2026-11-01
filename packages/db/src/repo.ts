@@ -202,24 +202,56 @@ export function updateCandidateStats(db: Db, candidateId: string, stats: Candida
 }
 
 /**
- * Store Helius on-chain activity — the same numbers the pre-hire gate uses.
- * `lastBuyAt` carries the actively-trading signal: an ISO timestamp when a buy
- * was found inside ACTIVE_BUY_WINDOW_HOURS, null when none was (or the
- * direction check failed — callers keep the previous value in that case).
+ * Store copyable on-chain activity (operator decision, 2026-11-01). The column
+ * names are historical; their meanings are now:
+ *   swaps_24h    -> copyable coin movements in 24h (entry or exit)
+ *   buys_24h     -> attributable coin ENTRIES (his balance of a coin rose)
+ *   sells_24h    -> attributable coin EXITS (his balance fell)
+ *   last_buy_at  -> newest entry — drives "actively buying" at hire time
+ *   last_swap_at -> newest copyable trade — drives the quiet/stall clock
+ * Rows written before the cutover are not comparable; the cutover is recorded
+ * by the audit line "activity semantics: copyable-trade v2".
+ * `status: 'ok'` means the columns are a current, successful measurement; a
+ * failed check never reaches this writer (see markCandidateActivityFailed), so
+ * a failed refresh can no longer erase a good reading.
  */
 export function updateCandidateActivity(
   db: Db,
   candidateId: string,
-  activity: { swaps24h: number; lastSwapAt: string | null; lastBuyAt: string | null; checkedAt: string },
+  activity: {
+    swaps24h: number;
+    lastSwapAt: string | null;
+    lastBuyAt: string | null;
+    buys24h: number | null;
+    sells24h: number | null;
+    status: 'ok';
+    checkedAt: string;
+  },
 ): void {
   db.update(schema.traderCandidates)
     .set({
       swaps24h: activity.swaps24h,
       lastSwapAt: activity.lastSwapAt,
       lastBuyAt: activity.lastBuyAt,
+      buys24h: activity.buys24h,
+      sells24h: activity.sells24h,
+      activityCheckStatus: activity.status,
       activityCheckedAt: activity.checkedAt,
       updatedAt: activity.checkedAt,
     })
+    .where(eq(schema.traderCandidates.candidateId, candidateId))
+    .run();
+}
+
+/**
+ * Record a failed activity check WITHOUT touching the activity columns or the
+ * freshness stamp: the previous reading stays usable (with status 'failed' the
+ * snapshot degrades activelyTrading to unknown), and an un-advanced
+ * activity_checked_at keeps the candidate first in line for the next refresh.
+ */
+export function markCandidateActivityFailed(db: Db, candidateId: string, checkedAt: string): void {
+  db.update(schema.traderCandidates)
+    .set({ activityCheckStatus: 'failed', updatedAt: checkedAt })
     .where(eq(schema.traderCandidates.candidateId, candidateId))
     .run();
 }

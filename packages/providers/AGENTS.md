@@ -13,6 +13,9 @@ notifications. This is the only package allowed to talk to the outside world.
 - `src/dawn/dawn-lookup.ts` — Dawn trader-card resolution over the dedicated
   Telegram browser profile.
 - `src/solana/helius.ts` — leader activity and balance reads.
+- `src/solana/publicRpc.ts` — free public Solana JSON-RPC wallet activity
+  (direction-aware buyer detection for the research phase; primary source for
+  the candidate activity refresh). The trading monitor never uses it.
 - `src/solana/jupiter.ts` — quote/swap.
 - `src/price.ts` — price marks and freshness.
 - `src/notify.ts` — Telegram push reports.
@@ -25,6 +28,14 @@ notifications. This is the only package allowed to talk to the outside world.
 - **Helius uses `getTransactionsForAddress`.** Enhanced Transactions is
   deprecated — do not reintroduce it. Polling is the baseline; webhooks are
   optional.
+- **The public Solana RPC is the bulk-refresh workhorse (2026-10-31).**
+  Candidate activity refreshes run often and in bursts; they hit the free
+  public RPC first (`PublicSolanaProvider.walletActivity`, IP-throttled, never
+  billed) and fall back to Helius only when it fails. Classification is shared
+  with Helius (`toLeaderTxSummary` + core `classifyLeaderEvent`), so "buy"
+  means the same thing everywhere. `getTransaction` calls must admit versioned
+  transactions (`maxSupportedTransactionVersion` > 0) or every modern swap
+  errors. Helius stays the sole source for the 8-second leader monitor.
 - **Jupiter uses Swap API v1** (`/swap/v1/quote`, `/swap/v1/swap`) on
   `api.jup.ag` (keyed) or `lite-api.jup.ag` (free, rate-limited). A rejected
   quote is logged and never retried blind; 429s skip a cycle.

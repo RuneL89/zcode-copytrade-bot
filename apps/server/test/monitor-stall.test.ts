@@ -76,6 +76,9 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
     swaps24h: 12,
     lastSwapAt: new Date(Date.now() - stallHours * 3600_000).toISOString(),
     lastBuyAt: null,
+    buys24h: 0,
+    sells24h: 0,
+    status: 'ok',
     checkedAt: new Date(Date.now() - activityFreshHours * 3600_000).toISOString(),
   });
   snapshots.build();

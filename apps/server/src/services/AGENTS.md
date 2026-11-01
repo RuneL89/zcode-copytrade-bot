@@ -5,27 +5,30 @@
 The worker's service layer. Each file owns one slice of runtime behavior and
 the whole set is constructed and scheduled by `runtime.ts`.
 
-| File              | Owns                                                                                                                                                                 |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine.ts`       | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
-| `lifecycle.ts`    | Activation, atomic firing/handoff, replacement, day-trader activity gates, board-presence hire guard, just-fired hire exclusion (no timed cooldowns).                 |
-| `monitor.ts`      | Leader polling timer, cursor persistence, dedupe, restart reconciliation.                                                                                            |
-| `dawn-targets.ts` | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
-| `executors.ts`    | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
-| `builder.ts`      | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                              |
-| `research.ts`     | Snapshot publication, inbox intake, recommendation validation via `packages/core`.                                                                                   |
-| `state.ts`        | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                               |
-| `control.ts`      | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                  |
-| `readiness.ts`    | The live-readiness checklist.                                                                                                                                        |
-| `demo.ts`         | The in-memory 28-second fictional replay.                                                                                                                            |
-| `reports.ts`      | Server-side Telegram notifications (anomalies + daily PnL); no-op when unconfigured.                                                                                 |
-| `withdraw.ts`     | Wallet withdrawal flow and its guards.                                                                                                                               |
-| `ops.ts`          | The fixed whitelisted operations runner.                                                                                                                             |
+| File                | Owns                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.ts`         | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
+| `lifecycle.ts`      | Activation, atomic firing/handoff, replacement, day-trader activity gates, board-presence hire guard, just-fired hire exclusion (no timed cooldowns).                |
+| `monitor.ts`        | Leader polling timer, cursor persistence, dedupe, restart reconciliation.                                                                                            |
+| `dawn-targets.ts`   | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
+| `activity-check.ts` | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                       |
+| `executors.ts`      | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
+| `builder.ts`        | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                              |
+| `research.ts`       | Snapshot publication, inbox intake, recommendation validation via `packages/core`.                                                                                   |
+| `state.ts`          | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                               |
+| `control.ts`        | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                  |
+| `readiness.ts`      | The live-readiness checklist.                                                                                                                                        |
+| `demo.ts`           | The in-memory 28-second fictional replay.                                                                                                                            |
+| `reports.ts`        | Server-side Telegram notifications (anomalies + daily PnL); no-op when unconfigured.                                                                                 |
+| `withdraw.ts`       | Wallet withdrawal flow and its guards.                                                                                                                               |
+| `ops.ts`            | The fixed whitelisted operations runner.                                                                                                                             |
 
 Timers are owned by `runtime.ts` (inbox watch, health sampling, snapshot
-refresh with the rank watch and the throttled auto-Dawn, activity refresh,
-optional adapters) and `monitor.ts` (leader polling). `engine.ts` is called, it
-does not schedule itself.
+refresh with the rank watch, activity refresh, optional adapters) and
+`monitor.ts` (leader polling). Scheduled Dawn runs left the server on
+2026-10-31: the 30-minute data-sweep cron drives `dawn-lookup.ts --all-missing`
+for walletless candidates; only operator-initiated manual runs remain
+server-side. `engine.ts` is called, it does not schedule itself.
 
 ## Ownership
 

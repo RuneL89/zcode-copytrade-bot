@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { parseManualCsv, parseManualJson } from '../src/leaderboard/import.js';
 import { parseDisplayedPnl, robotsDisallows } from '../src/leaderboard/fomo-web.js';
 import { HeliusProvider, signatureOf, type FetchedLeaderTx } from '../src/solana/helius.js';
+import { PublicSolanaProvider } from '../src/solana/publicRpc.js';
 import { JupiterProvider } from '../src/solana/jupiter.js';
+import { measureCopyableActivity, type LeaderTxSummary } from '@zcode-bot/core';
 
 describe('manual leaderboard import', () => {
   const validAddress = 'Leader1' + '1'.repeat(36); // 43 chars, valid base58 alphabet
@@ -270,5 +272,247 @@ describe('leader tx summary program resolution', () => {
       raw,
     } as FetchedLeaderTx);
     expect(summary.programs).toContain(JUP);
+  });
+});
+
+describe('public RPC wallet activity', () => {
+  const leader = 'LeaderWallet1111111111111111111111111111111111';
+  const PUBJUP = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  const MEOW = 'MeowMint111111111111111111111111111111111111111';
+  const NOW = Date.parse('2026-10-31T12:00:00Z');
+
+  function summaryOf(raw: object, minutesAgo: number, sig = 'sig'): LeaderTxSummary {
+    return HeliusProvider.toLeaderTxSummary(leader, {
+      signature: sig,
+      slot: 100,
+      transactionIndex: 0,
+      blockTime: Math.floor((NOW - minutesAgo * 60_000) / 1000),
+      err: false,
+      raw,
+    } as FetchedLeaderTx);
+  }
+
+  /** Same fixture through the signer-attributed summarizer (the activity path). */
+  function signedOf(raw: object, minutesAgo: number, sig = 'sig'): LeaderTxSummary {
+    const clone = structuredClone(raw) as {
+      transaction?: { message?: { accountKeys?: Array<string | { pubkey: string; signer?: boolean }> } };
+    };
+    for (const key of clone.transaction?.message?.accountKeys ?? []) {
+      if (typeof key !== 'string' && key.pubkey === leader) key.signer = true;
+    }
+    const summary = HeliusProvider.toSignerTxSummary(leader, {
+      signature: sig,
+      slot: 100,
+      transactionIndex: 0,
+      blockTime: Math.floor((NOW - minutesAgo * 60_000) / 1000),
+      err: false,
+      raw: clone,
+    } as FetchedLeaderTx);
+    if (!summary) throw new Error('fixture must be signed by the leader');
+    return summary;
+  }
+
+  const buyRaw = {
+    transaction: {
+      signatures: ['buy'],
+      message: {
+        accountKeys: [{ pubkey: leader }, { pubkey: 'Ata111111111111111111111111111111111111111' }],
+        instructions: [{ programId: PUBJUP }],
+      },
+    },
+    meta: {
+      err: null,
+      preBalances: [1_000_000, 0],
+      postBalances: [1_000_000, 0],
+      preTokenBalances: [
+        { accountIndex: 1, mint: USDC, owner: leader, uiTokenAmount: { amount: '20000000', decimals: 6 } },
+      ],
+      postTokenBalances: [
+        { accountIndex: 1, mint: USDC, owner: leader, uiTokenAmount: { amount: '8000000', decimals: 6 } },
+        { accountIndex: 1, mint: MEOW, owner: leader, uiTokenAmount: { amount: '5000000', decimals: 6 } },
+      ],
+      innerInstructions: [],
+    },
+  };
+  const sellRaw = {
+    transaction: {
+      signatures: ['sell'],
+      message: { accountKeys: [{ pubkey: leader }], instructions: [{ programId: PUBJUP }] },
+    },
+    meta: {
+      err: null,
+      preBalances: [0],
+      postBalances: [0],
+      preTokenBalances: [
+        { accountIndex: 0, mint: MEOW, owner: leader, uiTokenAmount: { amount: '5000000', decimals: 6 } },
+      ],
+      postTokenBalances: [
+        { accountIndex: 0, mint: MEOW, owner: leader, uiTokenAmount: { amount: '1000000', decimals: 6 } },
+        { accountIndex: 0, mint: USDC, owner: leader, uiTokenAmount: { amount: '9000000', decimals: 6 } },
+      ],
+      innerInstructions: [],
+    },
+  };
+  const airdropRaw = {
+    transaction: {
+      signatures: ['drop'],
+      message: { accountKeys: [{ pubkey: leader }], instructions: [] },
+    },
+    meta: {
+      err: null,
+      preBalances: [0],
+      postBalances: [0],
+      preTokenBalances: [],
+      postTokenBalances: [
+        { accountIndex: 0, mint: MEOW, owner: leader, uiTokenAmount: { amount: '777', decimals: 6 } },
+      ],
+      innerInstructions: [],
+    },
+  };
+  // Swap-like balances but no known swap program -> SKIPPED_AMBIGUOUS.
+  const ambiguousRaw = {
+    transaction: {
+      signatures: ['amb'],
+      message: { accountKeys: [{ pubkey: leader }], instructions: [] },
+    },
+    meta: {
+      err: null,
+      preBalances: [0],
+      postBalances: [0],
+      preTokenBalances: [],
+      postTokenBalances: [
+        { accountIndex: 0, mint: MEOW, owner: leader, uiTokenAmount: { amount: '5000000', decimals: 6 } },
+        { accountIndex: 0, mint: USDC, owner: leader, uiTokenAmount: { amount: '5000000', decimals: 6 } },
+      ],
+      innerInstructions: [],
+    },
+  };
+  // WSOL movement only (funding legs, no token leg) -> SKIPPED_STABLE_TO_STABLE.
+  const wrapRaw = {
+    transaction: {
+      signatures: ['wrap'],
+      message: { accountKeys: [{ pubkey: leader }], instructions: [{ programId: PUBJUP }] },
+    },
+    meta: {
+      err: null,
+      preBalances: [2_000_000],
+      postBalances: [2_000_000],
+      preTokenBalances: [
+        { accountIndex: 0, mint: WSOL, owner: leader, uiTokenAmount: { amount: '1000000000', decimals: 9 } },
+      ],
+      postTokenBalances: [
+        { accountIndex: 0, mint: WSOL, owner: leader, uiTokenAmount: { amount: '2000000000', decimals: 9 } },
+      ],
+      innerInstructions: [],
+    },
+  };
+
+  it('measures copyable coin movements, not transactions or buy/sell verdicts', () => {
+    // Prices: MEOW at $0.20 (5e6 base @ 6dp = $1.00) and USDC is the funding leg.
+    const priceOf = (mint: string) => (mint === MEOW ? 200_000_000n : null);
+    const sample = measureCopyableActivity(
+      [
+        signedOf(airdropRaw, 5, 'drop'),
+        signedOf(buyRaw, 30, 'buy'),
+        signedOf(sellRaw, 90, 'sell'),
+        signedOf(ambiguousRaw, 100, 'amb'),
+        signedOf(wrapRaw, 110, 'wrap'),
+      ],
+      { nowMs: NOW, lookbackHours: 24, minTradeUsdMicro: 1_000_000n, priceOf },
+    );
+    // buy = MEOW in (+5e6 = $1.00), sell = MEOW out (-4e6), airdrop = MEOW in
+    // (+777 → dust), ambiguous = swap-like balances with no DEX program: the new
+    // measure needs no program whitelist, so its MEOW inflow is an entry too,
+    // wrap = WSOL only (funding leg).
+    expect(sample.entries24h).toBe(2);
+    expect(sample.exits24h).toBe(1);
+    expect(sample.lastEntryAt).toBe(new Date(NOW - 30 * 60_000).toISOString());
+    expect(sample.lastTradeAt).toBe(new Date(NOW - 30 * 60_000).toISOString());
+    expect(sample.scannedTxs).toBe(5);
+  });
+
+  it('stops at the lookback boundary and reports an empty wallet as zeros', () => {
+    const sample = measureCopyableActivity([signedOf(buyRaw, 3 * 60, 'buy-old')], {
+      nowMs: NOW,
+      lookbackHours: 2,
+      minTradeUsdMicro: 1_000_000n,
+      priceOf: (mint: string) => (mint === MEOW ? 200_000_000n : null),
+    });
+    expect(sample.copyableTrades24h).toBe(0);
+    expect(sample.entries24h).toBe(0);
+    expect(sample.lastEntryAt).toBeNull();
+    expect(sample.scannedTxs).toBe(0);
+    expect(
+      measureCopyableActivity([], { nowMs: NOW, lookbackHours: 24, minTradeUsdMicro: 1_000_000n, priceOf: () => null })
+        .scannedTxs,
+    ).toBe(0);
+  });
+
+  it('walletActivity classifies through a stubbed public node', async () => {
+    const at = (minutesAgo: number) => Math.floor((NOW - minutesAgo * 60_000) / 1000);
+    const signedBody = (raw: object, blockTime: number) => {
+      const clone = structuredClone(raw) as {
+        transaction?: { message?: { accountKeys?: Array<string | { pubkey: string; signer?: boolean }> } };
+      };
+      for (const key of clone.transaction?.message?.accountKeys ?? []) {
+        if (typeof key !== 'string' && key.pubkey === leader) key.signer = true;
+      }
+      return { jsonrpc: '2.0', result: { ...clone, slot: 100, transactionIndex: 0, blockTime } };
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const { method, params } = JSON.parse(init?.body ?? '{}') as { method: string; params: unknown[] };
+      if (method === 'getSignaturesForAddress') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            result: [
+              { signature: 'drop', slot: 100, blockTime: at(5), err: null },
+              { signature: 'buy', slot: 99, blockTime: at(30), err: null },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (method === 'getTransaction') {
+        const sig = params[0] as string;
+        return sig === 'drop'
+          ? new Response(JSON.stringify(signedBody(airdropRaw, at(5))), { status: 200 })
+          : new Response(JSON.stringify(signedBody(buyRaw, at(30))), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: { message: 'unexpected' } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const provider = new PublicSolanaProvider('https://public.test', 1);
+      const res = await provider.walletActivity(leader, {
+        lookbackHours: 24,
+        maxTxScans: 10,
+        nowMs: Date.now(),
+        priceOf: async (mint) => (mint === MEOW ? 200_000_000n : null),
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        // Buy = MEOW in (entry); the airdrop's +777 base is $0.0002 → dust.
+        expect(res.entries24h).toBe(1);
+        expect(res.exits24h).toBe(0);
+        expect(res.lastEntryAt).not.toBeNull();
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('walletActivity fails open on a broken public node (never throws)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+    try {
+      const provider = new PublicSolanaProvider('https://public.test', 1);
+      await expect(provider.walletActivity(leader)).resolves.toMatchObject({ ok: false });
+      await expect(provider.healthCheck()).resolves.toMatchObject({ ok: false });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

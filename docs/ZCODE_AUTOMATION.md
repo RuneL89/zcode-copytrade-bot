@@ -107,24 +107,36 @@ pause, close-all, config, or query tools. If anything else appears, stop and
 inspect the server entry — you connected something other than
 `apps/zcode-mcp`.
 
-## 4. Create the scheduled research task
+## 4. Scheduled automations (two tasks, split 2026-10-31)
 
-In ZCode (workspace open on this repo):
+Research and data collection are two separate scheduled tasks, so a hire
+decision never waits on GUI automation and board work never blocks on
+research:
 
-1. Open the **Automations / Scheduled tasks** view (same place you find
-   "Run now").
-2. **Create task** with:
-   - **Schedule: hourly** — e.g. `0 * * * *` (every hour at minute 0).
-     Do **not** claim or configure minute-level or event-driven scheduling;
-     hourly research is the design cadence. (Sub-second trading triggers are
-     the worker's job, not ZCode's.)
-   - **Keep awake: enabled** (see §6).
-   - **Permission configuration: conservative** — allow the intended MCP tool
-     calls (`get_research_snapshot`, `get_replacement_context`,
-     `submit_candidate_recommendation`) and file reads/writes limited to the
-     `data/research/` tree. Do **not** grant arbitrary shell, wallet access,
-     unrestricted filesystem access, or network beyond localhost.
-3. Paste the instruction text from §5 as the task prompt.
+- **Research tick — every 5 minutes.** Read-only DB checks, then — and only
+  when the engine is WAITING for a replacement (no active trader and no valid
+  ordering, a pending `research_request`, or an orphan fire) — spawn ONE
+  `zcode-research` run. It never touches fomo.family or Telegram. Before
+  dispatching on stale top-board activity data it may run
+  `pnpm exec tsx src/cli/candidate-activity.ts --source public --limit 7`
+  (free public RPC) once, so the researcher sees fresh buyer data.
+- **Data sweep — every 30 minutes.** Owns ALL data collection:
+  `docs/FOMO_DAWN_FETCHING.md` Procedure A (FOMO top-7 board refresh via the
+  operator's desktop Chrome, unconditionally every run) + `fomo-import` +
+  `snapshot-rebuild`, then Procedure B (`tsx src/cli/dawn-lookup.ts
+--all-missing --limit 20`) for candidates still missing a wallet, then an
+  activity-freshness check that may run the same public-RPC CLI once. It never
+  spawns research and never hires or fires.
+
+Both tasks: keep awake enabled (see §6), conservative permissions (the three
+research MCP tools + reads/writes limited to `data/research/` and the
+`Temp/zcode-gui` scratch tree for the sweep). Do NOT grant arbitrary shell,
+wallet access, unrestricted filesystem access, or non-localhost network. The
+engine itself auto-hires from a validated ordering when nobody is active —
+neither task hires manually. The live task prompts are stored in the ZCode
+Automations view ("Every 5 minutes ZCode Bot research tick…" and "Every 30
+minutes ZCode Bot data sweep…"); the researcher-side instruction text below
+(§5) is the part the research tick must never deviate from.
 
 ## 5. Scheduled-task instruction text
 
@@ -157,13 +169,20 @@ Research ZCode Bot replacement candidates.
    sha256 hash. Set createdAt/expiresAt (expiresAt = createdAt + 3 hours).
    Confidence is informational; it can never override the worker's
    eligibility and risk checks.
-   - Actively-trading tier (2026-10-31): candidates whose snapshot
-     `publicStats.activelyTrading` is true (most recent on-chain BUY inside
-     `ACTIVE_BUY_WINDOW_HOURS`, default 4) are ordered BEFORE the rest, each
-     tier ranked by the day's merit; when zero qualified candidates are
-     active, the tier is dropped and merit decides. The engine independently
-     re-verifies the signal at hire time and fails open on unknown. Sell-only
-     activity does not count as actively trading.
+   - Copyable-activity tier (operator decision, 2026-11-01 — replaces the old
+     buy/sell direction counts): activity is measured as COPYABLE COIN
+     MOVEMENTS. A trade is any transaction the leader SIGNED that moved a
+     priceable, non-funding mint worth at least $1 — whatever the quote asset
+     (SOL, USDC or another token). `publicStats.entries24h` counts attributable
+     coin inflows, `exits24h` attributable outflows, `swaps24h` the copyable
+     trades themselves. Candidates whose `publicStats.activelyTrading` is true
+     (an attributable ENTRY inside `ACTIVE_BUY_WINDOW_HOURS`, default 4) come
+     first; `false` means the reading succeeded and there is no such entry;
+     `null` means the check failed or never ran — unknown, record a concern,
+     never disqualify. Rank by the day's merit inside each tier. Quote the
+     numbers you saw; never infer direction.
+   - Coins without a price/route do not count: the engine could not copy them.
+     Note them as concerns, never as trades.
    - Optional `rotateIfFlat: true` may be set on an ordering when the pool is
      fresher than the current hire: the worker then fires that trader only if it
      holds no open position (and only if some candidate on the ordering is
