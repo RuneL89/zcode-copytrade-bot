@@ -159,6 +159,40 @@ export function listCandidates(db: Db) {
   return db.select().from(schema.traderCandidates).all();
 }
 
+/**
+ * The next candidates for the admission scan: enabled, wallet in hand, not
+ * already on the watch list. Wallets whose last reading showed recent funded
+ * buys come first (those are the plausible admissions), then whoever has gone
+ * longest without a reading, never-measured ahead of everything. The scan is
+ * bounded per tick, so it must advance through the pool instead of re-reading
+ * its head forever, and it must reach the promising wallets before the tail.
+ */
+export function listAdmissionScanCandidates(db: Db, limit: number) {
+  return db
+    .select()
+    .from(schema.traderCandidates)
+    .where(
+      and(
+        eq(schema.traderCandidates.enabled, true),
+        sql`EXISTS (SELECT 1 FROM ${schema.candidateAddresses} a
+             WHERE a.candidate_id = ${schema.traderCandidates.candidateId}
+               AND a.chain = 'solana')`,
+        sql`NOT EXISTS (SELECT 1 FROM ${schema.watchWallets} w
+             WHERE w.candidate_id = ${schema.traderCandidates.candidateId})`,
+      ),
+    )
+    .orderBy(
+      sql`CASE WHEN ${schema.traderCandidates.buys24h} >= 1
+                 AND ${schema.traderCandidates.lastBuyAt} IS NOT NULL
+                 AND ${schema.traderCandidates.lastBuyAt} >= datetime('now', '-24 hours')
+               THEN 0 ELSE 1 END`,
+      sql`${schema.traderCandidates.activityCheckedAt} IS NULL DESC`,
+      schema.traderCandidates.activityCheckedAt,
+    )
+    .limit(limit)
+    .all();
+}
+
 /** Everything Dawn's compact card can report about a candidate. */
 export interface CandidateStatsPatch {
   winRatePct?: number | null;

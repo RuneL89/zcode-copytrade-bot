@@ -99,6 +99,11 @@ interface Harness {
   svc: WatchService;
   summaries: Map<string, LeaderTxSummary>;
   page: Array<{ signature: string; blockTime: number | null }>;
+  /** Per-address overrides, so one test can give wallets different histories. */
+  perAddress: Map<
+    string,
+    { page: Array<{ signature: string; blockTime: number | null }>; summaries: Map<string, LeaderTxSummary> }
+  >;
   prices: Map<string, bigint>;
   hired: string[];
   setHeadroom: (v: bigint) => void;
@@ -108,6 +113,10 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
   void over;
   const summaries = new Map<string, LeaderTxSummary>();
   const page: Array<{ signature: string; blockTime: number | null }> = [];
+  const perAddress = new Map<
+    string,
+    { page: Array<{ signature: string; blockTime: number | null }>; summaries: Map<string, LeaderTxSummary> }
+  >();
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
   const hired: string[] = [];
   let headroom = 1_000_000_000n;
@@ -123,8 +132,10 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
         lastTransactionIndex: 0,
         lastBlockTime: null,
       }),
-      recentSignatures: async () => page.map((r) => ({ ...r })),
-      transactionSummary: async (_address: string, signature: string) => summaries.get(signature) ?? null,
+      recentSignatures: async (address: string) =>
+        (perAddress.get(address)?.page ?? page).map((r) => ({ ...r })),
+      transactionSummary: async (address: string, signature: string) =>
+        perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null,
     } as unknown as WatchServiceDeps['helius'],
     prices: {
       priceOf: async (mint: string) => {
@@ -147,6 +158,7 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
     svc: new WatchService(deps),
     summaries,
     page,
+    perAddress,
     prices,
     hired,
     setHeadroom: (v: bigint) => {
@@ -901,5 +913,69 @@ describe('roster API addressing (AC11)', () => {
     } finally {
       rt.stop();
     }
+  });
+});
+
+/**
+ * The admission scan is bounded to a few wallets per tick, so it has to advance
+ * through the pool: it takes whoever has gone longest without a reading. A
+ * head-of-the-list slice re-scans the same rows forever and starves every wallet
+ * behind them. The live pool stalled exactly this way, with three no-buy wallets
+ * at the head and seventeen eligible ones behind them never looked at.
+ */
+describe('admission scan rotation', () => {
+  it('walks past a head of dead wallets to reach a qualifying one', async () => {
+    seedCandidate('cand_rot_a', 'rot_a', 'WalletRotA');
+    seedCandidate('cand_rot_b', 'rot_b', 'WalletRotB');
+    seedCandidate('cand_rot_c', 'rot_c', 'WalletRotC');
+    seedCandidate('cand_rot_good', 'rot_good', 'WalletRotGood');
+
+    // Everything in the pool reads as measured now, so the scan order is exactly
+    // the three dead wallets (4 days stale), then the good one (3 days stale).
+    const stamp = (candidateId: string, hoursAgo: number) =>
+      repo.updateCandidateActivity(handle.db, candidateId, {
+        swaps24h: 0,
+        lastSwapAt: null,
+        lastBuyAt: null,
+        buys24h: 0,
+        sells24h: 0,
+        status: 'ok' as const,
+        checkedAt: iso(Date.now() - hoursAgo * HOUR),
+      });
+    for (const c of repo.listCandidates(handle.db)) stamp(c.candidateId, 0);
+    for (const id of ['cand_rot_a', 'cand_rot_b', 'cand_rot_c']) stamp(id, 96);
+    stamp('cand_rot_good', 72);
+
+    // The wallet behind the dead head bought three times inside the last day.
+    const h = harness(riskConfig());
+    const summaries = new Map<string, LeaderTxSummary>();
+    const page: Array<{ signature: string; blockTime: number | null }> = [];
+    for (const [signature, minutesAgo] of [
+      ['rot_buy_1', 120],
+      ['rot_buy_2', 90],
+      ['rot_buy_3', 30],
+    ] as Array<[string, number]>) {
+      const summary = swapSummary({
+        signature,
+        minutesAgo,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+      });
+      summaries.set(signature, summary);
+      page.push({ signature, blockTime: summary.blockTime });
+    }
+    h.perAddress.set('WalletRotGood', { page, summaries });
+
+    // Tick 1 scans the three stalest wallets, the dead ones. The good wallet is
+    // behind them and stays off the list.
+    await h.svc.tick();
+    expect(repo.getWatchWallet(handle.db, 'cand_rot_good')).toBeUndefined();
+
+    // Tick 2 has nothing staler than the good wallet, so it is scanned, its
+    // reading is recorded, and it is admitted.
+    await h.svc.tick();
+    expect(repo.getWatchWallet(handle.db, 'cand_rot_good')?.status).toBe('watching');
+    expect(repo.getCandidate(handle.db, 'cand_rot_good')?.buys24h).toBe(3);
   });
 });

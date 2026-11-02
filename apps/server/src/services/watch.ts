@@ -533,11 +533,11 @@ export class WatchService {
     let archived = 0;
 
     // --- admission: candidates with a wallet that are not already on the list ---
-    const listed = new Set(repo.listWatchWallets(this.db).map((w) => w.candidateId));
-    const candidates = repo
-      .listCandidates(this.db)
-      .filter((c) => c.enabled && !listed.has(c.candidateId))
-      .slice(0, ADMISSION_SCAN_PER_TICK);
+    // The list is ordered least-recently-measured first (never-measured ahead of
+    // everything), so the bounded scan advances through the pool. A scan that
+    // finds nothing still records its reading, which is what moves the candidate
+    // to the back of the queue for the next tick.
+    const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
       const address = repo
         .listCandidateAddresses(this.db, candidate.candidateId)
@@ -545,6 +545,17 @@ export class WatchService {
       if (!address) continue;
       try {
         const reading = await this.scanWallet(address);
+        const newestEvent = reading.events[reading.events.length - 1] ?? null;
+        repo.updateCandidateActivity(this.db, candidate.candidateId, {
+          swaps24h: reading.events.length,
+          lastSwapAt:
+            newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
+          lastBuyAt: reading.lastFundedBuyAt,
+          buys24h: reading.fundedBuys24h,
+          sells24h: reading.events.filter((e) => e.side === 'sell').length,
+          status: 'ok',
+          checkedAt: reading.measuredAt,
+        });
         const verdict = await this.admit(candidate.candidateId, reading);
         if (verdict.ok) admitted++;
       } catch (e) {
