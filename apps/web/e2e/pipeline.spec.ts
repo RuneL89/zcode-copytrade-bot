@@ -168,14 +168,18 @@ test.describe('pipeline spine (plan 07)', () => {
 
     const seat = page.locator('[data-testid^="roster-seat-"]').filter({ hasText: '@e2e_seat' }).first();
     const toggle = seat.locator('[data-testid^="seat-positions-toggle-"]');
-    await expect(toggle).toContainText('Positions (1)');
-    // Collapsed by default, then one row with the coin, USDC and PnL.
+    // The seeded position is two copy buys, so the expander counts buys, not coins.
+    await expect(toggle).toContainText('Buys (2)');
     await expect(seat.locator('[data-testid^="seat-position-"]')).toHaveCount(0);
     await toggle.click();
     const rows = seat.locator('[data-testid^="seat-position-"]');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText('SEED');
     await expect(rows.first()).toContainText('$10.00');
+    // Each buy is its own line, with its own USDC figure.
+    const buys = seat.locator('[data-testid^="seat-buy-"]');
+    await expect(buys).toHaveCount(2);
+    await expect(buys.first()).toContainText('$5.00');
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 

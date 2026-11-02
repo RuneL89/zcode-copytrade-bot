@@ -53,6 +53,15 @@ export interface DashboardState {
     unrealizedPnlUsdMicro: string | null;
     markAgeSeconds: number | null;
     openedIso: string;
+    /** The individual copy buys still open inside this position, newest first. */
+    entries: Array<{
+      intentId: string;
+      atIso: string;
+      usdMicro: string;
+      tokenBase: string;
+      unrealizedPnlUsdMicro: string | null;
+      txSignature: string | null;
+    }>;
   }>;
   activity: Array<{
     id: string;

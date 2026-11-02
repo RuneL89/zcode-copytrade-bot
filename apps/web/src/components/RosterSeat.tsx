@@ -60,7 +60,9 @@ export function SeatPositionRow({
       className="panel px-2.5 py-2"
       aria-label={`${leaderLabel ? `@${leaderLabel}, ` : ''}${p.symbol ?? p.mintShort}, ${
         chip.label
-      }, $${usd(p.copyUsdMicro)} in, ${pnl === null ? 'no mark yet' : `unrealized ${signedUsd(pnl)}`}, ${cd.text}`}
+      }, $${usd(p.copyUsdMicro)} in, ${pnl === null ? 'no mark yet' : `unrealized ${signedUsd(pnl)}`}, ${
+        p.entries.length
+      } open buy(s), ${cd.text}`}
     >
       <div className="flex items-center gap-2 text-[11px]">
         {leaderLabel && <span className="label !text-[10px] !text-faint">@{leaderLabel}</span>}
@@ -72,6 +74,34 @@ export function SeatPositionRow({
         </span>
       </div>
       <p className={`label !text-[10px] mt-0.5 ${cdCls}`}>{cd.text}</p>
+      {/* The individual copy buys behind the position total (newest first). */}
+      <ul className="mt-1 space-y-0.5 pl-2" aria-label={`copy buys for ${p.symbol ?? p.mintShort}`}>
+        {p.entries.length === 0 ? (
+          <li className="label !text-[10px] !text-faint">No open buys recorded.</li>
+        ) : (
+          p.entries.map((e) => (
+            <li
+              key={e.intentId}
+              data-testid={`seat-buy-${e.intentId}`}
+              className="flex items-center gap-2 text-[10.5px]"
+            >
+              <span className="money text-muted">${usd(e.usdMicro)}</span>
+              <span
+                className={`money ${
+                  e.unrealizedPnlUsdMicro === null
+                    ? 'text-faint'
+                    : BigInt(e.unrealizedPnlUsdMicro) >= 0n
+                      ? 'text-pos'
+                      : 'text-neg'
+                }`}
+              >
+                {e.unrealizedPnlUsdMicro === null ? '—' : signedUsd(e.unrealizedPnlUsdMicro)}
+              </span>
+              <span className="label !text-[10px] !text-faint ml-auto">{timeAgo(e.atIso)} ago</span>
+            </li>
+          ))
+        )}
+      </ul>
     </li>
   );
 }
@@ -229,7 +259,7 @@ export function RosterSeat({
           >
             ▸
           </span>
-          Positions ({positions.length})
+          Buys ({positions.reduce((n, p) => n + p.entries.length, 0)})
         </button>
         {showPositions && (
           <ul

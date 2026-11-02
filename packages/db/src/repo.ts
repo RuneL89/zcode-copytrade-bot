@@ -691,6 +691,28 @@ export function pendingUnsignedIntentsForActivation(db: Db, activationId: string
     .all();
 }
 
+/** Confirmed entry intents for one position, oldest first (the buy history). */
+export function listEntryIntentsForPosition(db: Db, positionId: string) {
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(
+      and(
+        eq(schema.orderIntents.positionId, positionId),
+        eq(schema.orderIntents.kind, 'entry'),
+        eq(schema.orderIntents.state, 'confirmed'),
+      ),
+    )
+    .orderBy(schema.orderIntents.createdAt)
+    .all();
+}
+
+/** Fills for a set of intents (one buy can split across partial fills). */
+export function listFillsForIntents(db: Db, intentIds: string[]) {
+  if (intentIds.length === 0) return [];
+  return db.select().from(schema.fills).where(inArray(schema.fills.intentId, intentIds)).all();
+}
+
 export function recordAttempt(db: Db, input: AttemptInsert): void {
   db.insert(schema.executionAttempts).values(input).run();
 }

@@ -503,6 +503,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         source: 'test',
       });
       const positionId = `pos_seed_${Date.now()}`;
+      const perBuyUsd = usd / 2;
       repo.insertPosition(db, {
         positionId,
         activationId,
@@ -522,6 +523,40 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         closedAt: null,
         closeReason: null,
       });
+      // Two copy buys behind the one position: the seat lists them individually.
+      for (const n of [0, 1]) {
+        const intentId = `intent_seed_${Date.now()}_${n}`;
+        const at = new Date(Date.now() - (minutesAgo - n * 5) * 60_000).toISOString();
+        repo.insertIntent(db, {
+          intentId,
+          kind: 'entry',
+          mode: 'paper',
+          activationId,
+          candidateId,
+          positionId,
+          mint: 'SeedMint111111111111111111111111111111111111',
+          inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          inputAmountBase: String(Math.trunc(perBuyUsd * 1e6)),
+          inputUsdMicro: String(Math.trunc(perBuyUsd * 1e6)),
+          state: 'confirmed',
+          idempotencyKey: `seed-${intentId}`,
+          txSignature: `seed-sig-${n}`,
+          createdAt: at,
+          updatedAt: at,
+        });
+        repo.insertFill(db, {
+          fillId: `fill_seed_${Date.now()}_${n}`,
+          intentId,
+          positionId,
+          mode: 'paper',
+          txSignature: `seed-sig-${n}`,
+          inputAmountBase: String(Math.trunc(perBuyUsd * 1e6)),
+          outputAmountBase: '500',
+          feeEstimateUsdMicro: '0',
+          commitment: 'confirmed',
+          confirmedAt: at,
+        });
+      }
       rt.rebuildState();
       return c.json({ ok: true, candidateId, activationId, positionId });
     });

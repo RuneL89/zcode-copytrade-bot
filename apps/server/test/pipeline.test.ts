@@ -366,3 +366,99 @@ describe('discovery status reads only its own run record (AC3)', () => {
     expect(service.status().sources).toEqual([]);
   });
 });
+
+/**
+ * A position aggregates every copy of one coin by one leader, so an operator
+ * looking at a $67.69 row is really looking at seven buys. The payload carries
+ * those buys individually (open ones only, FIFO), each with its own PnL.
+ */
+describe('position entries list the individual copy buys', () => {
+  const MINT = 'EntryMint1111111111111111111111111111111111';
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  function seedAggregated(remainingTokenBase: string): { positionId: string } {
+    const buyer = seedCandidate('entries_buyer');
+    const act = seedActivation(buyer, 'watch_promotion');
+    const positionId = 'pos_entries_one';
+    repo.insertPosition(handle.db, {
+      positionId,
+      activationId: act,
+      candidateId: buyer,
+      mint: MINT,
+      mintSymbol: 'ENT',
+      status: 'open',
+      entryIntentId: null,
+      inputMint: USDC,
+      inputUsdMicro: '20000000',
+      copiedTokenBase: '2000',
+      remainingTokenBase,
+      leaderTokenBase: null,
+      realizedPnlUsdMicro: '0',
+      feesUsdMicro: '0',
+      openedAt: iso(2 * HOUR),
+      closedAt: null,
+      closeReason: null,
+    });
+    for (const [n, at] of [
+      [0, iso(1 * HOUR)],
+      [1, iso(30 * 60_000)],
+    ] as Array<[number, string]>) {
+      const intentId = `intent_entries_${n}`;
+      repo.insertIntent(handle.db, {
+        intentId,
+        kind: 'entry',
+        mode: 'paper',
+        activationId: act,
+        candidateId: buyer,
+        positionId,
+        mint: MINT,
+        inputMint: USDC,
+        inputAmountBase: '10000000',
+        inputUsdMicro: '10000000',
+        state: 'confirmed',
+        idempotencyKey: `entries-${n}`,
+        txSignature: `entries-sig-${n}`,
+        createdAt: at,
+        updatedAt: at,
+      });
+      repo.insertFill(handle.db, {
+        fillId: `fill_entries_${n}`,
+        intentId,
+        positionId,
+        mode: 'paper',
+        txSignature: `entries-sig-${n}`,
+        inputAmountBase: '10000000',
+        outputAmountBase: '1000',
+        feeEstimateUsdMicro: '0',
+        commitment: 'confirmed',
+        confirmedAt: at,
+      });
+    }
+    return { positionId };
+  }
+
+  it('splits one position into its open buys, each with its own PnL', () => {
+    const { positionId } = seedAggregated('2000');
+    const b = builder();
+    b.setMark(positionId, 24_000_000n, Date.now()); // the $20 book marks at $24
+    const p = b.build().positions.find((x) => x.positionId === positionId)!;
+    expect(p.entries).toHaveLength(2);
+    for (const e of p.entries) {
+      expect(e.usdMicro).toBe('10000000'); // $10 per buy
+      expect(e.unrealizedPnlUsdMicro).toBe('2000000'); // +$2.00 each
+    }
+    // Nothing sold: the buys sum exactly to the position's unrealized P/L.
+    const sum = p.entries.reduce((acc, e) => acc + BigInt(e.unrealizedPnlUsdMicro ?? '0'), 0n);
+    expect(sum.toString()).toBe(p.unrealizedPnlUsdMicro);
+  });
+
+  it('consumes sold base FIFO, so a sold buy drops out of the list', () => {
+    const { positionId } = seedAggregated('1000'); // half sold: the first buy is gone
+    const b = builder();
+    b.setMark(positionId, 24_000_000n, Date.now());
+    const p = b.build().positions.find((x) => x.positionId === positionId)!;
+    expect(p.entries).toHaveLength(1);
+    expect(p.entries[0]!.usdMicro).toBe('10000000');
+    expect(p.entries[0]!.unrealizedPnlUsdMicro).toBe('14000000'); // the surviving buy, re-marked
+  });
+});

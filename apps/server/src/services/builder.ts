@@ -216,6 +216,7 @@ export class StateBuilder {
         unrealizedPnlUsdMicro: fresh ? (fresh.valueUsdMicro - BigInt(p.inputUsdMicro)).toString() : null,
         markAgeSeconds: fresh ? markAgeSeconds : null,
         openedIso: p.openedAt,
+        entries: this.openBuyEntries(p, fresh ? fresh.valueUsdMicro : null),
       };
     });
 
@@ -543,6 +544,62 @@ export class StateBuilder {
       nextDiscoveryReason: decision.reason,
       rows,
     };
+  }
+
+  /**
+   * The individual copy buys still open inside a position, newest first.
+   *
+   * The engine keeps one position per coin per leader, so a position aggregates
+   * every copy of that coin: the MAMESUKE row that reads $67.69 is seven buys.
+   * Sold base is consumed FIFO, exactly as the exit path closes lots, so a buy
+   * that was sold drops out and a partially sold buy shows only its open part.
+   * A buy with no fill evidence is never listed (no invented transactions), and
+   * a buy's own PnL is mark-to-market against the coin's entry price.
+   */
+  private openBuyEntries(
+    p: { positionId: string; copiedTokenBase: string; remainingTokenBase: string },
+    markUsdMicro: bigint | null,
+  ): DashboardState['positions'][number]['entries'] {
+    const copied = BigInt(p.copiedTokenBase);
+    const remaining = BigInt(p.remainingTokenBase);
+    if (copied <= 0n) return [];
+    let sold = copied > remaining ? copied - remaining : 0n;
+    const intents = repo.listEntryIntentsForPosition(this.db, p.positionId);
+    if (intents.length === 0) return [];
+    const baseByIntent = new Map<string, bigint>();
+    const atByIntent = new Map<string, string>();
+    for (const fill of repo.listFillsForIntents(
+      this.db,
+      intents.map((i) => i.intentId),
+    )) {
+      baseByIntent.set(
+        fill.intentId,
+        (baseByIntent.get(fill.intentId) ?? 0n) + BigInt(fill.outputAmountBase),
+      );
+      const prev = atByIntent.get(fill.intentId);
+      if (!prev || fill.confirmedAt > prev) atByIntent.set(fill.intentId, fill.confirmedAt);
+    }
+    const entries: DashboardState['positions'][number]['entries'] = [];
+    for (const intent of intents) {
+      const base = baseByIntent.get(intent.intentId) ?? 0n;
+      if (base <= 0n) continue; // no fill: nothing to list
+      const consumed = sold >= base ? base : sold;
+      sold -= consumed;
+      const openBase = base - consumed;
+      if (openBase <= 0n) continue;
+      const usd = ((intent.inputUsdMicro === null ? 0n : BigInt(intent.inputUsdMicro)) * openBase) / base;
+      const pnl =
+        markUsdMicro !== null && remaining > 0n ? (openBase * markUsdMicro) / remaining - usd : null;
+      entries.push({
+        intentId: intent.intentId,
+        atIso: atByIntent.get(intent.intentId) ?? intent.createdAt,
+        usdMicro: usd.toString(),
+        tokenBase: openBase.toString(),
+        unrealizedPnlUsdMicro: pnl === null ? null : pnl.toString(),
+        txSignature: intent.txSignature,
+      });
+    }
+    return entries.reverse();
   }
 
   /**
