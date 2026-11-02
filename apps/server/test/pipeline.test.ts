@@ -461,4 +461,75 @@ describe('position entries list the individual copy buys', () => {
     expect(p.entries[0]!.usdMicro).toBe('10000000');
     expect(p.entries[0]!.unrealizedPnlUsdMicro).toBe('14000000'); // the surviving buy, re-marked
   });
+
+  it('lists a buy that filled no tokens for its money, and never a buy with no fill', () => {
+    const buyer = seedCandidate('entries_zero');
+    const act = seedActivation(buyer, 'watch_promotion');
+    const positionId = 'pos_entries_zero';
+    repo.insertPosition(handle.db, {
+      positionId,
+      activationId: act,
+      candidateId: buyer,
+      mint: MINT,
+      mintSymbol: 'ZERO',
+      status: 'open',
+      entryIntentId: null,
+      inputMint: USDC,
+      inputUsdMicro: '20000000',
+      copiedTokenBase: '1000',
+      remainingTokenBase: '1000',
+      leaderTokenBase: null,
+      realizedPnlUsdMicro: '0',
+      feesUsdMicro: '0',
+      openedAt: iso(2 * HOUR),
+      closedAt: null,
+      closeReason: null,
+    });
+    const seedBuy = (n: number, fillBase: string | null, usdMicro: string) => {
+      const intentId = `intent_zero_${n}`;
+      const at = iso((3 - n) * 30 * 60_000);
+      repo.insertIntent(handle.db, {
+        intentId,
+        kind: 'entry',
+        mode: 'paper',
+        activationId: act,
+        candidateId: buyer,
+        positionId,
+        mint: MINT,
+        inputMint: USDC,
+        inputAmountBase: usdMicro,
+        inputUsdMicro: usdMicro,
+        state: 'confirmed',
+        idempotencyKey: `zero-${n}`,
+        txSignature: `zero-sig-${n}`,
+        createdAt: at,
+        updatedAt: at,
+      });
+      if (fillBase !== null) {
+        repo.insertFill(handle.db, {
+          fillId: `fill_zero_${n}`,
+          intentId,
+          positionId,
+          mode: 'paper',
+          txSignature: `zero-sig-${n}`,
+          inputAmountBase: usdMicro,
+          outputAmountBase: fillBase,
+          feeEstimateUsdMicro: '0',
+          commitment: 'confirmed',
+          confirmedAt: at,
+        });
+      }
+    };
+    seedBuy(0, '1000', '10000000'); // a normal buy
+    seedBuy(1, '0', '10000000'); // filled nothing: listed for its money, no PnL
+    seedBuy(2, null, '10000000'); // no fill row at all: never listed
+    const b = builder();
+    b.setMark(positionId, 10_000_000n, Date.now());
+    const p = b.build().positions.find((x) => x.positionId === positionId)!;
+    expect(p.entries).toHaveLength(2);
+    const zero = p.entries.find((e) => e.tokenBase === '0')!;
+    expect(zero.usdMicro).toBe('10000000');
+    expect(zero.unrealizedPnlUsdMicro).toBeNull();
+    expect(p.entries.some((e) => e.intentId === 'intent_zero_2')).toBe(false);
+  });
 });

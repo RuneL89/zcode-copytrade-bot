@@ -97,6 +97,7 @@ export function SeatPositionRow({
               >
                 {e.unrealizedPnlUsdMicro === null ? '—' : signedUsd(e.unrealizedPnlUsdMicro)}
               </span>
+              {e.tokenBase === '0' && <span className="label !text-[10px] !text-faint">0 tokens</span>}
               <span className="label !text-[10px] !text-faint ml-auto">{timeAgo(e.atIso)} ago</span>
             </li>
           ))

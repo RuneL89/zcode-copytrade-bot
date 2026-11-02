@@ -562,7 +562,8 @@ export class StateBuilder {
   ): DashboardState['positions'][number]['entries'] {
     const copied = BigInt(p.copiedTokenBase);
     const remaining = BigInt(p.remainingTokenBase);
-    if (copied <= 0n) return [];
+    // No early exit on a zero copied base: a position can record confirmed buys
+    // whose fills produced no tokens, and those still spent the money.
     let sold = copied > remaining ? copied - remaining : 0n;
     const intents = repo.listEntryIntentsForPosition(this.db, p.positionId);
     if (intents.length === 0) return [];
@@ -581,8 +582,23 @@ export class StateBuilder {
     }
     const entries: DashboardState['positions'][number]['entries'] = [];
     for (const intent of intents) {
+      if (!baseByIntent.has(intent.intentId)) continue; // no fill evidence: never list it
       const base = baseByIntent.get(intent.intentId) ?? 0n;
-      if (base <= 0n) continue; // no fill: nothing to list
+      const at = atByIntent.get(intent.intentId) ?? intent.createdAt;
+      if (base === 0n) {
+        // A confirmed buy that filled no tokens: the money is spent and shown
+        // (so the buys reconcile with the position total) but there is nothing
+        // to mark, so its PnL stays unknown rather than invented.
+        entries.push({
+          intentId: intent.intentId,
+          atIso: at,
+          usdMicro: intent.inputUsdMicro ?? '0',
+          tokenBase: '0',
+          unrealizedPnlUsdMicro: null,
+          txSignature: intent.txSignature,
+        });
+        continue;
+      }
       const consumed = sold >= base ? base : sold;
       sold -= consumed;
       const openBase = base - consumed;
