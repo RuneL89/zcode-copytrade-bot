@@ -24,9 +24,10 @@ export const envSchema = z.object({
   HELIUS_WEBHOOK_SECRET: z.string().default(''),
   LEADER_POLL_INTERVAL_MS: intervalMs.default(8000),
 
-  // Free public Solana JSON-RPC for the candidate activity refresh (research
-  // phase). Unset = the well-known public endpoint; empty string disables it
-  // and the refresh falls back to Helius. The trading monitor never uses this.
+  // Free public Solana JSON-RPC for the candidate activity refresh (the D4
+  // funded-buy screen). Unset = the well-known public endpoint; empty string
+  // disables it and the refresh falls back to Helius. The trading monitor never
+  // uses this.
   PUBLIC_SOLANA_RPC_URL: z.string().default('https://api.mainnet-beta.solana.com'),
 
   JUPITER_BASE_URL: z.string().url().default('https://lite-api.jup.ag'),
@@ -41,6 +42,11 @@ export const envSchema = z.object({
   FOMO_WEB_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
   /** 'personal-copy': adapter runs on a copy of the desktop Chrome profile (no login ceremony). */
   FOMO_PROFILE_MODE: z.enum(['dedicated', 'personal-copy']).default('personal-copy'),
+
+  // fomoapi.io discovery inlet (D3): the primary handle/wallet source. The key
+  // is entered locally in .env and never logged or sent to the dashboard.
+  FOMOAPI_KEY: z.string().optional(),
+  FOMOAPI_BASE_URL: z.string().url().default('https://api.fomoapi.io'),
 
   // Optional Dawn (Telegram) trader lookup (read-only browser adapter over the
   // operator's own Telegram Web session). Unset DAWN_BOT_USERNAME = disabled.
@@ -93,7 +99,9 @@ export function loadConfig(input: Record<string, string | undefined>): AppConfig
     }
   }
   const riskFromEnv: Record<string, string> = {};
-  for (const key of Object.keys(riskConfigSchema.shape)) {
+  // Enumerate the config keys through DEFAULT_RISK: the schema carries a
+  // cross-field refinement, so it is no longer a plain ZodObject with `.shape`.
+  for (const key of Object.keys(DEFAULT_RISK)) {
     const raw = input[key];
     if (raw !== undefined && raw !== '') riskFromEnv[key] = raw;
   }

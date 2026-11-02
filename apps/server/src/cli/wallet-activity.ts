@@ -8,7 +8,12 @@
  * Read-only; writes nothing.
  */
 import { loadAppConfig } from '../bootstrap.js';
-import { HeliusProvider, JupiterPriceProvider, JupiterProvider, PublicSolanaProvider } from '@zcode-bot/providers';
+import {
+  HeliusProvider,
+  JupiterPriceProvider,
+  JupiterProvider,
+  PublicSolanaProvider,
+} from '@zcode-bot/providers';
 import { checkWalletActivity } from '../services/activity-check.js';
 
 async function main() {
@@ -23,7 +28,7 @@ async function main() {
 
   const config = loadAppConfig();
   const helius = new HeliusProvider(config.env.HELIUS_API_KEY);
-const publicSolana = new PublicSolanaProvider(config.env.PUBLIC_SOLANA_RPC_URL, 4, helius);
+  const publicSolana = new PublicSolanaProvider(config.env.PUBLIC_SOLANA_RPC_URL, 4, helius);
   if (!publicSolana.configured) {
     console.error('no provider: set PUBLIC_SOLANA_RPC_URL');
     process.exit(1);

@@ -52,7 +52,9 @@ export function StatusDrawer({
 
   return (
     <div className="absolute left-0 right-0 top-full z-30 px-4" data-testid="status-drawer">
-      <div className="card p-4" style={{ background: 'rgba(23, 25, 32, 0.98)' }}>
+      {/* Surface comes from the theme tokens (glass-strong) so the drawer
+          follows dark/light like every other card. */}
+      <div className="card p-4 !bg-glassstrong">
         <div className="flex items-center justify-between">
           <p className="label">System status</p>
           <button

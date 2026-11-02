@@ -122,7 +122,7 @@ export function ActivityFeed({ state }: { state: DashboardState }) {
                   {row.kind === 'leader_sell' && 'no position held'}
                 </p>
                 {row.reasonChip && (
-                  <span className={`tag chip shrink-0 !text-[8.5px] ${chipCls(row.reasonChip)}`}>
+                  <span className={`tag chip shrink-0 !text-[10px] ${chipCls(row.reasonChip)}`}>
                     {row.reasonChip}
                   </span>
                 )}

@@ -28,6 +28,8 @@ export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
+/** Same-mint buys inside this window are one burst, not a second position (D4). */
+export const COALESCE_SAME_MINT_MS = 60_000;
 /** Close-out attempts per position during a fire (pre-submission failures only). */
 const CLOSE_ATTEMPTS = 3;
 const CLOSE_BACKOFF_MS = 800;
@@ -56,6 +58,22 @@ export class CopyEngine {
 
   setRisk(risk: RiskConfig): void {
     this.risk = risk;
+  }
+
+  /**
+   * Remaining room under MAX_DEPLOYED_PCT, micro-USD — the same math the entry
+   * path uses. The D4 promotion gate reads it before it will hand a wallet to
+   * the roster.
+   */
+  headroomUsdMicro(): bigint {
+    const openAll = repo.openPositions(this.db);
+    return bankrollHeadroom({
+      equityStartUsdMicro: this.equityStartUsdMicro,
+      openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
+      openFeesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
+      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
+      maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
+    }).headroomUsdMicro;
   }
 
   // ---------------------------------------------------------------------
@@ -114,6 +132,43 @@ export class CopyEngine {
       return;
     }
 
+    // D4/plan 05 — same-mint burst coalescing: a burst of buys for a mint we
+    // already hold from THIS leader inside the window adds nothing (one
+    // position per mint per leader; the first copy is the position).
+    const heldForMint = repo.openPositionForMint(this.db, candidateId, event.mint);
+    if (heldForMint && Date.now() - Date.parse(heldForMint.openedAt) < COALESCE_SAME_MINT_MS) {
+      repo.insertRiskRejection(this.db, {
+        activationId,
+        rule: 'COALESCED_SAME_MINT_BURST',
+        limitValue: String(COALESCE_SAME_MINT_MS),
+        actualValue: String(Date.now() - Date.parse(heldForMint.openedAt)),
+        detail: `same-mint burst on ${event.mint}: position ${heldForMint.positionId} is ${Math.round((Date.now() - Date.parse(heldForMint.openedAt)) / 1000)}s old`,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Per-mint exposure cap across the whole roster; 0 disables it (operator
+    // decision: no cap for now).
+    if (this.risk.PER_MINT_CAP_USD > 0) {
+      const capMicro = usdToMicro(this.risk.PER_MINT_CAP_USD);
+      const openForMint = repo
+        .openPositions(this.db)
+        .filter((p) => p.mint === event.mint)
+        .reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n);
+      if (openForMint >= capMicro) {
+        repo.insertRiskRejection(this.db, {
+          activationId,
+          rule: 'PER_MINT_CAP',
+          limitValue: capMicro.toString(),
+          actualValue: openForMint.toString(),
+          detail: `per-mint cap reached for ${event.mint} across the roster`,
+          createdAt: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
     // Measure leader input notional from the funding leg with fresh pricing.
     let leaderInputUsdMicro: bigint;
     let inputMint: string;
@@ -139,13 +194,14 @@ export class CopyEngine {
       scaleDenominator: 10000n,
       minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
       maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
-      allowBelowMinRoundUp: false,
     });
 
     const intentId = 'intent_' + randomUUID();
     const idempotencyKey = `entry:${activationId}:${event.signature}:${event.mint}`;
 
     if (sizing.action !== 'copy') {
+      // Sizing's only skip is invalid input (D1: MIN_PER_BUY_USD is an absolute
+      // floor, so a below-floor copy is placed at the floor, never skipped).
       repo.insertIntent(this.db, {
         intentId,
         kind: 'entry',
@@ -159,18 +215,9 @@ export class CopyEngine {
         inputUsdMicro: sizing.desiredUsdMicro.toString(),
         state: 'skipped',
         idempotencyKey,
-        reason:
-          sizing.action === 'skip_below_min' ? 'below MIN_PER_BUY_USD (not rounded up)' : 'invalid input',
+        reason: sizing.action === 'skip_invalid' ? 'invalid input' : sizing.action,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      });
-      repo.insertRiskRejection(this.db, {
-        activationId,
-        rule: 'MIN_PER_BUY_USD',
-        limitValue: String(this.risk.MIN_PER_BUY_USD),
-        actualValue: (Number(sizing.desiredUsdMicro) / 1e6).toFixed(2),
-        detail: `desired copy notional below minimum; leader input ${(Number(leaderInputUsdMicro) / 1e6).toFixed(2)} USD`,
-        createdAt: new Date().toISOString(),
       });
       return;
     }
@@ -710,7 +757,7 @@ export class CopyEngine {
 
     // Nothing on chain to sell: record it and fail closed. The position stays
     // open (never silently "closed" without evidence); the caller's retry and
-    // handoff guards surface it to the operator.
+    // reconciliation guards surface it to the operator.
     if (exitBase <= 0n) {
       const detail = 'on-chain balance is 0 for this mint — nothing to sell';
       repo.insertIntent(this.db, {

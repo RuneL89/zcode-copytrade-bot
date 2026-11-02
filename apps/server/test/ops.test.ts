@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { loadConfig } from '@zcode-bot/config';
 import { Runtime } from '../src/runtime.js';
 import { buildApp } from '../src/http/app.js';
-import { OpsRunner, type OpDefinition } from '../src/services/ops.js';
+import { OpsRunner, opDefinitions, type OpDefinition } from '../src/services/ops.js';
+import { DiscoveryService, type DiscoveryApi } from '../src/services/discovery.js';
 import { openDatabase } from '@zcode-bot/db';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { resolve } from 'node:path';
@@ -148,6 +149,60 @@ describe('ops runner (injected definitions, no pnpm spawns)', () => {
     const duplicate = runner.createWallet('another-sufficiently-long', 'another-sufficiently-long');
     expect(duplicate.ok).toBe(false);
     expect(duplicate.error).toContain('already exists');
+  });
+
+  it('whitelists discovery-sync-now and requires its confirmation word', async () => {
+    const def = opDefinitions(rt).find((d) => d.id === 'discovery-sync-now');
+    expect(def).toBeTruthy();
+    expect(def!.danger).toBe('confirm');
+    expect(def!.confirmWord).toBe('RUN');
+
+    // The production catalog (this runner was built with injected test ops).
+    const prod = new OpsRunner(rt, rt.db.db, dir);
+
+    // Refused without the word — and the refusal never reaches the API.
+    const refused = await prod.run('discovery-sync-now');
+    expect(refused.ok).toBe(false);
+    expect(refused.code).toBe('CONFIRMATION_REQUIRED');
+
+    // With the word it runs end to end through the Runtime's discovery service.
+    // This test env has no FOMOAPI_KEY, so it fails closed with a skip and
+    // spends nothing — which is exactly the behaviour to pin.
+    const accepted = await prod.run('discovery-sync-now', 'RUN');
+    expect(accepted.ok).toBe(true);
+    expect(accepted.run?.summary).toMatch(/skipped: FOMOAPI_KEY/);
+  });
+
+  it('reports added/merged/credits in the discovery result line (AC10)', async () => {
+    const original = rt.discovery;
+    // Stubbed inlet: no network, deterministic counts.
+    const stub: DiscoveryApi = {
+      configured: true,
+      async leaderboard(window) {
+        return {
+          rows: window === '24h' ? [{ userId: 'uZeta', handle: 'zeta', pnlUsd: 42, wallet: 'WalletZ' }] : [],
+          notModified: false,
+          unparsed: 0,
+          creditsCost: 250,
+          creditsRemaining: 247000,
+          etag: null,
+        };
+      },
+      async alerts() {
+        return { alerts: [], unparsed: 0, creditsCost: 125, creditsRemaining: 246875 };
+      },
+    };
+    rt.discovery = new DiscoveryService(rt.db.db, stub, rt.config.risk);
+    try {
+      const prod = new OpsRunner(rt, rt.db.db, dir);
+      const run = await prod.run('discovery-sync-now', 'RUN');
+      expect(run.ok).toBe(true);
+      expect(run.run?.summary).toMatch(/1 added/);
+      expect(run.run?.summary).toMatch(/merged/);
+      expect(run.run?.summary).toMatch(/credit\(s\) spent/);
+    } finally {
+      rt.discovery = original;
+    }
   });
 });
 

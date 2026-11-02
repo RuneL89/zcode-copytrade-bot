@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DashboardState } from '../types';
+import { useTheme, type ThemeChoice } from '../theme';
 import { Logo } from './Logo';
 import { StatusDrawer } from './StatusDrawer';
 
@@ -34,6 +35,7 @@ export function Header({ state, connected }: { state: DashboardState | null; con
   const now = useNowTick(5_000);
   const badges = state?.badges ?? ['PAPER'];
   const generatedAge = state ? freshAge(state.generatedAt, now) : null;
+  const theme = useTheme();
 
   return (
     <header className="relative flex items-center justify-between px-1 pt-5 pb-3">
@@ -71,10 +73,37 @@ export function Header({ state, connected }: { state: DashboardState | null; con
             </span>
           )}
         </span>
+        <ThemeToggle choice={theme.choice} onCycle={theme.cycle} />
       </div>
       {statusOpen && (
         <StatusDrawer state={state} connected={connected} onClose={() => setStatusOpen(false)} />
       )}
     </header>
+  );
+}
+
+const THEME_LABEL: Record<ThemeChoice, string> = {
+  system: 'following system',
+  dark: 'dark',
+  light: 'light',
+};
+const THEME_GLYPH: Record<ThemeChoice, string> = { system: '◐', dark: '☾', light: '☀' };
+
+/** One labelled control cycling system → dark → light (plan 07, AC7). */
+function ThemeToggle({ choice, onCycle }: { choice: ThemeChoice; onCycle: () => void }) {
+  const next: ThemeChoice = choice === 'system' ? 'dark' : choice === 'dark' ? 'light' : 'system';
+  return (
+    <button
+      type="button"
+      onClick={onCycle}
+      data-testid="theme-toggle"
+      aria-label={`Theme: ${THEME_LABEL[choice]} — switch to ${THEME_LABEL[next]}`}
+      title={`Theme: ${THEME_LABEL[choice]} (switch to ${THEME_LABEL[next]})`}
+      className="chip border border-insetborder bg-inset text-muted hover:text-ink hover:border-accentborder cursor-pointer min-h-[44px] min-w-[44px] min-[900px]:min-h-[32px] min-[900px]:min-w-[32px] justify-center"
+    >
+      <span aria-hidden="true" className="text-[13px] leading-none">
+        {THEME_GLYPH[choice]}
+      </span>
+    </button>
   );
 }

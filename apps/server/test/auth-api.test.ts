@@ -176,15 +176,6 @@ describe('auth + CSRF + control API', () => {
     expect(body.error).toContain('MODE');
   });
 
-  it('internal MCP endpoint requires the local submit token', async () => {
-    const bad = await app.request('/internal/recommendation', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-submit-token': 'nope' },
-      body: '{}',
-    });
-    expect(bad.status).toBe(403);
-  });
-
   it('never returns secrets from settings', async () => {
     const cookie = `zcode_session=${cookies['zcode_session']}; zcode_csrf=${csrf}`;
     const res = await app.request('/api/settings', { headers: { cookie } });

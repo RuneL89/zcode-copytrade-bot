@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyLeaderEvent, type LeaderTxSummary, STABLE_MINTS, PARSER_VERSION } from '../src/events.js';
+import { classifyLeaderEvent, PARSER_VERSION } from '../src/events.js';
+import { STABLE_MINTS, type LeaderTxSummary } from '../src/tx.js';
 import { compareClassifiedEvents, eventDedupeKey, isEventTooOld } from '../src/eventOrder.js';
 import { canTransitionOrder, transitionOrder, unknownOutcomeTarget } from '../src/orderState.js';
 import { canTransitionActivation, transitionActivation, dashboardBadges } from '../src/states.js';
@@ -216,7 +217,7 @@ describe('activation + dashboard states', () => {
       'DEMO',
     );
     expect(
-      dashboardBadges({ mode: 'paper', armed: false, appState: 'PAUSED_WAITING_FOR_ZCODE', dataStale: true }),
+      dashboardBadges({ mode: 'paper', armed: false, appState: 'PAUSED_NO_TRADER', dataStale: true }),
     ).toEqual(expect.arrayContaining(['PAPER', 'PAUSED', 'STALE']));
   });
 });

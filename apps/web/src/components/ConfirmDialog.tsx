@@ -35,8 +35,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 anim-scrim"
-      style={{ background: 'rgba(4, 5, 8, 0.7)', backdropFilter: 'blur(5px)' }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 anim-scrim bg-scrim backdrop-blur-[5px]"
       role="dialog"
       aria-modal="true"
       aria-label={`confirm ${title}`}

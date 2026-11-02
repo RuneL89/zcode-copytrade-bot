@@ -38,6 +38,7 @@ export interface DashboardState {
   closes: Array<{ id: string; t: string; pnlUsdMicro: string; traderHandle: string; symbol: string | null }>;
   positions: Array<{
     positionId: string;
+    leaderHandle: string | null;
     mintShort: string;
     symbol: string | null;
     status: string;
@@ -75,6 +76,8 @@ export interface DashboardState {
     deployedUsdMicro: string;
     deployedPct: number;
     maxDeployedPct: number;
+    /** Configured roster size (chairs). */
+    rosterSize?: number;
     maxPositionAgeHours: number;
     positionGraceHours: number;
     idleFireHoursLeft: number | null;
@@ -99,64 +102,85 @@ export interface DashboardState {
       fired: boolean;
       active: boolean;
       contributionUsdMicro: string;
-      awaitingZcode: boolean;
     }>;
   };
-  handoff: null | {
-    phase: 'FIRED' | 'WAITING_FOR_ZCODE' | 'PAUSED_FOR_FRESH_RESEARCH';
-    fromHandle: string;
-    fromRank: number | null;
-    fromPnlText: string | null;
-    /** Why the outgoing trader was fired (rank / rotation / stall / idle). */
-    fromReason: string | null;
-    toHandle: string | null;
-    toRank: number | null;
-    atIso: string;
-    demo: boolean;
-  };
-  /** The fired → paused → research → auto-hire cycle, for the hire/fire panel. */
-  hiring: {
-    stage:
-      | 'IDLE_COUNTDOWN'
-      | 'FIRED'
-      | 'RESEARCH_REQUESTED'
-      | 'RESEARCH_RUNNING'
-      | 'POOL_STALE'
-      | 'ORDERING_READY'
-      | 'HIRED'
-      | 'IDLE';
-    stageSince: string | null;
-    pausedForResearch: boolean;
-    reason: string | null;
-    /** Why the last trader was fired (idle / rank / stall / losses / rotation / manual). */
-    firedReason: string | null;
-    firedAt: string | null;
-    latestScanAt: string | null;
-    recommendationAt: string | null;
-    researchRequested: boolean;
-    researchDispatched: boolean;
-    idleFireAtIso: string | null;
-    /** Latest scan checked and nobody bought inside the active window. */
-    noBuyerOnBoard: boolean;
-    buyersOnBoard: number;
-    checkedOnBoard: number;
-    autoResume: true;
-  };
-  recommendation: {
+  /** The roster (D4/plan 05): up to ROSTER_SIZE leaders sharing one pool. */
+  roster: Array<{
+    activationId: string;
+    candidateId: string;
+    handle: string;
+    avatarUrl: string | null;
     status: string;
-    ageMs: number | null;
-    expiresInMs: number | null;
-    modelLabel: string | null;
-    ordered: Array<{
+    realizedPnlUsdMicro: string;
+    unrealizedPnlUsdMicro: string;
+    openPositions: number;
+    lastSix: Array<'W' | 'L' | 'B'>;
+    streak: number;
+    fireAfter: number;
+    sinceIso: string;
+  }>;
+  /** D4 watch list: the wallets under observation and their shadow record. */
+  watchlist: {
+    size: number;
+    cap: number;
+    bench: number;
+    benchTarget: number;
+    nextDiscoveryReason: string;
+    rows: Array<{
       candidateId: string;
-      handle: string | null;
-      rank: number;
-      confidence: number;
-      thesis: string;
-      concerns: string[];
-      eligibleNow: boolean;
+      handle: string;
+      status: 'watching' | 'cooling' | 'promoted' | 'archived';
+      profileUrl: string | null;
+      lastFundedBuyAt: string | null;
+      fundedBuys24h: number;
+      fundedSells24h: number;
+      closedTrades: number;
+      netShadowPnlUsdMicro: string;
+      openNotionalUsdMicro: string;
+      ceilingExposureUsdMicro: string;
+      blockedReason: string | null;
+      source: 'SHADOW_LEDGER';
+      lastEventAt: string | null;
     }>;
   };
+  /**
+   * The pipeline spine (plan 07): five stages, their 24h transitions and the
+   * roster seats — rendered verbatim from the server payload.
+   */
+  pipeline: {
+    asOf: string;
+    discovery: {
+      lastSyncAt: string | null;
+      newHandles24h: number;
+      creditsRemaining: number | null;
+      sources: string[];
+    };
+    pool: { total: number; withWallet: number; fundedBuyers24h: number };
+    watch: { watching: number; cooling: number; promotable: number; benchTarget: number };
+    roster: Array<{
+      activationId: string;
+      candidateId: string;
+      handle: string;
+      status: 'BUYING' | 'SELLING' | 'IDLE' | 'RECONCILING';
+      realizedPnlUsdMicro: string;
+      unrealizedPnlUsdMicro: string;
+      openPositions: number;
+      lastSignalAt: string | null;
+    }>;
+    exits: {
+      fired24h: number;
+      replacements24h: number;
+      recent: Array<{
+        candidateId: string;
+        handle: string;
+        reason: string;
+        firedAt: string;
+        replacedBy: string | null;
+      }>;
+    };
+    edges: Array<{ from: string; to: string; count24h: number }>;
+  };
+  /** Worker/liveness snapshot for the health strip. */
   health: {
     workerRunning: boolean;
     helius: string;

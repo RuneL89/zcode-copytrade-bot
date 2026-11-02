@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { DEFAULT_RISK } from '@zcode-bot/config';
 import type { DashboardState } from './state.js';
 
 /**
@@ -9,7 +10,7 @@ import type { DashboardState } from './state.js';
  */
 
 interface DemoTimeline {
-  meta: { durationSeconds: number; label: string; handoff1Seconds: number; handoff2Seconds: number };
+  meta: { durationSeconds: number; label: string; switch1Seconds: number; switch2Seconds: number };
   start: { equityUsdMicro: string; handle: string; weeklyRank: number };
   traders: Array<{ handle: string; weeklyRank: number; displayedPnl7dPct: number }>;
   events: Array<DemoEvent>;
@@ -29,7 +30,7 @@ type DemoEvent =
     }
   | {
       t: number;
-      type: 'handoff';
+      type: 'switch';
       fromHandle: string;
       fromRank: number;
       toHandle: string | null;
@@ -101,15 +102,15 @@ export class DemoEngine {
     const tl = this.timeline;
     const eventsApplied = tl.events.filter((e) => e.t <= elapsed);
 
-    // Current trader + handoff.
-    const handoffs = eventsApplied.filter((e) => e.type === 'handoff') as Extract<
+    // Current trader + the fictional switch between demo traders.
+    const swaps = eventsApplied.filter((e) => e.type === 'switch') as Extract<
       DemoEvent,
-      { type: 'handoff' }
+      { type: 'switch' }
     >[];
-    const lastHandoff = handoffs[handoffs.length - 1] ?? null;
+    const lastSwap = swaps[swaps.length - 1] ?? null;
     const activeHandle =
-      lastHandoff?.toHandle ?? (eventsApplied.length >= 0 ? tl.start.handle : tl.start.handle);
-    const activeRank = lastHandoff?.toRank ?? tl.start.weeklyRank;
+      lastSwap?.toHandle ?? (eventsApplied.length >= 0 ? tl.start.handle : tl.start.handle);
+    const activeRank = lastSwap?.toRank ?? tl.start.weeklyRank;
     const traderMeta = tl.traders.find((t) => t.handle === activeHandle) ?? tl.traders[0]!;
 
     // Closes + equity.
@@ -118,7 +119,7 @@ export class DemoEngine {
     const winners = closes.filter((c) => BigInt(c.pnlUsdMicro) > 0n).length;
 
     // Last-six markers per current trader (recomputed from that trader's closes).
-    const traderStartT = lastHandoff?.t ?? 0;
+    const traderStartT = lastSwap?.t ?? 0;
     const traderCloses = closes.filter((c) => c.t >= traderStartT);
     const lastSix: Array<'W' | 'L' | 'B'> = traderCloses
       .slice(-6)
@@ -142,7 +143,7 @@ export class DemoEngine {
     const contribution = new Map<string, bigint>();
     let currentTrader = tl.start.handle;
     for (const e of eventsApplied) {
-      if (e.type === 'handoff') currentTrader = e.toHandle ?? currentTrader;
+      if (e.type === 'switch') currentTrader = e.toHandle ?? currentTrader;
       if (e.type === 'close') {
         contribution.set(currentTrader, (contribution.get(currentTrader) ?? 0n) + BigInt(e.pnlUsdMicro));
       }
@@ -151,8 +152,8 @@ export class DemoEngine {
     const sessionTotal = 24 * 3600;
     const sessionElapsed = Math.round((elapsed / tl.meta.durationSeconds) * sessionTotal);
 
-    const handoffActive = lastHandoff !== null && elapsed - lastHandoff.t < 4.0;
-    const waitingForZcode = lastHandoff?.toHandle == null;
+    const gapActive = lastSwap !== null && elapsed - lastSwap.t < 4.0;
+    const gapPending = lastSwap?.toHandle == null;
 
     const series: DashboardState['equity']['series'] = [
       { t: '0', usdMicro: tl.start.equityUsdMicro },
@@ -170,6 +171,7 @@ export class DemoEngine {
     }
     const demoPositions: DashboardState['positions'] = [...openMirrors.values()].map((m, i) => ({
       positionId: `demo-pos-${i}`,
+      leaderHandle: activeHandle,
       mintShort: m.symbol.slice(0, 4),
       symbol: m.symbol,
       status: m.status,
@@ -210,6 +212,10 @@ export class DemoEngine {
       })),
     ].sort((a, b) => b.tIso.localeCompare(a.tIso));
 
+    // How many of the fixture's traders the story has introduced so far (the
+    // pool's "funded buyers" in the replay's own terms).
+    const tradersSeen = Math.max(1, tl.traders.findIndex((t) => t.handle === activeHandle) + 1);
+
     const demoCounters = (() => {
       // Capital tracks the replay's running (realized) equity, not the static start.
       const capital = BigInt(equity);
@@ -228,6 +234,7 @@ export class DemoEngine {
         deployedUsdMicro: deployed.toString(),
         deployedPct: capital > 0n ? Math.round(Number((deployed * 10_000n) / capital)) / 100 : 0,
         maxDeployedPct: 80,
+        rosterSize: DEFAULT_RISK.ROSTER_SIZE,
         maxPositionAgeHours: 16,
         positionGraceHours: 3,
         idleFireHoursLeft: null,
@@ -246,8 +253,9 @@ export class DemoEngine {
       generatedAt: new Date().toISOString(),
       mode: 'demo',
       armed: false,
-      badges: ['DEMO', ...(handoffActive ? (['PAUSED'] as const) : [])],
-      appState: handoffActive && waitingForZcode ? 'PAUSED_WAITING_FOR_ZCODE' : 'RUNNING',
+      badges: ['DEMO', ...(gapActive ? (['PAUSED'] as const) : [])],
+      // The fictional gap between two demo traders reads as "no trader hired".
+      appState: gapActive ? 'PAUSED_NO_TRADER' : 'RUNNING',
       control: { newEntriesPaused: false, emergencyStopped: false, pausedReason: null },
       equity: {
         currentUsdMicro: equity,
@@ -279,10 +287,30 @@ export class DemoEngine {
         boughtUsdMicro: mirrors.reduce((acc, m) => acc + BigInt(Math.round(m.copyUsd * 1e6)), 0n).toString(),
         soldCount: closes.length,
         soldUsdMicro: null,
-        firedCount: handoffs.filter((h) => h.fromHandle === activeHandle).length,
+        firedCount: swaps.filter((h) => h.fromHandle === activeHandle).length,
         sinceIso: new Date(Date.now() - Math.max(0, elapsed - traderStartT) * 1000).toISOString(),
         source: 'demo-fixture',
       },
+      // The replay is one fictional chair; the roster panel shows it as a single
+      // seat (the real roster is filled from the promotion queue).
+      roster: [
+        {
+          activationId: `demo_act_${activeHandle}`,
+          candidateId: `demo_${activeHandle}`,
+          handle: activeHandle,
+          avatarUrl: null,
+          status: gapActive ? 'FIRING' : 'ACTIVE',
+          realizedPnlUsdMicro: (contribution.get(activeHandle) ?? 0n).toString(),
+          unrealizedPnlUsdMicro: [...openMirrors.values()]
+            .reduce((acc, m) => acc + (m.pnlUsd === null ? 0n : BigInt(Math.round(m.pnlUsd * 1e6))), 0n)
+            .toString(),
+          openPositions: openMirrors.size,
+          lastSix,
+          streak,
+          fireAfter: 2,
+          sinceIso: new Date(Date.now() - Math.max(0, elapsed - traderStartT) * 1000).toISOString(),
+        },
+      ],
       closes: closes.slice(-60).map((c, i) => ({
         id: `demo-${i}`,
         t: String(c.t),
@@ -306,66 +334,63 @@ export class DemoEngine {
           candidateId: `demo_${t.handle}`,
           handle: t.handle,
           weeklyRank: t.weeklyRank,
-          fired: handoffs.some((h) => h.fromHandle === t.handle),
+          fired: swaps.some((h) => h.fromHandle === t.handle),
           active: t.handle === activeHandle,
           contributionUsdMicro: (contribution.get(t.handle) ?? 0n).toString(),
-          awaitingZcode: handoffActive && waitingForZcode,
         })),
       },
-      handoff:
-        handoffActive && lastHandoff
-          ? {
-              phase: waitingForZcode ? 'WAITING_FOR_ZCODE' : 'FIRED',
-              fromHandle: lastHandoff.fromHandle,
-              fromRank: lastHandoff.fromRank,
-              fromPnlText: `${
-                tl.traders.find((t) => t.handle === lastHandoff.fromHandle)?.displayedPnl7dPct ?? 0
-              }% 7d (displayed)`,
-              fromReason: waitingForZcode ? null : '2 consecutive losses',
-              toHandle: lastHandoff.toHandle,
-              toRank: lastHandoff.toRank,
-              atIso: new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString(),
-              demo: true,
-            }
-          : null,
-      hiring: {
-        stage: waitingForZcode ? 'RESEARCH_REQUESTED' : 'IDLE_COUNTDOWN',
-        stageSince:
-          handoffActive && lastHandoff
-            ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString()
-            : null,
-        pausedForResearch: waitingForZcode,
-        reason: waitingForZcode ? 'DEMO: shortlist exhausted — fresh research requested' : null,
-        firedReason: waitingForZcode ? 'DEMO: 2 consecutive losses' : null,
-        firedAt:
-          waitingForZcode && lastHandoff
-            ? new Date(Date.now() - (elapsed - lastHandoff.t) * 1000).toISOString()
-            : null,
-        latestScanAt: null,
-        recommendationAt: null,
-        researchRequested: waitingForZcode,
-        researchDispatched: false,
-        idleFireAtIso: waitingForZcode ? null : new Date(Date.now() + 3600_000 * 5).toISOString(),
-        noBuyerOnBoard: false,
-        buyersOnBoard: 0,
-        checkedOnBoard: 0,
-        autoResume: true,
+      // The pipeline spine, told from the replay itself (fictional, like
+      // everything else in demo mode): the fixture's handles are "discovered",
+      // watched, hired, fired and returned to the watch list as the story runs.
+      pipeline: {
+        asOf: new Date().toISOString(),
+        discovery: {
+          lastSyncAt: null,
+          newHandles24h: tl.traders.length,
+          creditsRemaining: null,
+          sources: ['demo replay'],
+        },
+        pool: {
+          total: tl.traders.length,
+          withWallet: tl.traders.length,
+          fundedBuyers24h: tradersSeen,
+        },
+        watch: { watching: 0, cooling: 0, promotable: 0, benchTarget: DEFAULT_RISK.BENCH_TARGET },
+        roster: [
+          {
+            activationId: `demo_act_${activeHandle}`,
+            candidateId: `demo_${activeHandle}`,
+            handle: activeHandle,
+            status: gapActive ? 'IDLE' : openMirrors.size > 0 ? 'BUYING' : 'IDLE',
+            realizedPnlUsdMicro: (contribution.get(activeHandle) ?? 0n).toString(),
+            unrealizedPnlUsdMicro: [...openMirrors.values()]
+              .reduce((acc, m) => acc + (m.pnlUsd === null ? 0n : BigInt(Math.round(m.pnlUsd * 1e6))), 0n)
+              .toString(),
+            openPositions: openMirrors.size,
+            lastSignalAt: new Date().toISOString(),
+          },
+        ],
+        exits: {
+          fired24h: swaps.length,
+          replacements24h: swaps.length,
+          recent: swaps.map((sw) => ({
+            candidateId: `demo_${sw.fromHandle}`,
+            handle: sw.fromHandle,
+            reason: sw.reason,
+            firedAt: new Date(Date.now() - Math.max(0, elapsed - sw.t) * 1000).toISOString(),
+            replacedBy: sw.toHandle,
+          })),
+        },
+        edges: [
+          { from: 'discovery', to: 'pool', count24h: tl.traders.length },
+          { from: 'pool', to: 'watch', count24h: tl.traders.length },
+          { from: 'watch', to: 'roster', count24h: 1 + swaps.length },
+          { from: 'roster', to: 'exits', count24h: swaps.length },
+          { from: 'exits', to: 'watch', count24h: swaps.length },
+        ],
       },
-      recommendation: {
-        status: 'VALID',
-        ageMs: Math.round(elapsed * 1000),
-        expiresInMs: Math.max(0, 3 * 3600 * 1000 - Math.round(elapsed * 1000)),
-        modelLabel: 'DEMO (fixtures)',
-        ordered: tl.traders.map((t, i) => ({
-          candidateId: `demo_${t.handle}`,
-          handle: t.handle,
-          rank: i + 1,
-          confidence: 0.9 - i * 0.15,
-          thesis: 'Demo fixture entry — fictional data only.',
-          concerns: ['FICTIONAL DEMO · NOT A PERFORMANCE CLAIM'],
-          eligibleNow: t.handle === activeHandle,
-        })),
-      },
+      // The fictional replay never touches the watch tables: the panel shows its
+      // empty state with the shipped defaults as targets.
       health: {
         workerRunning: true,
         helius: 'OK',
@@ -377,6 +402,14 @@ export class DemoEngine {
         walletUsdcBase: null,
         walletUsdcUsdMicro: null,
       },
+      watchlist: {
+        size: 0,
+        cap: DEFAULT_RISK.WATCH_LIST_SIZE,
+        bench: 0,
+        benchTarget: DEFAULT_RISK.BENCH_TARGET,
+        nextDiscoveryReason: 'demo replay: discovery is disabled (no API spend)',
+        rows: [],
+      },
       fictional: true,
     };
   }
@@ -384,8 +417,8 @@ export class DemoEngine {
   private traderForClose(events: DemoEvent[], t: number): string {
     let current = this.timeline.start.handle;
     for (const e of events) {
-      if (e.type === 'handoff' && e.t <= t) current = e.toHandle ?? current;
-      if (e.type !== 'handoff' && e.t > t) break;
+      if (e.type === 'switch' && e.t <= t) current = e.toHandle ?? current;
+      if (e.type !== 'switch' && e.t > t) break;
     }
     return current;
   }

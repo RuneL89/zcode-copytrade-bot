@@ -2,8 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:fs';
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { settingsPatchSchema, type AppConfig } from '@zcode-bot/config';
-import { SCAN_FRESH_MS, ACTIVITY_FRESH_MS, evaluateRankStability } from '@zcode-bot/core';
+import { settingsPatchSchema, SETTINGS_PATCH_KEYS, type AppConfig } from '@zcode-bot/config';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -11,6 +10,7 @@ import {
   DawnNeedsLoginError,
   DawnNoCardError,
   DawnTraderLookupProvider,
+  FomoApiClient,
   FomoWebLeaderboardProvider,
   HeliusProvider,
   JupiterProvider,
@@ -25,7 +25,6 @@ import {
 } from '@zcode-bot/providers';
 import { StateStore } from './services/state.js';
 import { ControlService } from './services/control.js';
-import { SnapshotService, RecommendationService } from './services/research.js';
 import { CopyEngine, SOL_MINT, USDC_MINT } from './services/engine.js';
 import { TraderLifecycle } from './services/lifecycle.js';
 import { LeaderMonitor, reconcileOpenIntents } from './services/monitor.js';
@@ -37,6 +36,8 @@ import { StateBuilder } from './services/builder.js';
 import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
+import { DiscoveryService, discoveryDecision } from './services/discovery.js';
+import { WatchService } from './services/watch.js';
 import { ReportsService } from './services/reports.js';
 import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
@@ -74,8 +75,6 @@ export class Runtime {
   notifier: Notifier;
   feeLedger: FeeLedgerService;
   tokenMeta: TokenMetaService;
-  snapshots: SnapshotService;
-  recommendations: RecommendationService;
   engine: CopyEngine;
   lifecycle: TraderLifecycle;
   monitor: LeaderMonitor | null = null;
@@ -88,27 +87,26 @@ export class Runtime {
   private priceProvider: import('@zcode-bot/providers').PriceProvider;
   /** Read-only FOMO leaderboard adapter; null until FOMO_LEADERBOARD_URL is set. */
   fomoWeb: FomoWebLeaderboardProvider | null = null;
-  private fomoWebTimer: ReturnType<typeof setInterval> | null = null;
+  /** fomoapi.io discovery inlet (D3) — the only automatic handle/wallet source. */
+  discovery: DiscoveryService;
+  /** Watch list + shadow ledger (D4): the observation record promotion reads. */
+  watch: WatchService;
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  private rosterTimer: ReturnType<typeof setInterval> | null = null;
+  /** Last cooling rotation scan (folded into the watch clock, D4's 2h rotation). */
+  private lastCoolingScanAt = 0;
+  private watchBootTimer: ReturnType<typeof setTimeout> | null = null;
   /** Read-only Dawn (Telegram) trader-lookup adapter; null until DAWN_BOT_USERNAME is set. */
   dawnLookup: DawnTraderLookupProvider | null = null;
   private dawnRunBusy = false;
-  /** Last auto-triggered activity refresh (same throttle pattern as Dawn). */
-  private lastAutoActivityAt = 0;
-  private lastTopBoardActivityAt = 0;
-  private topBoardActivityBusy = false;
-  /** Re-entrancy guard for the rank-watch fire check inside snapshot rebuilds. */
-  private rankWatchBusy = false;
   private activityTimer: ReturnType<typeof setInterval> | null = null;
   private activityBootTimer: ReturnType<typeof setTimeout> | null = null;
   private setupToken: SetupToken | null = null;
-  private submitToken: string;
   private baseExecutor: PaperExecutor;
   private liveExecutor: LiveExecutor | null = null;
-  private inboxWatcher: ReturnType<typeof watch> | null = null;
-  private inboxTimer: ReturnType<typeof setInterval> | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
-  private snapshotTimer: ReturnType<typeof setInterval> | null = null;
-  private snapshotDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set by stop(): async probes must not touch the closed database after that. */
+  private stopping = false;
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
   private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private lastFeeScanAt = 0;
@@ -138,8 +136,10 @@ export class Runtime {
       try {
         const raw = JSON.parse(savedOverrides) as Record<string, unknown>;
         const patch: Record<string, unknown> = {};
-        for (const key of Object.keys(raw)) {
-          if (key in settingsPatchSchema.shape) patch[key] = raw[key];
+        // Only keys the patch schema knows survive: the blob is a full config,
+        // and a strict parse of unknown fields would discard every override.
+        for (const key of SETTINGS_PATCH_KEYS) {
+          if (key in raw) patch[key] = raw[key];
         }
         Object.assign(config.risk, settingsPatchSchema.parse(patch));
       } catch (e) {
@@ -163,8 +163,6 @@ export class Runtime {
     this.notifier = notifierFromEnv(config.env.TELEGRAM_BOT_TOKEN, config.env.TELEGRAM_CHAT_ID);
     this.feeLedger = new FeeLedgerService(this.db.db, this.helius);
     this.tokenMeta = new TokenMetaService(this.db.db, this.helius);
-    this.snapshots = new SnapshotService(this.db.db, config.env.DATA_DIR, config.risk);
-    this.recommendations = new RecommendationService(this.db.db, this.snapshots, config.risk);
 
     // Pricer: real quotes in paper/live; static deterministic prices in demo.
     const prices =
@@ -188,8 +186,16 @@ export class Runtime {
       this.control,
       this.notifier,
       {
-        onFired: (activationId, _candidateId, reason) => {
-          void this.lifecycle.fire(activationId, reason).then(() => this.rebuildState());
+        onFired: (activationId, firedCandidateId, reason) => {
+          void this.lifecycle.fire(activationId, reason).then(() => {
+            // A fired trader moves to cooling (D4): the slow rotation watches for
+            // a funded buy after this firing before he may return.
+            this.watch?.markCooling(firedCandidateId, `fired: ${reason}`);
+            // D5: a freed chair must not wait for the next watch tick — ask
+            // discovery for a fresh bench right away (rate-limited inside).
+            this.maybeDemandDiscovery();
+            this.rebuildState();
+          });
         },
         onStateChanged: () => {
           this.rebuildState();
@@ -206,7 +212,7 @@ export class Runtime {
       config.mode === 'live',
     );
 
-    this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine, this.snapshots);
+    this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
     this.engineCallbacks();
 
     this.builder = new StateBuilder(
@@ -214,7 +220,6 @@ export class Runtime {
       config,
       this.control,
       null,
-      this.recommendations,
       this.lifecycle,
       this.equityStartUsdMicro,
     );
@@ -227,8 +232,6 @@ export class Runtime {
       this.equityStartUsdMicro,
       createSolanaBroadcaster(() => heliusRpcUrl(this.config.env.HELIUS_API_KEY)),
     );
-
-    this.submitToken = this.loadOrCreateSubmitToken();
 
     if (config.mode === 'demo') {
       this.demo = new DemoEngine(defaultFixturesPath(repoRoot), (state) => this.store.publish(state));
@@ -314,87 +317,62 @@ export class Runtime {
 
     this.ops = new OpsRunner(this, this.db.db, repoRoot);
     this.reports = new ReportsService(this.db, this.notifier, config.mode);
-  }
 
-  private engineCallbacks(): void {
-    // Expose lifecycle last-valid recommendation each time it is needed.
-    const refreshRec = () => this.refreshLifecycleRecommendation();
-    const origFire = this.lifecycle.fire.bind(this.lifecycle);
-    this.lifecycle.fire = async (activationId: string, reason: string, opts?: { requireFlat?: boolean }) => {
-      refreshRec();
-      return origFire(activationId, reason, opts);
-    };
-    const origResolve = this.lifecycle.resolveReplacement.bind(this.lifecycle);
-    this.lifecycle.resolveReplacement = (firedCandidateId: string) => {
-      refreshRec();
-      return origResolve(firedCandidateId);
-    };
+    // Discovery inlet (D3): the fomoapi leaderboard. No key → the service never
+    // calls the API and audits the skip instead.
+    this.discovery = new DiscoveryService(
+      this.db.db,
+      new FomoApiClient({
+        baseUrl: config.env.FOMOAPI_BASE_URL,
+        apiKey: config.env.FOMOAPI_KEY ?? '',
+      }),
+      config.risk,
+    );
+    // The pipeline spine's discovery facts come from the service's own record
+    // of its last run (plan 07) — never re-derived.
+    this.builder.setDiscoveryStatus(() => this.discovery.status());
 
-    // A recommendation may ask for a rotation after a fresh leaderboard. The
-    // ingest path is synchronous, so hand the async decision to the lifecycle
-    // and never block the inbox watcher.
-    //
-    // Live mode is opt-in: an armed live session must set ROTATE_ON_REFRESH=true
-    // before the engine may swap traders on its own initiative. Paper/demo rotate
-    // freely, which is where the behaviour is exercised safely.
-    this.recommendations.onRotationRequest = (rec) => {
-      if (this.config.mode === 'live' && !this.config.env.ROTATE_ON_REFRESH) {
-        repo.audit(this.db.db, 'rotation', 'rotation ignored: live mode requires ROTATE_ON_REFRESH=true', {
-          recommendationId: rec.recommendationId,
-        });
-        return;
-      }
-      refreshRec();
-      void this.lifecycle.rotateIfFlat(rec).catch((e: Error) => {
-        this.recommendationsAuditRotationError(rec.recommendationId, e);
-      });
-    };
-
-    // A validated ordering can fill an empty chair (PAUSED_WAITING_FOR_ZCODE):
-    // rebuildState runs the idle-hire gate, which activates the best eligible
-    // board-present candidate. Hiring itself signs nothing; every order still
-    // passes the armed-executor boundary.
-    this.recommendations.onRecommendationValidated = () => {
-      this.rebuildState();
-    };
-  }
-
-  private recommendationsAuditRotationError(recommendationId: string, e: Error): void {
-    try {
-      repo.audit(this.db.db, 'rotation', 'rotation failed: ' + e.message, { recommendationId });
-    } catch {
-      /* audit is best-effort */
-    }
-  }
-
-  // ---- lifecycle ---------------------------------------------------------
-
-  /** Mirror the latest validated recommendation into the lifecycle's cache. */
-  refreshLifecycleRecommendation(): void {
-    const valid = this.recommendations.latestValid();
-    this.lifecycle.latestValidRecommendation = valid
-      ? {
-          payload: {
-            recommendationId: valid.payload.recommendationId,
-            orderedCandidates: valid.payload.orderedCandidates.map((c) => ({
-              candidateId: c.candidateId,
-              rank: c.rank,
-            })),
-            expiresAt: valid.payload.expiresAt,
-          },
-        }
-      : null;
+    // Watch list + shadow ledger (D4). Promotion hands the wallet to the
+    // existing single-chair activation until the roster lands (plan 05).
+    this.watch = new WatchService({
+      db: this.db.db,
+      risk: config.risk,
+      publicSolana: this.publicSolana,
+      helius: this.helius,
+      prices,
+      lifecycle: this.lifecycle,
+      headroomUsdMicro: () => this.engine.headroomUsdMicro(),
+      onStateChanged: () => this.rebuildState(),
+    });
   }
 
   /**
-   * Restore live arming after a restart.
-   *
-   * Arming persists as operator intent, but signing needs the decrypted wallet
-   * key. The passphrase is never stored in plaintext — it is sealed with DPAPI
-   * to this Windows account — so a restart unseals it, mounts the live
-   * executor and keeps trading. Only when that is impossible does the boot
-   * disarm, loudly: an alert plus an audit record, never a silent stop.
+   * The engine's callbacks are wired where the engine is constructed (see the
+   * constructor). Nothing patches the lifecycle any more: chairs are filled by
+   * the promotion queue (D4/plan 05) and there is no ordering to consult.
    */
+  private engineCallbacks(): void {}
+
+  // ---- helpers -------------------------------------------------------------
+
+  /**
+   * Rebuild the dashboard state from persisted evidence and publish it to the
+   * SSE store. Called after every state-changing action; the research-era
+   * snapshot timers it used to share this path with are gone (D6).
+   */
+  rebuildState(): import('./services/state.js').DashboardState {
+    if (this.demo?.running) return this.store.get()!; // demo owns the state while replaying
+    // Chairs are filled by the promotion queue (fillRoster from the watch tick
+    // and right after a fire), never by a board ordering.
+    const state = this.builder.build();
+    this.store.publish(state);
+    return state;
+  }
+
+  readiness() {
+    return readinessReport(this.db.db, this.config, this.control, this.monitor, Boolean(this.lock));
+  }
+
   private async restoreLiveArming(): Promise<void> {
     if (this.config.mode !== 'live') return;
     if (!this.control.flags.armed) return; // explicit disarm — nothing to restore
@@ -420,6 +398,20 @@ export class Runtime {
     }
   }
 
+  /**
+   * Start the runtime (plan 06): the DEMAND-DRIVEN scheduler.
+   *
+   * Exactly two monitoring clocks exist — the watch list (`WATCH_POLL_MS`) and
+   * the roster (the monitor's `ROSTER_POLL_MS`). Everything else below is
+   * housekeeping: provider health, the fee ledger, the activity refresh that
+   * feeds the stall watcher, symbol resolution and the report schedule. None of
+   * them discovers or hires, and only the demand-gated discovery run spends
+   * fomoapi credits — a full roster and a full bench cost nothing external.
+   *
+   * Boot catch-up runs BEFORE the clocks start: discovery when the bench is
+   * thin, one watch pass, then the promotion queue fills whatever chairs are
+   * free. Demo mode returns earlier and never reaches any of it.
+   */
   async start(): Promise<void> {
     this.lock = acquireWorkerLock(this.config.env.DATA_DIR);
     repo.audit(this.db.db, 'system', `runtime starting (mode=${this.config.mode})`);
@@ -438,9 +430,7 @@ export class Runtime {
     void this.refreshFeeLedger().catch(() => undefined);
 
     // Signature-less reconciliation cases were provably never submitted, so
-    // retrying their closes at boot is safe and unsticks a paused handoff.
-    // Skipped when the wallet is disarmed (the close would only re-report
-    // "wallet locked").
+    // retrying their closes at boot is safe and unsticks a paused chair.
     if (this.config.mode !== 'live' || this.liveExecutor) {
       void this.lifecycle
         .retrySignaturelessCloses('boot_reconciliation_retry')
@@ -460,12 +450,6 @@ export class Runtime {
         });
     }
 
-    if (this.snapshots.currentSnapshot() === null && repo.listCandidates(this.db.db).length > 0) {
-      this.rebuildSnapshot();
-    } else if (this.snapshots.currentSnapshot() === null) {
-      this.rebuildSnapshot(); // publish an (empty) snapshot so MCP has a file
-    }
-
     if (this.config.mode === 'demo') {
       this.startDemo();
       repo.audit(this.db.db, 'demo', 'fictional demo replay started (no live data, no live tables)');
@@ -479,73 +463,27 @@ export class Runtime {
       this.config.risk,
       this.lifecycle,
       () => this.rebuildState(),
-      this.config.env.LEADER_POLL_INTERVAL_MS,
+      // D5: the roster's own cadence — a real order may follow a leader buy, so
+      // a hired wallet is polled every ROSTER_POLL_MS (45 s by default).
+      this.config.risk.ROSTER_POLL_MS,
       (positionId) => this.builder.peekMark(positionId),
     );
-    this.monitor.start();
+    // The runtime owns both monitoring clocks (plan 06 AC4); the monitor's own
+    // interval stays off.
+    this.monitor.start(false);
     // Give the builder the monitor reference now that it exists.
     (this.builder as unknown as { monitor: LeaderMonitor | null }).monitor = this.monitor;
 
-    // Inbox watcher: fs.watch where available + polling fallback.
-    const inboxDir = join(this.config.env.DATA_DIR, 'research', 'inbox');
-    mkdirSync(inboxDir, { recursive: true });
-    try {
-      this.inboxWatcher = watch(inboxDir, { persistent: false }, () => {
-        this.recommendations.ingestInboxOnce(inboxDir);
-      });
-    } catch {
-      // Windows network drives / sandboxed fs: fall back to polling only.
-    }
-    this.inboxTimer = setInterval(() => {
-      this.recommendations.ingestInboxOnce(inboxDir);
-    }, 5000);
-
-    // Provider health sampler.
+    // Provider health sampler (housekeeping).
     this.healthTimer = setInterval(() => void this.sampleHealth(), 60_000);
     void this.sampleHealth();
 
-    // Fee ledger scan cadence. Wallet history is a billed call, so this stays
-    // well off the one-minute health loop: boot, every 10 minutes, and once
-    // shortly after a trade.
+    // Fee ledger scan cadence (housekeeping): wallet history is a billed call,
+    // so it stays well off the one-minute health loop.
     this.feeLedgerTimer = setInterval(() => void this.refreshFeeLedger(), 10 * 60_000);
 
-    // Periodic snapshot refresh (keeps sanitized data + hash fresh).
-    this.snapshotTimer = setInterval(() => {
-      this.rebuildSnapshot();
-    }, 30 * 60_000);
-
-    // Scheduled FOMO leaderboard refresh (read-only adapter). Errors are
-    // audited by fomoWebImportNow's caller; the schedule keeps running.
-    if (this.fomoWeb) {
-      this.fomoWebTimer = setInterval(() => {
-        void this.fomoWebImportNow().catch((e: Error) => {
-          repo.audit(this.db.db, 'fomo-web', `scheduled fetch failed (fail closed): ${e.message}`, {});
-        });
-      }, this.config.env.FOMO_WEB_POLL_MS);
-      repo.audit(
-        this.db.db,
-        'fomo-web',
-        `scheduled leaderboard refresh enabled (every ${Math.round(this.config.env.FOMO_WEB_POLL_MS / 60000)} min)`,
-        {},
-      );
-    }
-
-    // Boot fetch: one leaderboard attempt at startup (fail-closed; useful in
-    // personal-copy mode where the copy may only be seedable while Chrome is
-    // closed — restarts then act as refresh opportunities).
-    if (this.fomoWeb) {
-      void this.fomoWebImportNow().catch((e: Error) => {
-        repo.audit(this.db.db, 'fomo-web', `boot fetch failed (fail closed): ${e.message}`, {});
-      });
-    }
-
-    // Scheduled Dawn address resolution moved OUT of the server (operator
-    // decision, 2026-10-31): the 30-minute data sweep drives
-    // `tsx src/cli/dawn-lookup.ts --all-missing` for walletless candidates.
-    // Manual operator runs stay available (ops action / dawnOpenLogin).
-
-    // Helius activity refresh: keeps swaps24h/lastSwapAt current for ranking
-    // and upgrades addresses to 'verified' when the pre-hire gate would pass.
+    // Candidate-pool activity refresh (housekeeping): keeps the funded-buy
+    // readings and the stall watcher's evidence current. Never hires.
     this.activityTimer = setInterval(() => {
       void this.activityRefreshNow().catch((e: Error) => {
         repo.audit(this.db.db, 'activity', 'scheduled activity refresh failed: ' + e.message, {});
@@ -570,20 +508,79 @@ export class Runtime {
     // Operator push reports (Telegram): anomalies every 10 min, daily PnL 09:00.
     this.reports.start();
 
+    // BOOT CATCH-UP (D5) — strictly before the two clocks below:
+    //   1. demand-gated discovery (a fresh start must not wait for a tick);
+    //   2. one watch pass, so the shadow record is current;
+    //   3. the promotion queue fills whatever chairs are free.
+    // The HTTP server is already serving while this runs; only the clocks wait.
+    const bootCatchUp = (async () => {
+      const bootDiscovery = discoveryDecision(this.discovery.demand());
+      if (bootDiscovery.run) {
+        await this.syncDiscoveryNow(false).catch((e: Error) => {
+          repo.audit(this.db.db, 'discovery', `boot discovery failed (fail closed): ${e.message}`, {});
+        });
+      } else {
+        repo.audit(this.db.db, 'discovery', `boot discovery skipped: ${bootDiscovery.reason}`, {});
+      }
+      await this.watch.tick().catch((e: Error) => {
+        repo.audit(this.db.db, 'watch', `boot watch pass failed (fail closed): ${e.message}`, {});
+      });
+      const filled = await this.lifecycle.fillRoster().catch((e: Error) => {
+        repo.audit(this.db.db, 'roster', `boot roster fill failed: ${e.message}`, {});
+        return { hired: [] as string[], reason: 'error' };
+      });
+      repo.audit(this.db.db, 'roster', `boot roster fill: ${filled.hired.length} hired (${filled.reason})`, {
+        hired: filled.hired,
+      });
+    })();
+
+    // The two INTENTIONAL monitoring clocks (D5): the watch list every
+    // WATCH_POLL_MS and the roster on the monitor's ROSTER_POLL_MS.
+    void bootCatchUp.finally(() => {
+      // The WATCH clock: the shadow record, the promotion/demotion sweep, the
+      // demand trigger, and — time-gated rather than on a timer of its own — the
+      // slow cooling rotation for fired traders (D4).
+      this.watchTimer = setInterval(() => {
+        void this.watch
+          .tick()
+          .then(() => this.maybeDemandDiscovery())
+          .then(() => {
+            if (Date.now() - this.lastCoolingScanAt < this.config.risk.COOLING_SCAN_MS) return;
+            this.lastCoolingScanAt = Date.now();
+            return this.watch.coolingTick();
+          })
+          .catch((e: Error) => {
+            repo.audit(this.db.db, 'watch', `watch tick failed (fail closed): ${e.message}`, {});
+          });
+      }, this.config.risk.WATCH_POLL_MS);
+      // The ROSTER clock: every hired wallet, every ROSTER_POLL_MS.
+      this.rosterTimer = setInterval(() => {
+        void this.monitor?.tick().catch((e: Error) => {
+          repo.audit(this.db.db, 'monitor', `roster tick failed (fail closed): ${e.message}`, {});
+        });
+      }, this.config.risk.ROSTER_POLL_MS);
+    });
+    repo.audit(
+      this.db.db,
+      'watch',
+      `watch list enabled (poll every ${Math.round(this.config.risk.WATCH_POLL_MS / 60_000)} min, ` +
+        `cooling every ${Math.round(this.config.risk.COOLING_SCAN_MS / 3_600_000)}h, ` +
+        `roster every ${Math.round(this.config.risk.ROSTER_POLL_MS / 1000)}s)`,
+    );
+
     this.rebuildState();
   }
 
   stop(): void {
+    this.stopping = true;
     this.monitor?.stop();
     this.demo?.stop();
-    this.inboxWatcher?.close();
-    if (this.inboxTimer) clearInterval(this.inboxTimer);
     if (this.healthTimer) clearInterval(this.healthTimer);
-    if (this.snapshotTimer) clearInterval(this.snapshotTimer);
-    if (this.snapshotDebounceTimer) clearTimeout(this.snapshotDebounceTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
-    if (this.fomoWebTimer) clearInterval(this.fomoWebTimer);
+    if (this.watchTimer) clearInterval(this.watchTimer);
+    if (this.rosterTimer) clearInterval(this.rosterTimer);
+    if (this.watchBootTimer) clearTimeout(this.watchBootTimer);
     void this.fomoWeb?.close();
     void this.dawnLookup?.close();
     if (this.activityTimer) clearInterval(this.activityTimer);
@@ -593,316 +590,69 @@ export class Runtime {
     this.db.close();
   }
 
-  // ---- helpers -------------------------------------------------------------
-
-  rebuildSnapshot(): void {
-    this.snapshots.build();
-    this.rebuildState();
-    this.rankWatchCheck();
-    this.maybeAutoActivity();
-    this.refreshTopBoardActivity();
-    repo.pruneLeaderboardObservations(this.db.db, 30);
-  }
-
-  /**
-   * Actively-trading tier freshness (operator decision, 2026-10-31): the
-   * researcher's ordering ranks candidates whose most recent BUY is inside
-   * ACTIVE_BUY_WINDOW_HOURS first, so the top-7 board candidates get a
-   * direction-aware activity refresh on every snapshot cycle instead of
-   * waiting for the 6-hour pool timer. Throttled to one run per 20 minutes;
-   * fresh rows are written through the debounced rebuild, so the NEXT
-   * snapshot carries them (the current one publishes immediately with the
-   * previous data — never blocks, never double-hires).
-   */
-  private refreshTopBoardActivity(): void {
-    if (this.demo?.running) return;
-    if (!this.publicSolana.configured && !this.helius?.configured) return;
-    if (this.topBoardActivityBusy) return;
-    const TOP_BOARD_MIN_INTERVAL_MS = 15 * 60 * 1000;
-    if (Date.now() - this.lastTopBoardActivityAt < TOP_BOARD_MIN_INTERVAL_MS) return;
-    const scan = repo.listRecentScans(this.db.db, 1)[0];
-    if (!scan) return;
-    // The researcher's universe is the latest scan; when the scan itself is
-    // stale the tier guard stands down (same rule as the rank watch).
-    if (Date.now() - Date.parse(scan.observedAt) > SCAN_FRESH_MS) return;
-    const byHandle = new Map(
-      repo
-        .listCandidates(this.db.db)
-        .filter((c) => c.enabled)
-        .map((c) => [c.handle, c]),
-    );
-    const wallets = new Map<string, string>();
-    for (const a of repo.listCandidateAddresses(this.db.db)) {
-      if (a.chain === 'solana' && !wallets.has(a.candidateId)) wallets.set(a.candidateId, a.address);
-    }
-    const staleCutoff = Date.now() - TOP_BOARD_MIN_INTERVAL_MS;
-    const targets = scan.rows
-      .slice(0, 7)
-      .map((row) => byHandle.get(row.handle))
-      .filter(
-        (c): c is NonNullable<typeof c> =>
-          c !== undefined &&
-          wallets.has(c.candidateId) &&
-          (c.activityCheckedAt === null || Date.parse(c.activityCheckedAt) < staleCutoff),
-      );
-    if (targets.length === 0) return;
-    this.lastTopBoardActivityAt = Date.now();
-    this.topBoardActivityBusy = true;
-    void (async () => {
-      try {
-        let checked = 0;
-        let trades = 0;
-        let entries = 0;
-        let exits = 0;
-        for (const cand of targets) {
-          const address = wallets.get(cand.candidateId);
-          if (!address) continue;
-          try {
-            const reading = await checkWalletActivity(this.publicSolana, this.priceProvider, address, {
-              lookbackHours: 24,
-            });
-            repo.updateCandidateActivity(this.db.db, cand.candidateId, {
-              swaps24h: reading.copyableTrades24h,
-              lastSwapAt: reading.lastTradeAt,
-              lastBuyAt: reading.lastEntryAt,
-              buys24h: reading.entries24h,
-              sells24h: reading.exits24h,
-              status: 'ok',
-              checkedAt: new Date().toISOString(),
-            });
-            trades += reading.copyableTrades24h;
-            entries += reading.entries24h;
-            exits += reading.exits24h;
-            checked++;
-          } catch (e) {
-            repo.markCandidateActivityFailed(this.db.db, cand.candidateId, new Date().toISOString());
-            repo.audit(this.db.db, 'activity', cand.handle + ': ' + (e as Error).message, {});
-          }
-          await sleep(350);
-        }
-        if (checked > 0) {
-          repo.audit(
-            this.db.db,
-            'activity',
-            `top-board activity: ${checked} measured, ${trades} trades, ${entries} entries, ${exits} exits`,
-            {},
-          );
-          this.scheduleSnapshotRebuild();
-        }
-      } finally {
-        this.topBoardActivityBusy = false;
-      }
-    })();
-  }
-
-  /**
-   * Rank-stability firing rule (day-trader momentum): absent from the latest
-   * scan once, or outside the top-3 in two consecutive scans, fires the active
-   * trader. Stands down when the latest scan is older than SCAN_FRESH_MS so a
-   * dead capture pipeline never drives fires. Idempotent with lifecycle.fire's
-   * own guards; runs on every snapshot rebuild (30-min timer, debounces, boot).
-   */
-  private rankWatchCheck(): void {
-    if (this.rankWatchBusy || this.demo?.running) return;
-    const active = repo.activeActivation(this.db.db);
-    if (!active || active.state !== 'ACTIVE') return;
-    this.rankWatchBusy = true;
-    void (async () => {
-      try {
-        const handle = repo.getCandidate(this.db.db, active.candidateId)?.handle ?? null;
-        const scans = repo.listRecentScans(this.db.db, 2).map((s) => ({
-          observedAt: s.observedAt,
-          ranks: new Map(s.rows.flatMap((r) => (r.rank == null ? [] : [[r.handle, r.rank] as const]))),
-        }));
-        const verdict = evaluateRankStability({
-          scans,
-          incumbentHandle: handle,
-          nowMs: Date.now(),
-          scanFreshMs: SCAN_FRESH_MS,
-          topN: 3,
-        });
-        if (verdict.action === 'stand_down') {
-          repo.audit(this.db.db, 'rank-watch', `stand-down: ${verdict.detail}`, {});
-          return;
-        }
-        repo.audit(
-          this.db.db,
-          'rank-watch',
-          `strikes ${verdict.strikes}, latest rank ${verdict.latestRank ?? 'absent'}`,
-          {
-            activationId: active.activationId,
-            candidateId: active.candidateId,
-            action: verdict.action,
-          },
-        );
-        if (verdict.action === 'fire') {
-          const outcome = await this.lifecycle.fire(active.activationId, verdict.reason);
-          repo.audit(this.db.db, 'rank-watch', `rank fire outcome: ${outcome.status}`, {
-            activationId: active.activationId,
-            reason: verdict.reason,
-          });
-          this.rebuildState();
-        }
-      } catch (e) {
-        repo.audit(this.db.db, 'rank-watch', 'rank watch failed: ' + (e as Error).message, {});
-      } finally {
-        this.rankWatchBusy = false;
-      }
-    })();
-  }
-
-  /**
-   * Auto activity refresh: when a wallet-having enabled candidate has never
-   * had an on-chain activity check (or the stamp went stale), run one now
-   * instead of waiting for the 6-hour timer. This is what makes a fresh board
-   * import hireable within the same cycle: the activity gate needs swaps24h.
-   * Throttled.
-   */
-  private maybeAutoActivity(): void {
-    if (this.demo?.running) return;
-    if (!this.publicSolana.configured && !this.helius?.configured) return;
-    const AUTO_ACTIVITY_MIN_INTERVAL_MS = 20 * 60 * 1000;
-    if (Date.now() - this.lastAutoActivityAt < AUTO_ACTIVITY_MIN_INTERVAL_MS) return;
-    const wallets = new Set(
-      repo
-        .listCandidateAddresses(this.db.db)
-        .filter((a) => a.chain === 'solana')
-        .map((a) => a.candidateId),
-    );
-    const staleCutoff = Date.now() - ACTIVITY_FRESH_MS;
-    const stale = repo
-      .listCandidates(this.db.db)
-      .filter(
-        (c) =>
-          c.enabled &&
-          wallets.has(c.candidateId) &&
-          (c.activityCheckedAt === null || Date.parse(c.activityCheckedAt) < staleCutoff),
-      );
-    if (stale.length === 0) return;
-    this.lastAutoActivityAt = Date.now();
-    repo.audit(
-      this.db.db,
-      'activity',
-      `auto activity refresh: ${stale.length} candidate(s) with missing/stale activity: ${stale
-        .slice(0, 5)
-        .map((c) => c.handle)
-        .join(', ')}`,
-      {},
-    );
-    void this.activityRefreshNow().catch((e: Error) => {
-      repo.audit(this.db.db, 'activity', 'auto activity refresh failed: ' + e.message, {});
-    });
-  }
-
-  /**
-   * Debounced snapshot rebuild after Dawn/Helius changed candidate rows, so
-   * research reads current wallets and activity stamps within a minute instead
-   * of waiting for the 30-minute publish timer.
-   */
-  scheduleSnapshotRebuild(): void {
-    if (this.snapshotDebounceTimer) clearTimeout(this.snapshotDebounceTimer);
-    this.snapshotDebounceTimer = setTimeout(() => {
-      this.snapshotDebounceTimer = null;
-      try {
-        this.rebuildSnapshot();
-      } catch (e) {
-        repo.audit(this.db.db, 'research', 'debounced snapshot rebuild failed: ' + (e as Error).message, {});
-      }
-    }, 60_000);
-  }
-
-  private coldStartBusy = false;
-
-  rebuildState(): import('./services/state.js').DashboardState {
-    if (this.demo?.running) return this.store.get()!; // demo owns the state while replaying
-    // Idle hire: when no trader is active and a valid recommendation exists,
-    // activate its best eligible candidate so the loop resumes on its own.
-    // Paper always; live only while armed (a hire is the decision to copy).
-    // Refuses while a fire is still blocked (activeActivation covers
-    // FIRING/REQUIRES_RECONCILIATION), so it can never double-hire.
-    const idleHireAllowed =
-      this.config.mode === 'paper' || (this.config.mode === 'live' && this.control.flags.armed);
-    if (idleHireAllowed && !this.coldStartBusy) {
-      this.refreshLifecycleRecommendation();
-      this.coldStartBusy = true;
-      void this.lifecycle
-        .coldStartHire()
-        .then((hired) => {
-          if (hired.status === 'ACTIVATED') {
-            repo.audit(this.db.db, 'activation', 'idle hire completed from recommendation', {});
-            void this.rebuildState();
-          }
-        })
-        .catch((e: Error) => {
-          repo.audit(this.db.db, 'activation', `cold-start hire failed: ${e.message}`, {});
-        })
-        .finally(() => {
-          this.coldStartBusy = false;
-        });
-    }
-    const state = this.builder.build();
-    this.store.publish(state);
-    return state;
-  }
-
-  readiness() {
-    return readinessReport(this.db.db, this.config, this.control, this.monitor, Boolean(this.lock));
-  }
-
   async sampleHealth(): Promise<void> {
-    const now = new Date().toISOString();
-    const h: { ok: boolean; latencyMs?: number; detail?: string } = this.helius.configured
-      ? await this.helius.healthCheck()
-      : { ok: false, detail: 'not configured' };
-    const j: { ok: boolean; latencyMs?: number; detail?: string } = await this.jupiter
-      .healthCheck()
-      .catch((e: Error) => ({ ok: false, detail: e.message }));
-    repo.recordProviderHealth(this.db.db, {
-      provider: 'helius',
-      status: this.helius.configured ? (h.ok ? 'ok' : 'down') : 'disabled',
-      latencyMs: h.latencyMs ?? null,
-      detail: h.detail ?? null,
-      checkedAt: now,
-    });
-    repo.recordProviderHealth(this.db.db, {
-      provider: 'jupiter',
-      status: j.ok ? 'ok' : 'down',
-      latencyMs: j.latencyMs ?? null,
-      detail: j.detail ?? null,
-      checkedAt: now,
-    });
-    this.builder.setHealth({
-      helius: this.helius.configured ? (h.ok ? 'OK' : 'DOWN') : 'UNCONFIGURED',
-      jupiter: j.ok ? 'OK' : 'DOWN',
-    });
-    await this.refreshMarks().catch(() => undefined);
-    // Fee wallet runway: SOL pays every network fee, so surface its balance.
-    const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
-    const solLamports = feeAddress ? await this.helius.solBalanceLamports(feeAddress) : null;
-    let solPriceUsdMicro: bigint | null = null;
+    // A probe in flight when the process shuts down must not touch the closed
+    // database (the boot probe is not awaited).
+    if (this.stopping) return;
     try {
-      solPriceUsdMicro = (await this.priceProvider.priceOf(SOL_MINT, 9)).priceUsdMicro;
-    } catch {
-      solPriceUsdMicro = null;
+      const now = new Date().toISOString();
+      const h: { ok: boolean; latencyMs?: number; detail?: string } = this.helius.configured
+        ? await this.helius.healthCheck()
+        : { ok: false, detail: 'not configured' };
+      const j: { ok: boolean; latencyMs?: number; detail?: string } = await this.jupiter
+        .healthCheck()
+        .catch((e: Error) => ({ ok: false, detail: e.message }));
+      repo.recordProviderHealth(this.db.db, {
+        provider: 'helius',
+        status: this.helius.configured ? (h.ok ? 'ok' : 'down') : 'disabled',
+        latencyMs: h.latencyMs ?? null,
+        detail: h.detail ?? null,
+        checkedAt: now,
+      });
+      repo.recordProviderHealth(this.db.db, {
+        provider: 'jupiter',
+        status: j.ok ? 'ok' : 'down',
+        latencyMs: j.latencyMs ?? null,
+        detail: j.detail ?? null,
+        checkedAt: now,
+      });
+      this.builder.setHealth({
+        helius: this.helius.configured ? (h.ok ? 'OK' : 'DOWN') : 'UNCONFIGURED',
+        jupiter: j.ok ? 'OK' : 'DOWN',
+      });
+      await this.refreshMarks().catch(() => undefined);
+      // Fee wallet runway: SOL pays every network fee, so surface its balance.
+      const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
+      const solLamports = feeAddress ? await this.helius.solBalanceLamports(feeAddress) : null;
+      let solPriceUsdMicro: bigint | null = null;
+      try {
+        solPriceUsdMicro = (await this.priceProvider.priceOf(SOL_MINT, 9)).priceUsdMicro;
+      } catch {
+        solPriceUsdMicro = null;
+      }
+      this.solPriceUsdMicro = solPriceUsdMicro;
+      const solUsdMicro =
+        solLamports !== null && solPriceUsdMicro !== null
+          ? (BigInt(solLamports) * solPriceUsdMicro) / 10n ** 9n
+          : null;
+      this.builder.setFeeWallet(solLamports, solUsdMicro);
+      // SOL spend is NOT rescanned here: this loop runs every minute and each
+      // history call is billed. The ledger refreshes on boot, every 10 minutes,
+      // and shortly after a trade instead (see refreshFeeLedger).
+      const ledger = this.feeLedger.snapshot();
+      this.builder.setFeeLedger({ totals: ledger.totals, tx: ledger.tx, solUsdMicro: solPriceUsdMicro });
+      // USDC wallet balance: the withdrawable-cap cross-check for the OPS card.
+      const usdcBase = feeAddress ? await this.helius.tokenBalanceBase(USDC_MINT, feeAddress) : null;
+      this.builder.setWalletUsdc(usdcBase);
+      // Symbols can appear later (a token gains metadata after launch), so keep
+      // retrying the ones still missing on the health cadence.
+      await this.resolveTokenSymbols().catch(() => undefined);
+      this.rebuildState();
+    } catch (e) {
+      // A probe that loses the database to a shutdown is expected, not a bug.
+      if (this.stopping) return;
+      throw e;
     }
-    this.solPriceUsdMicro = solPriceUsdMicro;
-    const solUsdMicro =
-      solLamports !== null && solPriceUsdMicro !== null
-        ? (BigInt(solLamports) * solPriceUsdMicro) / 10n ** 9n
-        : null;
-    this.builder.setFeeWallet(solLamports, solUsdMicro);
-    // SOL spend is NOT rescanned here: this loop runs every minute and each
-    // history call is billed. The ledger refreshes on boot, every 10 minutes,
-    // and shortly after a trade instead (see refreshFeeLedger).
-    const ledger = this.feeLedger.snapshot();
-    this.builder.setFeeLedger({ totals: ledger.totals, tx: ledger.tx, solUsdMicro: solPriceUsdMicro });
-    // USDC wallet balance: the withdrawable-cap cross-check for the OPS card.
-    const usdcBase = feeAddress ? await this.helius.tokenBalanceBase(USDC_MINT, feeAddress) : null;
-    this.builder.setWalletUsdc(usdcBase);
-    // Symbols can appear later (a token gains metadata after launch), so keep
-    // retrying the ones still missing on the health cadence.
-    await this.resolveTokenSymbols().catch(() => undefined);
-    this.rebuildState();
   }
 
   /**
@@ -931,6 +681,7 @@ export class Runtime {
   }
 
   /** Debounced ticker resolution: never blocks an order, never storms the index. */
+
   private scheduleSymbolResolve(): void {
     if (this.symbolTimer) return;
     this.symbolTimer = setTimeout(() => {
@@ -1019,6 +770,28 @@ export class Runtime {
   }
 
   /**
+   * One discovery run through the fomoapi inlet (D3). `force` is the manual
+   * operator path: it skips the demand/rate-limit gate, never the key check.
+   */
+  /**
+   * The D5 demand trigger, called from the watch tick (and asserted directly by
+   * runtime-cadence.test.ts): a thin bench asks for discovery, and the service
+   * itself applies the rate limit and writes the audit line. When the roster and
+   * the bench are full this is a no-op — zero external spend.
+   */
+  maybeDemandDiscovery(): void {
+    // discoveryDecision holds the D5 rule: a free chair with nothing promotable
+    // behind it, or a bench below BENCH_TARGET. The service then applies its own
+    // rate limit and audits the decision, so a full roster + full bench really is
+    // zero external spend.
+    if (discoveryDecision(this.discovery.demand()).run) void this.discovery.syncIfNeeded();
+  }
+
+  async syncDiscoveryNow(force = false) {
+    return this.discovery.syncDiscovery(force);
+  }
+
+  /**
    * Read the FOMO leaderboard through the logged-in browser session and merge
    * the entries into the candidate pool (source 'fomo-web'). Fail-closed: any
    * adapter error is audited and rethrown to the caller.
@@ -1029,7 +802,7 @@ export class Runtime {
     const result = await this.fomoWeb.fetchLatest();
     let imported = 0;
     for (const entry of result.entries) {
-      const candidateId = 'cand_' + entry.handle.toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+      const candidateId = repo.candidateIdForHandle(entry.handle);
       repo.upsertCandidate(this.db.db, {
         candidateId,
         handle: entry.handle,
@@ -1240,7 +1013,6 @@ export class Runtime {
     );
     if (resolved > 0) {
       this.rebuildState();
-      this.scheduleSnapshotRebuild();
     }
     return { resolved, failed, warnings };
   }
@@ -1280,8 +1052,8 @@ export class Runtime {
    * Refresh on-chain activity for enabled candidates that already have a
    * wallet. Primary source: the free public Solana RPC (direction-aware:
    * swaps24h/lastSwapAt + buys24h/sells24h/lastBuyAt); Helius is the fallback.
-   * These are the exact numbers the pre-hire gate enforces, so the research
-   * snapshot and the gate agree. Read-only on-chain; a total source failure
+   * These are the on-chain numbers the watch list and the admission screen read,
+   * so the stored reading and the gate agree. Read-only on-chain; a total source failure
    * marks the candidate's check 'failed' and preserves the previous columns.
    */
   async activityRefreshNow(
@@ -1348,7 +1120,6 @@ export class Runtime {
     );
     if (checked > 0) {
       this.rebuildState();
-      if (verified > 0) this.scheduleSnapshotRebuild();
     }
     return { checked, verified, failed };
   }
@@ -1447,21 +1218,6 @@ export class Runtime {
     if (process.env.NODE_ENV !== 'test') return null;
     if (!this.setupToken || this.setupToken.expiresAt < Date.now()) return null;
     return this.setupToken.value;
-  }
-
-  private loadOrCreateSubmitToken(): string {
-    const file = join(this.config.env.DATA_DIR, 'research', 'submit-token');
-    mkdirSync(join(this.config.env.DATA_DIR, 'research'), { recursive: true });
-    if (existsSync(file)) {
-      return readFileSync(file, 'utf8').trim();
-    }
-    const token = randomBytes(24).toString('base64url');
-    writeFileSync(file, token, { mode: 0o600 });
-    return token;
-  }
-
-  checkSubmitToken(value: string): boolean {
-    return value === this.submitToken;
   }
 }
 

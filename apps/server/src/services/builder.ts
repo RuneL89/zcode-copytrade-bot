@@ -1,11 +1,11 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { AppConfig, RiskConfig } from '@zcode-bot/config';
-import { bankrollHeadroom, dashboardBadges, recommendationExpired } from '@zcode-bot/core';
+import { bankrollHeadroom, canPromote, dashboardBadges, usdToMicro } from '@zcode-bot/core';
 import type { DashboardState } from './state.js';
+import { discoveryDecision } from './discovery.js';
 import type { ControlService } from './control.js';
 import type { LeaderMonitor } from './monitor.js';
-import type { RecommendationService } from './research.js';
 import type { TraderLifecycle } from './lifecycle.js';
 import { SOL_MINT, USDC_MINT, USDT_MINT } from './engine.js';
 
@@ -38,7 +38,6 @@ export class StateBuilder {
     private config: AppConfig,
     private control: ControlService,
     private monitor: LeaderMonitor | null,
-    private recommendations: RecommendationService,
     private lifecycle: TraderLifecycle,
     private equityStartUsdMicro: bigint,
     private lastKnownHealth: {
@@ -96,6 +95,16 @@ export class StateBuilder {
     return (BigInt(Math.max(0, Math.round(lamports))) * price) / 10n ** 9n;
   }
 
+  /** Discovery-stage facts (plan 07), read lazily from the service's record. */
+  private discoveryStatus:
+    (() => { lastRunAt: string | null; creditsRemaining: number | null; sources: string[] }) | null = null;
+
+  setDiscoveryStatus(
+    fn: () => { lastRunAt: string | null; creditsRemaining: number | null; sources: string[] },
+  ): void {
+    this.discoveryStatus = fn;
+  }
+
   /** Wallet USDC balance (base units) at the last health sample. */
   private walletUsdcBase: bigint | null = null;
 
@@ -113,8 +122,10 @@ export class StateBuilder {
     const now = Date.now();
 
     // --- app state -------------------------------------------------------
-    const activation = repo.activeActivation(this.db);
-    const lastHandoff = repo.listHandoffEvents(this.db, 1)[0];
+    // The roster (plan 05): the first chair keeps the legacy `activeTrader`
+    // shape for one release; plan 06 removes it in favour of `roster`.
+    const activeActivations = repo.listActiveActivations(this.db);
+    const activation = activeActivations[0] ?? null;
     let appState: DashboardState['appState'] = 'RUNNING';
     if (this.control.flags.emergencyStopped) appState = 'EMERGENCY_STOPPED';
     else if (repo.openReconciliationCases(this.db).length > 0 && !activation)
@@ -122,13 +133,9 @@ export class StateBuilder {
     else if (activation?.state === 'REQUIRES_RECONCILIATION') appState = 'REQUIRES_RECONCILIATION';
     else if (this.control.flags.newEntriesPaused) appState = 'PAUSED_NEW_ENTRIES';
     else if (!activation) {
-      // No active trader: waiting for a candidate (initial), ZCode (post-firing
-      // pause), or fresh research (the ordering predates the newest scan).
-      appState =
-        lastHandoff?.status === 'paused_waiting_for_zcode' ||
-        lastHandoff?.status === 'paused_for_fresh_research'
-          ? 'PAUSED_WAITING_FOR_ZCODE'
-          : 'PAUSED_WAITING_FOR_CANDIDATE';
+      // No active trader: the chairs are empty. The promotion queue fills them
+      // from the watch list, and an empty chair is an acceptable state (D4).
+      appState = 'PAUSED_NO_TRADER';
     }
 
     // --- equity + closes ---------------------------------------------------
@@ -190,6 +197,7 @@ export class StateBuilder {
       const entrySpend = entrySpendByPosition.get(p.positionId) ?? null;
       return {
         positionId: p.positionId,
+        leaderHandle: this.handleForPosition(p.positionId),
         mintShort: mintShort(p.mint),
         symbol: p.mintSymbol,
         status: p.status,
@@ -317,6 +325,8 @@ export class StateBuilder {
       deployedUsdMicro: bank.deployedUsdMicro.toString(),
       deployedPct,
       maxDeployedPct: this.config.risk.MAX_DEPLOYED_PCT,
+      /** Chairs the pipeline's roster grid renders (ROSTER_SIZE). */
+      rosterSize: this.config.risk.ROSTER_SIZE,
       maxPositionAgeHours: this.config.risk.MAX_POSITION_AGE_HOURS,
       positionGraceHours: this.config.risk.POSITION_GRACE_HOURS,
       idleFireHoursLeft,
@@ -330,7 +340,6 @@ export class StateBuilder {
     };
 
     // --- candidates panel ---------------------------------------------------
-    const snapshot = this.recommendations.currentSnapshotForLifecycle();
     const candidatesRows = repo.listCandidates(this.db);
     const activations = repo.listActivations(this.db, 500);
     const sessionStart = activations.length
@@ -354,181 +363,19 @@ export class StateBuilder {
         fired: activations.some((a) => a.candidateId === c.candidateId && a.state === 'FIRED'),
         active: activation?.candidateId === c.candidateId,
         contributionUsdMicro: (contributions.get(c.candidateId) ?? 0n).toString(),
-        awaitingZcode: false,
       }))
       .sort((a, b) => (a.weeklyRank ?? 999) - (b.weeklyRank ?? 999));
 
-    // --- recommendation ------------------------------------------------------
-    const latest = this.recommendations.latestAny();
-    const valid = this.recommendations.latestValid();
-    let recStatus: DashboardState['recommendation']['status'] = 'NONE';
-    if (valid) recStatus = 'VALID';
-    else if (latest?.status === 'rejected') recStatus = 'REJECTED';
-    else if (latest?.abstain) recStatus = 'ABSTAIN';
-    else if (latest && recommendationExpired({ expiresAt: latest.expiresAt }, now)) recStatus = 'EXPIRED';
-    const ordered = valid
-      ? valid.payload.orderedCandidates.map((c) => {
-          const row = candidatesRows.find((r) => r.candidateId === c.candidateId);
-          return {
-            candidateId: c.candidateId,
-            handle: row?.handle ?? null,
-            rank: c.rank,
-            confidence: c.confidence,
-            thesis: c.thesis,
-            concerns: c.concerns,
-            eligibleNow: Boolean(
-              snapshot?.candidates.find((s) => s.candidateId === c.candidateId && s.enabled),
-            ),
-          };
-        })
-      : [];
-
-    // Fire reason from the outgoing trader's latest firing event — drives both
-    // the fired overlay (first 20s) and the hiring pipeline's FIRED stage, for
-    // every firing condition (idle, rank, stall, losses, rotation, manual).
-    let fireReason: string | null = null;
-    let firedAtIso: string | null = null;
-    if (lastHandoff?.fromCandidateId) {
-      const firedActivation = activations
-        .filter((a) => a.candidateId === lastHandoff.fromCandidateId && a.state === 'FIRED')
-        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
-      if (firedActivation) {
-        const event = repo.latestFiringEventForActivation(this.db, firedActivation.activationId);
-        fireReason = event?.reason ?? null;
-        firedAtIso = event?.firedAt ?? null;
-      }
-    }
-
-    // --- handoff (drives the fired animation) --------------------------------
-    let handoff: DashboardState['handoff'] = null;
-    if (lastHandoff && now - Date.parse(lastHandoff.createdAt) < 20_000) {
-      const from = candidatesRows.find((c) => c.candidateId === lastHandoff.fromCandidateId);
-      const to = candidatesRows.find((c) => c.candidateId === lastHandoff.toCandidateId);
-      handoff = {
-        phase:
-          lastHandoff.status === 'activated'
-            ? 'FIRED'
-            : lastHandoff.status === 'paused_for_fresh_research'
-              ? 'PAUSED_FOR_FRESH_RESEARCH'
-              : 'WAITING_FOR_ZCODE',
-        fromHandle: from?.handle ?? lastHandoff.fromCandidateId ?? '',
-        fromRank: from?.weeklyRank ?? null,
-        fromPnlText: from?.displayedWeeklyPnlUsdMicro
-          ? `${(Number(from.displayedWeeklyPnlUsdMicro) / 1e6).toFixed(0)}% 7d (displayed)`
-          : null,
-        fromReason: fireReason,
-        toHandle: to?.handle ?? null,
-        toRank: to?.weeklyRank ?? null,
-        atIso: lastHandoff.createdAt,
-        demo: mode === 'demo',
-      };
-    }
-
-    // --- hiring loop (the fired → paused → research → auto-hire cycle) ------
-    const pausedForResearch =
-      !activation &&
-      (lastHandoff?.status === 'paused_waiting_for_zcode' ||
-        lastHandoff?.status === 'paused_for_fresh_research');
-    const latestScanRow = repo.listRecentScans(this.db, 1)[0] ?? null;
-    const recentControl = repo.listControlEvents(this.db, 20);
-    const researchRequested = pausedForResearch
-      ? recentControl.some(
-          (e) =>
-            (e.type === 'research_request' || e.type === 'replacement_request') &&
-            e.createdAt >= (lastHandoff?.createdAt ?? ''),
-        )
-      : false;
-    const researchRequestAt = recentControl
-      .filter((e) => e.type === 'research_request')
-      .map((e) => e.createdAt)
-      .sort()
-      .pop();
-    const researchDispatched = Boolean(
-      researchRequestAt &&
-      recentControl.some((e) => e.type === 'research_dispatched' && e.createdAt >= researchRequestAt),
-    );
-
-    // Idle-fire deadline while a flat hire is counting down (same baseline the
-    // monitor uses: hire time, or the last time a position was held).
-    let idleFireAtIso: string | null = null;
-    if (activation && openPositionRows.length === 0) {
-      const lastOpenAt = repo.kvGet(this.db, `monitor.lastOpenAt:${activation.activationId}`);
-      const baselineMs = Math.max(Date.parse(activation.startedAt), lastOpenAt ? Date.parse(lastOpenAt) : 0);
-      if (Number.isFinite(baselineMs) && baselineMs > 0) {
-        idleFireAtIso = new Date(baselineMs + this.config.risk.IDLE_FIRE_HOURS * 3_600_000).toISOString();
-      }
-    }
-
-    // One stage for the whole pipeline, so the dashboard can light up the step
-    // that is actually running instead of inferring it from several fields.
-    // Only a VALIDATED ordering counts as "ready": an abstention is stored as a
-    // recommendation row too, and treating it as an ordering would leave the
-    // panel claiming HIRING while nothing can be hired.
-    const validCreatedAt = valid?.payload.createdAt ?? null;
-    // >= (not >): ISO stamps share millisecond granularity, and a same-ms
-    // abstention still means research already responded to the request.
-    const abstainedAfterRequest = Boolean(
-      latest?.abstain && researchRequestAt && latest.createdAt >= researchRequestAt,
-    );
-    let stage: DashboardState['hiring']['stage'] = 'IDLE';
-    let stageSince: string | null = null;
-    if (activation) {
-      stage = 'HIRED';
-      stageSince = activation.startedAt;
-    } else if (pausedForResearch) {
-      const orderingIsNewer = Boolean(
-        validCreatedAt && researchRequestAt && validCreatedAt > researchRequestAt,
-      );
-      if (orderingIsNewer) {
-        stage = 'ORDERING_READY';
-        stageSince = validCreatedAt;
-      } else if (abstainedAfterRequest) {
-        // Research ran and declined: the pool is too thin to rank. The next
-        // board refresh re-arms it; until then the bot stays paused.
-        stage = 'POOL_STALE';
-        stageSince = latest?.createdAt ?? null;
-      } else if (researchDispatched) {
-        stage = 'RESEARCH_RUNNING';
-        stageSince = recentControl.find((e) => e.type === 'research_dispatched')?.createdAt ?? null;
-      } else if (researchRequested) {
-        stage = 'RESEARCH_REQUESTED';
-        stageSince = researchRequestAt ?? null;
-      } else {
-        stage = 'FIRED';
-        stageSince = firedAtIso ?? lastHandoff?.createdAt ?? null;
-      }
-    } else if (lastHandoff) {
-      stage = 'FIRED';
-      stageSince = firedAtIso ?? lastHandoff.createdAt;
-    }
-    // An ACTIVE hire that is flat and counting down is the first step of the
-    // same pipeline; IDLE_COUNTDOWN makes that explicit for the dashboard.
-    if (stage === 'HIRED' && idleFireAtIso) stage = 'IDLE_COUNTDOWN';
-
-    // A board with direction data but no buyer cannot produce a hireable
-    // candidate no matter how often research re-ranks it (2026-11-01).
-    const buying = this.lifecycle.scanBuyingTally();
-
-    const hiring: DashboardState['hiring'] = {
-      stage,
-      stageSince,
-      pausedForResearch,
-      reason: pausedForResearch ? (lastHandoff?.detail ?? null) : null,
-      firedReason: fireReason,
-      firedAt: lastHandoff?.fromCandidateId ? (firedAtIso ?? lastHandoff.createdAt) : null,
-      latestScanAt: latestScanRow?.observedAt ?? null,
-      recommendationAt: latest?.createdAt ?? null,
-      researchRequested,
-      researchDispatched,
-      idleFireAtIso,
-      noBuyerOnBoard: buying.checked > 0 && buying.buyers === 0,
-      buyersOnBoard: buying.buyers,
-      checkedOnBoard: buying.checked,
-      autoResume: true,
-    };
-
     const pendingRecon = repo.openReconciliationCases(this.db).length;
     const health = this.lastKnownHealth;
+    const pipeline = this.buildPipeline(
+      now,
+      activeActivations,
+      activations,
+      positionsPanel,
+      openPositionRows,
+      lots,
+    );
 
     return {
       version: 0,
@@ -562,6 +409,32 @@ export class StateBuilder {
         asOf: new Date(now).toISOString(),
       },
       activeTrader,
+      roster: activeActivations.map((a) => {
+        const candidate = repo.getCandidate(this.db, a.candidateId);
+        const realized = lots
+          .filter((l) => this.activationOfPosition(l.positionId) === a.activationId)
+          .reduce((acc, l) => acc + BigInt(l.pnlUsdMicro), 0n);
+        const hirePositions = positionsPanel.filter((p) => {
+          const row = openPositionRows.find((o) => o.positionId === p.positionId);
+          return row?.activationId === a.activationId;
+        });
+        const unrealized = hirePositions.reduce((acc, p) => acc + BigInt(p.unrealizedPnlUsdMicro ?? '0'), 0n);
+        return {
+          activationId: a.activationId,
+          candidateId: a.candidateId,
+          handle: candidate?.handle ?? a.candidateId,
+          avatarUrl: candidate?.avatarUrl ?? null,
+          status: a.state,
+          realizedPnlUsdMicro: realized.toString(),
+          unrealizedPnlUsdMicro: unrealized.toString(),
+          openPositions: hirePositions.length,
+          lastSix: this.lifecycle.lastSixFor(a.activationId),
+          streak: a.lossStreak,
+          fireAfter: this.config.risk.FIRE_AFTER_CONSECUTIVE_LOSSES,
+          sinceIso: a.startedAt,
+        };
+      }),
+      pipeline,
       closes,
       positions: positionsPanel,
       activity: tape.rows,
@@ -577,15 +450,7 @@ export class StateBuilder {
         sessionTotalSeconds: 24 * 3600,
         entries: candidateEntries,
       },
-      handoff,
-      hiring,
-      recommendation: {
-        status: recStatus,
-        ageMs: latest ? Math.max(0, now - Date.parse(latest.createdAt)) : null,
-        expiresInMs: latest ? Math.max(0, Date.parse(latest.expiresAt) - now) : null,
-        modelLabel: latest?.modelLabel ?? null,
-        ordered,
-      },
+      watchlist: this.buildWatchlist(bank.headroomUsdMicro, now),
       health: {
         workerRunning: Boolean(this.monitor?.running),
         helius: mode === 'demo' ? 'OK' : health.helius,
@@ -599,6 +464,208 @@ export class StateBuilder {
         walletUsdcUsdMicro: this.walletUsdcBase?.toString() ?? null, // USDC base == micro-USD
       },
       fictional: mode === 'demo',
+    };
+  }
+
+  /**
+   * The D4 watch list: wallets under observation, their shadow record, and why
+   * promotion is blocked. Numbers come from the shadow ledger only — the fomo
+   * PnL mark is not an input (D4).
+   */
+  private buildWatchlist(headroomUsdMicro: bigint, now: number): DashboardState['watchlist'] {
+    const risk = this.config.risk;
+    const wallets = repo.listWatchWallets(this.db);
+    const openLots = repo.listOpenShadowTrades(this.db);
+    const ceilingMs = risk.MAX_POSITION_AGE_HOURS * 3_600_000;
+    const slotsFree = Math.max(0, risk.ROSTER_SIZE - repo.activeActivationCount(this.db));
+
+    const rows: DashboardState['watchlist']['rows'] = wallets.map((wallet) => {
+      const candidate = repo.getCandidate(this.db, wallet.candidateId);
+      const events = repo.listWatchEvents(this.db, wallet.candidateId, 200);
+      const since24h = now - 24 * 3_600_000;
+      const buys24h = events.filter((e) => e.side === 'buy' && Date.parse(e.observedAt) >= since24h).length;
+      const sells24h = events.filter((e) => e.side === 'sell' && Date.parse(e.observedAt) >= since24h).length;
+      const aggregates = repo.shadowAggregates(this.db, wallet.candidateId);
+      const lots = openLots.filter((l) => l.candidateId === wallet.candidateId);
+      const openNotional = lots.reduce((acc, l) => acc + BigInt(l.notionalUsdMicro), 0n);
+      const ceilingExposure = lots
+        .filter((l) => now - Date.parse(l.openedAt) >= ceilingMs)
+        .reduce((acc, l) => acc + BigInt(l.notionalUsdMicro), 0n);
+      const decision = canPromote({
+        aggregates,
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
+        lastFiredAt: repo.lastFiredAt(this.db, wallet.candidateId),
+        nowMs: now,
+        config: {
+          promotionMinClosed: risk.PROMOTION_MIN_CLOSED,
+          promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
+          promotionMaxLastBuyHours: risk.PROMOTION_MAX_LAST_BUY_HOURS,
+          minHireHeadroomUsdMicro: usdToMicro(risk.MIN_HIRE_HEADROOM_USD),
+        },
+        slotsFree,
+        headroomUsdMicro,
+      });
+      const status = (wallet.status as DashboardState['watchlist']['rows'][number]['status']) ?? 'watching';
+      return {
+        candidateId: wallet.candidateId,
+        handle: candidate?.handle ?? wallet.candidateId,
+        status,
+        profileUrl: candidate?.profileUrl ?? null,
+        lastFundedBuyAt: wallet.lastFundedBuyAt,
+        fundedBuys24h: buys24h,
+        fundedSells24h: sells24h,
+        closedTrades: aggregates.closedCount,
+        netShadowPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
+        openNotionalUsdMicro: openNotional.toString(),
+        ceilingExposureUsdMicro: ceilingExposure.toString(),
+        // A promoted/cooling/archived row is not "blocked" — the reason only
+        // explains why a watching row cannot move.
+        blockedReason: status === 'watching' ? decision.reason : null,
+        source: 'SHADOW_LEDGER',
+        lastEventAt: events[0]?.observedAt ?? null,
+      };
+    });
+
+    const decision = discoveryDecision({
+      promotableWatchWallets: rows.filter((r) => r.status === 'promoted').length,
+      watchListWallets: rows.filter((r) => r.status === 'watching').length,
+      rosterInUse: repo.activeActivationCount(this.db),
+      rosterSize: risk.ROSTER_SIZE,
+      benchTarget: risk.BENCH_TARGET,
+      lastRunAt: repo.kvGet(this.db, 'discovery.last_run_at') ?? null,
+      nowMs: now,
+      minIntervalMs: risk.DISCOVERY_MIN_INTERVAL_MS,
+    });
+
+    return {
+      size: rows.filter((r) => r.status === 'watching').length,
+      cap: risk.WATCH_LIST_SIZE,
+      bench: rows.filter((r) => r.status === 'promoted').length,
+      benchTarget: risk.BENCH_TARGET,
+      nextDiscoveryReason: decision.reason,
+      rows,
+    };
+  }
+
+  /**
+   * The pipeline spine (plan 07). Every count is a read of persisted rows or
+   * the discovery service's own record of its last run — nothing is estimated.
+   */
+  private buildPipeline(
+    now: number,
+    activeActivations: ReturnType<typeof repo.listActiveActivations>,
+    activations: ReturnType<typeof repo.listActivations>,
+    positionsPanel: DashboardState['positions'],
+    openPositionRows: Array<{ positionId: string; activationId: string }>,
+    lots: ReturnType<typeof repo.listPnlLots>,
+  ): DashboardState['pipeline'] {
+    const risk = this.config.risk;
+    const cutoff24h = new Date(now - 24 * 3_600_000).toISOString();
+    const candidates = repo.listCandidates(this.db);
+    const walletIds = new Set(
+      repo
+        .listCandidateAddresses(this.db)
+        .filter((a) => a.chain === 'solana')
+        .map((a) => a.candidateId),
+    );
+    const enabled = candidates.filter((c) => c.enabled);
+    const watchWallets = repo.listWatchWallets(this.db);
+
+    const newHandles24h = candidates.filter((c) => c.createdAt >= cutoff24h).length;
+    const admissions24h = watchWallets.filter((w) => w.admittedAt >= cutoff24h).length;
+    // The return lane (exits → watch): a fired wallet re-enters the watch
+    // record as `cooling` (the runtime marks it on every fire); the 24h count
+    // is those recent re-entries.
+    const cooled24h = watchWallets.filter((w) => w.status === 'cooling' && w.updatedAt >= cutoff24h).length;
+    // A replacement is a chair filled from the promotion queue — the activation
+    // row's source records exactly that.
+    const replacements24h = activations.filter(
+      (a) => a.source === 'watch_promotion' && a.startedAt >= cutoff24h,
+    ).length;
+    const firings24h = repo.listFiringEventsSince(this.db, cutoff24h).length;
+    // The fired lane: the newest firings, each with the chair's replacement
+    // status — the first promotion-hire that started after the firing took it.
+    const firedLane = repo.listRecentFirings(this.db, 5).map((f) => {
+      const hire = activations.find(
+        (a) => a.startedAt > f.firedAt && a.candidateId !== f.candidateId && a.source === 'watch_promotion',
+      );
+      return {
+        candidateId: f.candidateId,
+        handle: repo.getCandidate(this.db, f.candidateId)?.handle ?? f.candidateId,
+        reason: f.reason,
+        firedAt: f.firedAt,
+        replacedBy: hire ? (repo.getCandidate(this.db, hire.candidateId)?.handle ?? hire.candidateId) : null,
+      };
+    });
+
+    const seats = activeActivations.map((a) => {
+      const reconciling =
+        a.state === 'REQUIRES_RECONCILIATION' ||
+        positionsPanel.some((p) => {
+          const row = openPositionRows.find((o) => o.positionId === p.positionId);
+          return row?.activationId === a.activationId && p.status === 'requires_reconciliation';
+        });
+      // The newest observed signal decides what the seat shows: a sell is
+      // SELLING, a buy (even a skipped one) is BUYING; no signal is IDLE.
+      // Reconciliation overrides both — it is the state that freezes a chair.
+      const signal = repo.listObservedEvents(this.db, a.activationId, 1)[0] ?? null;
+      const status: DashboardState['pipeline']['roster'][number]['status'] = reconciling
+        ? 'RECONCILING'
+        : signal?.kind === 'swap_sell'
+          ? 'SELLING'
+          : signal?.kind === 'swap_buy' || signal?.kind === 'skipped'
+            ? 'BUYING'
+            : 'IDLE';
+      const realized = lots
+        .filter((l) => this.activationOfPosition(l.positionId) === a.activationId)
+        .reduce((acc, l) => acc + BigInt(l.pnlUsdMicro), 0n);
+      const seatPositions = positionsPanel.filter((p) => {
+        const row = openPositionRows.find((o) => o.positionId === p.positionId);
+        return row?.activationId === a.activationId;
+      });
+      const unrealized = seatPositions.reduce((acc, p) => acc + BigInt(p.unrealizedPnlUsdMicro ?? '0'), 0n);
+      return {
+        activationId: a.activationId,
+        candidateId: a.candidateId,
+        handle: repo.getCandidate(this.db, a.candidateId)?.handle ?? a.candidateId,
+        status,
+        realizedPnlUsdMicro: realized.toString(),
+        unrealizedPnlUsdMicro: unrealized.toString(),
+        openPositions: seatPositions.length,
+        lastSignalAt: signal?.processedAt ?? null,
+      };
+    });
+
+    const discovery = this.discoveryStatus?.() ?? { lastRunAt: null, creditsRemaining: null, sources: [] };
+
+    return {
+      asOf: new Date(now).toISOString(),
+      discovery: {
+        lastSyncAt: discovery.lastRunAt,
+        newHandles24h,
+        creditsRemaining: discovery.creditsRemaining,
+        sources: discovery.sources,
+      },
+      pool: {
+        total: enabled.length,
+        withWallet: enabled.filter((c) => walletIds.has(c.candidateId)).length,
+        fundedBuyers24h: enabled.filter((c) => c.activityCheckStatus === 'ok' && (c.buys24h ?? 0) > 0).length,
+      },
+      watch: {
+        watching: watchWallets.filter((w) => w.status === 'watching').length,
+        cooling: watchWallets.filter((w) => w.status === 'cooling').length,
+        promotable: watchWallets.filter((w) => w.status === 'promoted').length,
+        benchTarget: risk.BENCH_TARGET,
+      },
+      roster: seats,
+      exits: { fired24h: firings24h, replacements24h, recent: firedLane },
+      edges: [
+        { from: 'discovery', to: 'pool', count24h: newHandles24h },
+        { from: 'pool', to: 'watch', count24h: admissions24h },
+        { from: 'watch', to: 'roster', count24h: replacements24h },
+        { from: 'roster', to: 'exits', count24h: firings24h },
+        { from: 'exits', to: 'watch', count24h: cooled24h },
+      ],
     };
   }
 

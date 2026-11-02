@@ -6,18 +6,75 @@ import { applyCloseUnit, countsAsUnit } from '../src/streak.js';
 import type { StreakConfig } from '../src/streak.js';
 
 const Q = { scaleNumerator: 1n, scaleDenominator: 4n };
+/** D1 production shape: 0.25x, floored at $5, capped at $10. */
+const FLOOR = { minPerBuyUsdMicro: usdToMicro(5), maxPerBuyUsdMicro: usdToMicro(10) };
+const copyOf = (leaderUsd: number) =>
+  computeCopyNotional({ leaderInputUsdMicro: usdToMicro(leaderUsd), ...Q, ...FLOOR });
 
-describe('0.25x sizing', () => {
-  it('computes exactly one quarter of leader input', () => {
-    const r = computeCopyNotional({
-      leaderInputUsdMicro: usdToMicro(400),
-      ...Q,
-      minPerBuyUsdMicro: usdToMicro(10),
-      maxPerBuyUsdMicro: usdToMicro(250),
-      allowBelowMinRoundUp: false,
-    });
+describe('0.25x sizing with an absolute floor (D1)', () => {
+  it('computes exactly one quarter of leader input between floor and cap', () => {
+    const r = copyOf(21);
     expect(r.action).toBe('copy');
-    expect(r.finalUsdMicro).toBe(usdToMicro(100));
+    expect(r.desiredUsdMicro).toBe(usdToMicro(5.25));
+    expect(r.finalUsdMicro).toBe(usdToMicro(5.25));
+    expect(r.applied).toBe('none');
+  });
+
+  it('a $4.00 leader buy copies at the $5.00 floor, not a skip (AC1)', () => {
+    const r = copyOf(4);
+    expect(r.action).toBe('copy');
+    expect(r.desiredUsdMicro).toBe(usdToMicro(1));
+    expect(r.finalUsdMicro).toBe(5_000_000n);
+    expect(r.applied).toBe('rounded_up_to_min');
+  });
+
+  it('$7.86 and $19.99 both copy at the $5.00 floor (AC2)', () => {
+    for (const leaderUsd of [7.86, 19.99]) {
+      const r = copyOf(leaderUsd);
+      expect(r.action).toBe('copy');
+      expect(r.finalUsdMicro).toBe(usdToMicro(5));
+    }
+  });
+
+  it('floor, interior and ceiling values (AC3)', () => {
+    expect(copyOf(20).finalUsdMicro).toBe(usdToMicro(5)); // exactly the floor
+    expect(copyOf(21).finalUsdMicro).toBe(usdToMicro(5.25));
+    // $40.00 x 0.25 is exactly the $10 cap: the value already equals the
+    // maximum, so no cap has to be applied and `applied` stays 'none'.
+    expect(copyOf(40).finalUsdMicro).toBe(usdToMicro(10));
+    const big = copyOf(100);
+    expect(big.finalUsdMicro).toBe(usdToMicro(10));
+    expect(big.applied).toBe('capped_at_max');
+  });
+
+  it('zero and negative leader inputs are invalid (AC4)', () => {
+    for (const leaderUsd of [0, -5]) {
+      const r = copyOf(leaderUsd);
+      expect(r.action).toBe('skip_invalid');
+      expect(r.finalUsdMicro).toBeNull();
+      expect(r.applied).toBe('invalid_input');
+    }
+  });
+
+  it('a non-positive scale is invalid', () => {
+    const r = computeCopyNotional({
+      leaderInputUsdMicro: usdToMicro(100),
+      scaleNumerator: 0n,
+      scaleDenominator: 4n,
+      ...FLOOR,
+    });
+    expect(r.action).toBe('skip_invalid');
+  });
+
+  it('never skips a below-floor copy across a wide sweep (AC5)', () => {
+    for (let cents = 0; cents <= 2000; cents++) {
+      const r = copyOf(cents / 100);
+      expect(['copy', 'skip_invalid']).toContain(r.action);
+      if (r.action === 'copy') {
+        expect(r.finalUsdMicro!).toBeGreaterThanOrEqual(FLOOR.minPerBuyUsdMicro);
+        expect(r.finalUsdMicro!).toBeLessThanOrEqual(FLOOR.maxPerBuyUsdMicro);
+      }
+    }
   });
 
   it('floors fractional micros deterministically', () => {
@@ -26,7 +83,6 @@ describe('0.25x sizing', () => {
       ...Q,
       minPerBuyUsdMicro: 0n,
       maxPerBuyUsdMicro: usdToMicro(250),
-      allowBelowMinRoundUp: false,
     });
     expect(r.finalUsdMicro).toBe(250_000n); // floor(1000003/4)
   });
@@ -37,48 +93,10 @@ describe('0.25x sizing', () => {
       ...Q,
       minPerBuyUsdMicro: usdToMicro(10),
       maxPerBuyUsdMicro: usdToMicro(250),
-      allowBelowMinRoundUp: false,
     });
     expect(r.action).toBe('copy');
     expect(r.finalUsdMicro).toBe(usdToMicro(250));
     expect(r.applied).toBe('capped_at_max');
-  });
-
-  it('skips below MIN_PER_BUY_USD without rounding up (default)', () => {
-    const r = computeCopyNotional({
-      leaderInputUsdMicro: usdToMicro(32),
-      ...Q,
-      minPerBuyUsdMicro: usdToMicro(10),
-      maxPerBuyUsdMicro: usdToMicro(250),
-      allowBelowMinRoundUp: false,
-    });
-    expect(r.action).toBe('skip_below_min');
-    expect(r.finalUsdMicro).toBeNull();
-    expect(r.desiredUsdMicro).toBe(usdToMicro(8));
-  });
-
-  it('rounds up to min only when explicitly allowed', () => {
-    const r = computeCopyNotional({
-      leaderInputUsdMicro: usdToMicro(32),
-      ...Q,
-      minPerBuyUsdMicro: usdToMicro(10),
-      maxPerBuyUsdMicro: usdToMicro(250),
-      allowBelowMinRoundUp: true,
-    });
-    expect(r.action).toBe('copy');
-    expect(r.finalUsdMicro).toBe(usdToMicro(10));
-    expect(r.applied).toBe('rounded_up_to_min');
-  });
-
-  it('rejects non-positive leader input', () => {
-    const r = computeCopyNotional({
-      leaderInputUsdMicro: 0n,
-      ...Q,
-      minPerBuyUsdMicro: 10n,
-      maxPerBuyUsdMicro: 250_000_000n,
-      allowBelowMinRoundUp: false,
-    });
-    expect(r.action).toBe('skip_invalid');
   });
 });
 

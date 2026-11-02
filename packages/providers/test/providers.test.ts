@@ -422,12 +422,15 @@ describe('public RPC wallet activity', () => {
       ],
       { nowMs: NOW, lookbackHours: 24, minTradeUsdMicro: 1_000_000n, priceOf },
     );
-    // buy = MEOW in (+5e6 = $1.00), sell = MEOW out (-4e6), airdrop = MEOW in
-    // (+777 → dust), ambiguous = swap-like balances with no DEX program: the new
-    // measure needs no program whitelist, so its MEOW inflow is an entry too,
+    // buy = MEOW in funded by USDC out (+5e6 MEOW = $1.00) → the one funded buy.
+    // sell = MEOW out against USDC in → one funded sell.
+    // airdrop = MEOW in (+777 → dust, and no funding leg).
+    // ambiguous = MEOW in AND USDC in: two inflows, no funding leg paid — a
+    // movement, never a funded buy (the D4 definition).
     // wrap = WSOL only (funding leg).
-    expect(sample.entries24h).toBe(2);
+    expect(sample.entries24h).toBe(1);
     expect(sample.exits24h).toBe(1);
+    expect(sample.copyableTrades24h).toBe(3); // buy, sell, ambiguous all moved a coin
     expect(sample.lastEntryAt).toBe(new Date(NOW - 30 * 60_000).toISOString());
     expect(sample.lastTradeAt).toBe(new Date(NOW - 30 * 60_000).toISOString());
     expect(sample.scannedTxs).toBe(5);
@@ -445,8 +448,12 @@ describe('public RPC wallet activity', () => {
     expect(sample.lastEntryAt).toBeNull();
     expect(sample.scannedTxs).toBe(0);
     expect(
-      measureCopyableActivity([], { nowMs: NOW, lookbackHours: 24, minTradeUsdMicro: 1_000_000n, priceOf: () => null })
-        .scannedTxs,
+      measureCopyableActivity([], {
+        nowMs: NOW,
+        lookbackHours: 24,
+        minTradeUsdMicro: 1_000_000n,
+        priceOf: () => null,
+      }).scannedTxs,
     ).toBe(0);
   });
 
@@ -489,7 +496,9 @@ describe('public RPC wallet activity', () => {
       const res = await provider.walletActivity(leader, {
         lookbackHours: 24,
         maxTxScans: 10,
-        nowMs: Date.now(),
+        // The stub's block times are anchored to NOW; measuring against the
+        // real clock would fall outside the 24h window a day after NOW.
+        nowMs: NOW,
         priceOf: async (mint) => (mint === MEOW ? 200_000_000n : null),
       });
       expect(res.ok).toBe(true);

@@ -1,7 +1,7 @@
 /**
  * Generates fixtures/demo-timeline.json — a deterministic, explicitly
  * FICTIONAL 28-second replay inspired by the reference post. Every value is
- * invented: $52 -> $4,939, 48 closes, 36 winners, handoffs at the compressed
+ * invented: $52 -> $4,939, 48 closes, 36 winners, switches at the compressed
  * equivalents of 05:16 and 13:55. Demo fixtures never touch live tables.
  *
  * Run: pnpm --filter @zcode-bot/server run fixtures:generate
@@ -25,8 +25,8 @@ const USD = (n: number) => BigInt(Math.round(n * 1e6)).toString();
 
 const DURATION = 28;
 // Compressed clock: 24h -> 28s. 05:16 -> 6.15s ; 13:55 -> 16.24s.
-const HANDOFF1_T = (+(5 * 3600 + 16 * 60) / (24 * 3600)) * DURATION;
-const HANDOFF2_T = (+(13 * 3600 + 55 * 60) / (24 * 3600)) * DURATION;
+const SWITCH1_T = (+(5 * 3600 + 16 * 60) / (24 * 3600)) * DURATION;
+const SWITCH2_T = (+(13 * 3600 + 55 * 60) / (24 * 3600)) * DURATION;
 
 interface CloseEvent {
   t: number;
@@ -44,9 +44,9 @@ interface MirrorEvent {
   copyUsd: number;
   pnlUsd: number | null;
 }
-interface HandoffEvent {
+interface SwitchEvent {
   t: number;
-  type: 'handoff';
+  type: 'switch';
   fromHandle: string;
   fromRank: number;
   toHandle: string | null;
@@ -54,7 +54,7 @@ interface HandoffEvent {
   reason: string;
   equityAfterUsdMicro: string;
 }
-type TimelineEvent = CloseEvent | MirrorEvent | HandoffEvent;
+type TimelineEvent = CloseEvent | MirrorEvent | SwitchEvent;
 
 function phasePnls(
   rng: () => number,
@@ -109,7 +109,7 @@ function build() {
       handle: 'ape_vasco',
       rank: 1,
       from: 0,
-      to: HANDOFF1_T,
+      to: SWITCH1_T,
       startUsd: 52,
       endUsd: 73,
       wins: 3,
@@ -120,8 +120,8 @@ function build() {
     {
       handle: 'moonpie_max',
       rank: 3,
-      from: HANDOFF1_T,
-      to: HANDOFF2_T,
+      from: SWITCH1_T,
+      to: SWITCH2_T,
       startUsd: 73,
       endUsd: 520,
       wins: 15,
@@ -132,7 +132,7 @@ function build() {
     {
       handle: 'lunadegen',
       rank: 2,
-      from: HANDOFF2_T,
+      from: SWITCH2_T,
       to: DURATION,
       startUsd: 520,
       endUsd: 4939,
@@ -152,7 +152,7 @@ function build() {
     const span = phase.to - phase.from;
     const net = phase.endUsd - phase.startUsd;
     // Order: wins/losses interleaved, but the final TWO closes of a fired
-    // trader are the consecutive losses that trigger the handoff.
+    // trader are the consecutive losses that trigger the switch.
     const pnls = phasePnls(rng, phase.wins, phase.losses, net, phase.lossAvg);
     const seq: number[] = [];
     const winList = pnls.filter((p) => p > 0);
@@ -253,12 +253,12 @@ function build() {
       });
     }
 
-    // Handoff at the end of the phase (last phase has none).
+    // Switch at the end of the phase (last phase has none).
     if (phase.to < DURATION) {
       const next = PHASES.find((p) => p.from === phase.to);
       events.push({
         t: +phase.to.toFixed(2),
-        type: 'handoff',
+        type: 'switch',
         fromHandle: phase.handle,
         fromRank: phase.rank,
         toHandle: next ? next.handle : null,
@@ -277,8 +277,8 @@ function build() {
       fictional: true as const,
       label: 'FICTIONAL DEMO · NOT A PERFORMANCE CLAIM',
       durationSeconds: DURATION,
-      handoff1Seconds: +HANDOFF1_T.toFixed(2),
-      handoff2Seconds: +HANDOFF2_T.toFixed(2),
+      switch1Seconds: +SWITCH1_T.toFixed(2),
+      switch2Seconds: +SWITCH2_T.toFixed(2),
       inspiredByReference: true,
     },
     start: { equityUsdMicro: USD(52), handle: 'ape_vasco', weeklyRank: 1 },

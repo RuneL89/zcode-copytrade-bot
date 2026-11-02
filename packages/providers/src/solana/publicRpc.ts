@@ -155,6 +155,45 @@ export class PublicSolanaProvider {
   }
 
   /**
+   * Newest-first signature page for one address (the D5 watch-list poll's
+   * cheap half: signatures first, details only for what is new). Throws on a
+   * transport failure — the caller then falls back to Helius.
+   */
+  async recentSignatures(
+    address: string,
+    limit = 25,
+  ): Promise<Array<{ signature: string; slot: number; blockTime: number | null }>> {
+    const rows = await this.rpc<
+      Array<{ signature: string; slot: number; blockTime: number | null; err: null | object }>
+    >('getSignaturesForAddress', [address, { limit }]);
+    return (rows ?? []).filter((r) => Boolean(r.signature));
+  }
+
+  /**
+   * One signature's detail, signer-attributed, through the free node. Null
+   * when the transaction is unreadable or was not signed by the address.
+   */
+  async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
+    const tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
+      signature,
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
+    ]);
+    if (!tx) return null;
+    const meta = tx.meta as { err?: unknown } | undefined;
+    return HeliusProvider.toSignerTxSummary(address, {
+      signature: signatureOf({
+        signature,
+        transaction: tx.transaction as { signatures?: string[] },
+      }),
+      slot: (tx.slot as number) ?? 0,
+      transactionIndex: (tx.transactionIndex as number) ?? 0,
+      blockTime: (tx.blockTime as number | null) ?? null,
+      err: meta?.err != null,
+      raw: tx,
+    });
+  }
+
+  /**
    * Copyable-activity sample for one wallet over the lookback window.
    *
    * 1. Signature walk (newest-first, stops at the window edge) — up to 500 rows.
@@ -169,8 +208,11 @@ export class PublicSolanaProvider {
     const maxTxScans = opts.maxTxScans ?? DEFAULT_MAX_TX_SCANS;
     const maxPriceMints = opts.maxPriceMints ?? DEFAULT_MAX_PRICE_MINTS;
     const minTradeUsdMicro = opts.minTradeUsdMicro ?? DEFAULT_MIN_TRADE_USD_MICRO;
+    // One clock for the whole read: the window cutoff must honour the injected
+    // clock, or a test that pins `nowMs` silently measures an empty window.
+    const nowMs = opts.nowMs ?? Date.now();
     try {
-      const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
+      const cutoffSec = Math.floor(nowMs / 1000) - lookbackHours * 3600;
 
       // Preferred path: batch transaction fetch (Helius). Deep, cheap, and it
       // does not fight the public node's per-call rate limit.
@@ -205,9 +247,12 @@ export class PublicSolanaProvider {
             if (!summary) continue;
             summaries.push(summary);
             const meta = (row.raw as { meta?: { preTokenBalances?: []; postTokenBalances?: [] } }).meta;
-            const collect = (list: Array<{ mint: string; uiTokenAmount?: { decimals?: number } }> | undefined) => {
+            const collect = (
+              list: Array<{ mint: string; uiTokenAmount?: { decimals?: number } }> | undefined,
+            ) => {
               for (const b of list ?? []) {
-                if (typeof b.uiTokenAmount?.decimals === 'number') decimalsByMint.set(b.mint, b.uiTokenAmount.decimals);
+                if (typeof b.uiTokenAmount?.decimals === 'number')
+                  decimalsByMint.set(b.mint, b.uiTokenAmount.decimals);
               }
             };
             collect(meta?.preTokenBalances);
@@ -217,7 +262,15 @@ export class PublicSolanaProvider {
           if (sawOlder || rows.length < 100) break;
         }
         if (fetched === 0 && failedTxs > 0) return { ok: false, reason: 'transaction fetch failed' };
-        return this.sample(summaries, decimalsByMint, opts, lookbackHours, maxPriceMints, minTradeUsdMicro, maxTxScans);
+        return this.sample(
+          summaries,
+          decimalsByMint,
+          opts,
+          lookbackHours,
+          maxPriceMints,
+          minTradeUsdMicro,
+          maxTxScans,
+        );
       }
 
       const signatures: Array<{ signature: string; slot: number; blockTime: number }> = [];
@@ -299,16 +352,27 @@ export class PublicSolanaProvider {
         const summary = HeliusProvider.toSignerTxSummary(address, leaderTx);
         if (!summary) continue;
         summaries.push(summary);
-        const collect = (list: Array<{ mint: string; uiTokenAmount?: { decimals?: number } }> | undefined) => {
+        const collect = (
+          list: Array<{ mint: string; uiTokenAmount?: { decimals?: number } }> | undefined,
+        ) => {
           for (const b of list ?? []) {
-            if (typeof b.uiTokenAmount?.decimals === 'number') decimalsByMint.set(b.mint, b.uiTokenAmount.decimals);
+            if (typeof b.uiTokenAmount?.decimals === 'number')
+              decimalsByMint.set(b.mint, b.uiTokenAmount.decimals);
           }
         };
         collect((tx.meta as { preTokenBalances?: [] })?.preTokenBalances);
         collect((tx.meta as { postTokenBalances?: [] })?.postTokenBalances);
       }
       if (fetched === 0 && failedTxs > 0) return { ok: false, reason: 'all transactions unreadable' };
-      return this.sample(summaries, decimalsByMint, opts, lookbackHours, maxPriceMints, minTradeUsdMicro, maxTxScans);
+      return this.sample(
+        summaries,
+        decimalsByMint,
+        opts,
+        lookbackHours,
+        maxPriceMints,
+        minTradeUsdMicro,
+        maxTxScans,
+      );
     } catch (e) {
       return { ok: false, reason: (e as Error).message };
     }

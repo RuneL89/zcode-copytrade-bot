@@ -25,10 +25,18 @@ export function App() {
   const { state, connected } = useDashboard();
 
   useEffect(() => {
-    void api
-      .bootstrap()
-      .then((b) => setAuthState(b.needsSetup ? 'needsSetup' : 'loggedOut'))
-      .catch(() => setAuthState('loggedOut'));
+    // A valid session cookie must survive a reload: probe the state endpoint
+    // first and only fall back to the setup/login decision when it is refused.
+    // (Bootstrap alone cannot tell "needs setup" from "already signed in".)
+    void api.state().then(
+      () => setAuthState('loggedIn'),
+      () => {
+        void api
+          .bootstrap()
+          .then((b) => setAuthState(b.needsSetup ? 'needsSetup' : 'loggedOut'))
+          .catch(() => setAuthState('loggedOut'));
+      },
+    );
     const onUnauthorized = () => {
       setAuthState('loggedOut');
       void api.bootstrap().then((b) => setAuthState(b.needsSetup ? 'needsSetup' : 'loggedOut'));
@@ -62,7 +70,7 @@ export function App() {
   }
 
   return (
-    <div className="relative min-h-[100svh] max-w-[480px] lg:max-w-[600px] mx-auto px-4">
+    <div className="relative min-h-[100svh] w-full max-w-[600px] min-[900px]:max-w-[1080px] mx-auto px-4">
       <div className="aurora" aria-hidden="true">
         <div className="blob-cyan" />
         <div className="blob-violet" />
@@ -78,25 +86,29 @@ export function App() {
         ) : (
           <ConnectingSkeleton />
         ))}
-      {route === 'ops' && <OperationsPage onBack={() => go('dashboard')} />}
+      {route === 'ops' && <OperationsPage state={state} onBack={() => go('dashboard')} />}
       {route === 'settings' && <SettingsPage onBack={() => go('dashboard')} />}
       {route === 'audit' && <AuditPage onBack={() => go('dashboard')} />}
 
-      <nav className="fixed bottom-3 left-1/2 -translate-x-1/2 z-40 card !bg-glassstrong !rounded-full px-1.5 py-1.5 flex gap-0.5 pb-[calc(6px+env(safe-area-inset-bottom))]">
-        {NAV.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => go(id)}
-            aria-current={route === id ? 'page' : undefined}
-            className={`flex flex-col items-center justify-center gap-0.5 min-w-[64px] min-h-[44px] rounded-full transition-colors cursor-pointer ${
-              route === id ? 'bg-accentdim text-accent' : 'text-muted hover:text-ink'
-            }`}
-          >
-            <Icon size={17} />
-            <span className="text-[9.5px] font-semibold tracking-wide">{label}</span>
-          </button>
-        ))}
-      </nav>
+      {/* Bounded by the layout viewport (inset-x-0 + max-w-full), never by vw:
+          at 200% zoom the bar scrolls inside itself instead of clipping. */}
+      <div className="fixed inset-x-0 bottom-3 z-40 flex justify-center px-4 pointer-events-none">
+        <nav className="card !bg-glassstrong !rounded-full px-1.5 py-1.5 flex gap-0.5 pb-[calc(6px+env(safe-area-inset-bottom))] max-w-full overflow-x-auto pointer-events-auto">
+          {NAV.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => go(id)}
+              aria-current={route === id ? 'page' : undefined}
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[64px] min-h-[44px] rounded-full transition-colors cursor-pointer ${
+                route === id ? 'bg-accentdim text-accent' : 'text-muted hover:text-ink'
+              }`}
+            >
+              <Icon size={17} />
+              <span className="text-[9.5px] font-semibold tracking-wide">{label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
     </div>
   );
 }

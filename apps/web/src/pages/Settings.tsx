@@ -8,16 +8,17 @@ type SettingsTab = 'controls' | 'risk' | 'imports' | 'keys' | 'live';
 interface SettingsView {
   mode: string;
   armed: boolean;
-  risk: Record<string, number | string>;
+  risk: Record<string, number | string | boolean>;
   paperAssumptions: { slippageBps: number; feeBps: number; note: string };
   providers: {
     heliusConfigured: boolean;
     jupiter: { baseUrl: string; keyConfigured: boolean };
     telegramConfigured: boolean;
     fomoWebConfigured: boolean;
+    fomoApiConfigured: boolean;
+    fomoApiBaseUrl: string;
   };
   wallet: { exists: boolean; publicKey: string | null };
-  snapshot: { snapshotId: string; hash: string; createdAt: string; candidates: number } | null;
   readiness: { ready: boolean; items: Array<{ id: string; ok: boolean; label: string; detail: string }> };
   control: { newEntriesPaused: boolean; emergencyStopped: boolean };
   liveAckString: string;
@@ -37,8 +38,48 @@ const EDITABLE_NUMBER_FIELDS = [
   'PRICE_MAX_AGE_SECONDS',
 ] as const;
 
+/** D4 watch-list / promotion / roster thresholds (safe to tune while running). */
+const PIPELINE_NUMBER_FIELDS = [
+  'ADMISSION_MIN_BUYS_24H',
+  'ADMISSION_MAX_LAST_BUY_HOURS',
+  'PROMOTION_MIN_CLOSED',
+  'PROMOTION_MIN_NET_USD',
+  'PROMOTION_MAX_LAST_BUY_HOURS',
+  'WATCH_LIST_SIZE',
+  'BENCH_TARGET',
+  'ROSTER_SIZE',
+  'PER_MINT_CAP_USD',
+  'WATCH_POLL_MS',
+  'ROSTER_POLL_MS',
+  'COOLING_SCAN_MS',
+  'WATCH_EVICTION_DAYS',
+  'MIN_HIRE_HEADROOM_USD',
+  'DISCOVERY_MIN_INTERVAL_MS',
+] as const;
+
+/** Fields where 0 is a legal, meaningful value (not "unset"). */
+const ZERO_ALLOWED_FIELDS = new Set<string>(['PER_MINT_CAP_USD']);
+
+const ALL_NUMBER_FIELDS = [...EDITABLE_NUMBER_FIELDS, ...PIPELINE_NUMBER_FIELDS];
+type NumberField = (typeof ALL_NUMBER_FIELDS)[number];
+/** The boolean field is rendered separately but shares the help map. */
+type RiskField = NumberField | 'SHADOW_BACKFILL_ON_ADMIT';
+
 const inputCls =
   'w-full rounded-[12px] border border-glassborder bg-inset px-3 py-2 text-[12px] text-ink placeholder:text-faint';
+
+/**
+ * Field help for the risk form. MIN_PER_BUY_USD is a hard floor (D1): every
+ * copied buy is at least this, and a leader buy that scales below it is copied
+ * at the floor, never skipped.
+ */
+const RISK_FIELD_HELP: Partial<Record<RiskField, string>> = {
+  MIN_PER_BUY_USD:
+    'Hard floor: every copied buy is at least this. Leader buys that scale below it are copied at the floor — never skipped.',
+  MAX_PER_BUY_USD: 'Ceiling: no copied buy is ever larger than this.',
+  PER_MINT_CAP_USD: '0 disables the per-mint cap.',
+  SHADOW_BACKFILL_ON_ADMIT: 'Seed each new watch entry from the admission scan (observed trades only).',
+};
 
 export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [tab, setTab] = useState<SettingsTab>('controls');
@@ -59,9 +100,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
   // Risk limits are drafted locally and saved in one explicit commit.
   const [riskDraft, setRiskDraft] = useState<Record<string, string>>({});
+  const [backfillDraft, setBackfillDraft] = useState(true);
   useEffect(() => {
     if (view) {
-      setRiskDraft(Object.fromEntries(EDITABLE_NUMBER_FIELDS.map((f) => [f, String(view.risk[f] ?? '')])));
+      setRiskDraft(Object.fromEntries(ALL_NUMBER_FIELDS.map((f) => [f, String(view.risk[f] ?? '')])));
+      setBackfillDraft(view.risk.SHADOW_BACKFILL_ON_ADMIT !== false);
     }
   }, [view]);
 
@@ -76,11 +119,16 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
   const saveRiskLimits = async () => {
     const current = view?.risk;
-    const patch: Record<string, number> = {};
-    for (const f of EDITABLE_NUMBER_FIELDS) {
+    const patch: Record<string, number | boolean> = {};
+    for (const f of ALL_NUMBER_FIELDS) {
       const n = Number(riskDraft[f]);
-      if (!Number.isFinite(n) || n <= 0) {
-        setRiskSave({ busy: false, ok: false, text: `${f}: must be a positive number` });
+      const zeroAllowed = ZERO_ALLOWED_FIELDS.has(f);
+      if (!Number.isFinite(n) || n < 0 || (n === 0 && !zeroAllowed)) {
+        setRiskSave({
+          busy: false,
+          ok: false,
+          text: `${f}: must be ${zeroAllowed ? 'zero or a positive number' : 'a positive number'}`,
+        });
         return;
       }
       if (f === 'MAX_DEPLOYED_PCT' && n > 100) {
@@ -89,12 +137,16 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       }
       patch[f] = Math.round(n);
     }
+    patch.SHADOW_BACKFILL_ON_ADMIT = backfillDraft;
     setRiskSave({ busy: true, ok: null, text: null });
     try {
       const r = await api.patchSettings(patch);
-      const changed = current
-        ? EDITABLE_NUMBER_FIELDS.filter((f) => Number(r.risk[f]) !== Number(current[f]))
+      const changed: string[] = current
+        ? ALL_NUMBER_FIELDS.filter((f) => Number(r.risk[f]) !== Number(current[f]))
         : [];
+      if (current && Boolean(r.risk.SHADOW_BACKFILL_ON_ADMIT) !== backfillDraft) {
+        changed.push('SHADOW_BACKFILL_ON_ADMIT');
+      }
       const diff =
         changed.length > 0
           ? changed.map((f) => `${f}: ${String(current?.[f])} → ${String(r.risk[f])}`).join(' · ')
@@ -232,13 +284,64 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       {f}
                       <input
                         type="number"
+                        data-testid={`risk-${f}`}
                         value={riskDraft[f] ?? ''}
                         onChange={(e) => setRiskDraft((d) => ({ ...d, [f]: e.target.value }))}
                         className={`mt-1 ${inputCls}`}
                       />
+                      {RISK_FIELD_HELP[f] && (
+                        <span
+                          data-testid={`risk-help-${f}`}
+                          className="mt-1 block font-sans text-[10px] leading-relaxed text-muted"
+                        >
+                          {RISK_FIELD_HELP[f]}
+                        </span>
+                      )}
                     </label>
                   ))}
                 </div>
+                <p className="label !text-[9.5px] !text-faint mt-3">
+                  These are the D4 watch-list / promotion / roster thresholds: who enters the watch list, when
+                  a wallet is promoted to a roster chair, and how often each side is polled. Milliseconds are
+                  milliseconds; 0 in PER_MINT_CAP_USD disables the cap.
+                </p>
+                <div className="grid grid-cols-2 gap-3 mt-2">
+                  {PIPELINE_NUMBER_FIELDS.map((f) => (
+                    <label key={f} className="mono text-[9.5px] text-faint">
+                      {f}
+                      <input
+                        type="number"
+                        data-testid={`risk-${f}`}
+                        value={riskDraft[f] ?? ''}
+                        onChange={(e) => setRiskDraft((d) => ({ ...d, [f]: e.target.value }))}
+                        className={`mt-1 ${inputCls}`}
+                      />
+                      {RISK_FIELD_HELP[f] && (
+                        <span
+                          data-testid={`risk-help-${f}`}
+                          className="mt-1 block font-sans text-[10px] leading-relaxed text-muted"
+                        >
+                          {RISK_FIELD_HELP[f]}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+                <label className="mt-3 flex items-start gap-2 mono text-[9.5px] text-faint">
+                  <input
+                    type="checkbox"
+                    data-testid="risk-SHADOW_BACKFILL_ON_ADMIT"
+                    checked={backfillDraft}
+                    onChange={(e) => setBackfillDraft(e.target.checked)}
+                    className="mt-0.5 accent-[var(--color-accent)]"
+                  />
+                  <span>
+                    SHADOW_BACKFILL_ON_ADMIT
+                    <span className="mt-0.5 block font-sans text-[10px] leading-relaxed text-muted">
+                      {RISK_FIELD_HELP.SHADOW_BACKFILL_ON_ADMIT}
+                    </span>
+                  </span>
+                </label>
                 <button
                   onClick={() => void saveRiskLimits()}
                   disabled={riskSave.busy}
@@ -262,8 +365,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 <p className="label !text-[9.5px] !text-faint mt-3">
                   Saved settings survive restarts · copy_scale {String(view.risk.COPY_SCALE)} ·
                   loss_streak_unit {String(view.risk.LOSS_STREAK_UNIT)} · fire_position_policy{' '}
-                  {String(view.risk.FIRE_POSITION_POLICY)} · candidate_replacement_mode{' '}
-                  {String(view.risk.CANDIDATE_REPLACEMENT_MODE)}
+                  {String(view.risk.FIRE_POSITION_POLICY)}
                 </p>
               </section>
             </TabPanel>
@@ -272,10 +374,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           {tab === 'imports' && (
             <TabPanel>
               <section className="card p-4 mb-3.5">
-                <p className="label">Manual FOMO leaderboard import</p>
+                <p className="label">Manual FOMO leaderboard import (fallback only)</p>
                 <p className="text-[11px] text-muted mt-1">
-                  Paste JSON or CSV (see fixtures/leaderboard.example.*). Validation, duplicate handling, and
-                  audit are applied server-side.
+                  The automatic inlet is the fomoapi leaderboard (D3). Use this paste-in only when it is
+                  unavailable: paste JSON or CSV (see fixtures/leaderboard.example.*). Validation, duplicate
+                  handling, and audit are applied server-side.
                 </p>
                 <div className="flex gap-2 mt-2">
                   {(['json', 'csv'] as const).map((f) => (
@@ -319,42 +422,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   Import candidates
                 </button>
               </section>
-
-              <section className="card p-4">
-                <p className="label">ZCode recommendation (JSON import fallback)</p>
-                <p className="text-[11px] text-muted mt-1">
-                  Same validation as the MCP submission path. Requires a CURRENT snapshot (id + sha256) — see
-                  docs/ZCODE_AUTOMATION.md.
-                </p>
-                <textarea
-                  value={recText}
-                  onChange={(e) => setRecText(e.target.value)}
-                  rows={4}
-                  className="w-full mt-2 rounded-[12px] border border-glassborder bg-inset p-3 text-[11px] mono text-ink placeholder:text-faint"
-                  placeholder='{"schemaVersion":1,"recommendationId":"…","snapshotId":"…",…}'
-                />
-                <button
-                  onClick={async () => {
-                    try {
-                      const payload = JSON.parse(recText);
-                      const r = await api.importRecommendation(payload);
-                      setMsg(r.ok ? 'recommendation accepted' : `rejected: ${r.code}`);
-                      void load();
-                    } catch (e) {
-                      setMsg(`invalid JSON or submission failed: ${(e as Error).message}`);
-                    }
-                  }}
-                  className="mt-2 rounded-[12px] bg-accentdim border border-accentborder text-accent text-[12px] font-semibold px-4 py-2 cursor-pointer"
-                >
-                  Submit recommendation
-                </button>
-                {view.snapshot && (
-                  <p className="mono text-[9px] text-faint mt-2 break-all">
-                    CURRENT SNAPSHOT {view.snapshot.snapshotId} · {view.snapshot.candidates} candidates · hash{' '}
-                    {view.snapshot.hash.slice(0, 16)}… · {view.snapshot.createdAt}
-                  </p>
-                )}
-              </section>
             </TabPanel>
           )}
 
@@ -364,6 +431,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 heliusConfigured={view.providers.heliusConfigured}
                 jupiterKeyConfigured={view.providers.jupiter.keyConfigured}
                 jupiterBaseUrl={view.providers.jupiter.baseUrl}
+                fomoApiConfigured={view.providers.fomoApiConfigured}
+                fomoApiBaseUrl={view.providers.fomoApiBaseUrl}
                 onSaved={(m) => {
                   setMsg(m);
                   void load();
@@ -441,7 +510,16 @@ function ModeProvidersCard({ view }: { view: SettingsView }) {
           {view.providers.jupiter.keyConfigured ? 'configured' : 'not set (free lite tier)'}
         </li>
         <li>Telegram notifications: {view.providers.telegramConfigured ? 'on' : 'off'}</li>
-        <li>FOMO web discovery: {view.providers.fomoWebConfigured ? 'configured' : 'manual import only'}</li>
+        <li data-testid="provider-fomoapi-summary">
+          fomoapi discovery ({view.providers.fomoApiBaseUrl}):{' '}
+          <strong className={view.providers.fomoApiConfigured ? 'text-pos' : 'text-neg'}>
+            {view.providers.fomoApiConfigured ? 'configured' : 'not configured'}
+          </strong>
+        </li>
+        <li>
+          FOMO web capture (fallback):{' '}
+          {view.providers.fomoWebConfigured ? 'configured' : 'manual import only'}
+        </li>
         <li className="break-all">
           Wallet:{' '}
           <span className="mono text-[11px]">
@@ -466,11 +544,15 @@ function ProviderKeysCard({
   heliusConfigured,
   jupiterKeyConfigured,
   jupiterBaseUrl,
+  fomoApiConfigured,
+  fomoApiBaseUrl,
   onSaved,
 }: {
   heliusConfigured: boolean;
   jupiterKeyConfigured: boolean;
   jupiterBaseUrl: string;
+  fomoApiConfigured: boolean;
+  fomoApiBaseUrl: string;
   onSaved: (message: string) => void;
 }) {
   const [heliusKey, setHeliusKey] = useState('');
@@ -566,6 +648,18 @@ function ProviderKeysCard({
       >
         {busy ? 'Saving…' : 'Save keys'}
       </button>
+      <div className="flex items-center gap-2 mt-3 border-t border-insetborder pt-3">
+        <p className="label !text-[9.5px] w-16 shrink-0">FOMOAPI</p>
+        <span data-testid="provider-fomoapi" className="text-[11px] text-muted">
+          discovery inlet ({fomoApiBaseUrl}):{' '}
+          <strong className={fomoApiConfigured ? 'text-pos' : 'text-neg'}>
+            {fomoApiConfigured ? 'configured' : 'not configured'}
+          </strong>
+        </span>
+      </div>
+      <p className="label !text-[9.5px] !text-faint mt-1">
+        FOMOAPI_KEY is read from .env only — set it there and restart; it is never entered or shown here.
+      </p>
     </section>
   );
 }

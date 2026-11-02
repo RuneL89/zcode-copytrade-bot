@@ -293,6 +293,35 @@ export class HeliusProvider {
   }
 
   /**
+   * One signature's detail, signer-attributed to `address` (D5 watch-list
+   * path: the 5-minute poll reads signatures cheaply and only pays for the
+   * transactions it has not seen). One `getTransaction` call; null when the
+   * transaction is unreadable or was not signed by the address — the caller
+   * advances past it rather than guessing.
+   */
+  async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
+    const tx = await this.rpc<{
+      slot?: number;
+      blockTime?: number | null;
+      transactionIndex?: number;
+      meta?: { err?: unknown } | null;
+      transaction?: { signatures?: string[] };
+    } | null>('getTransaction', [
+      signature,
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
+    ]);
+    if (!tx) return null;
+    return HeliusProvider.toSignerTxSummary(address, {
+      signature: signatureOf({ signature, transaction: tx.transaction }),
+      slot: tx.slot ?? 0,
+      transactionIndex: tx.transactionIndex ?? 0,
+      blockTime: tx.blockTime ?? null,
+      err: tx.meta?.err != null,
+      raw: tx,
+    });
+  }
+
+  /**
    * Walk an address's recent signatures backwards until the 24h cutoff and
    * return: swap-count in the window + hours since the most recent one.
    * Used by the day-trader pre-hire gate. Page-capped so a hyperactive
@@ -597,10 +626,7 @@ export class HeliusProvider {
     // message.header.numRequiredSignatures. Honour both, or attribution is
     // silently empty on one of the two transports.
     const header = (message as { header?: { numRequiredSignatures?: number } } | undefined)?.header;
-    const requiredSigners = Math.min(
-      Math.max(header?.numRequiredSignatures ?? 1, 0),
-      rawKeys.length,
-    );
+    const requiredSigners = Math.min(Math.max(header?.numRequiredSignatures ?? 1, 0), rawKeys.length);
     const signerKeys = new Set<string>();
     for (let i = 0; i < requiredSigners; i++) {
       const key = rawKeys[i];

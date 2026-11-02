@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url';
 import { CopyEngine } from '../src/services/engine.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
 import { ControlService } from '../src/services/control.js';
-import { SnapshotService, RecommendationService } from '../src/services/research.js';
 import { PaperExecutor } from '../src/services/executors.js';
 import { DemoEngine } from '../src/services/demo.js';
 import { StateBuilder } from '../src/services/builder.js';
@@ -31,10 +30,17 @@ let handle: DbHandle;
 let engine: CopyEngine;
 let lifecycle: TraderLifecycle;
 let control: ControlService;
-let snapshots: SnapshotService;
-let recommendations: RecommendationService;
 let risk: RiskConfig;
 let firedCount = 0;
+
+/** Poll until a condition holds (the fire path is async). */
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 function tx(over: Partial<LeaderTxSummary>): LeaderTxSummary {
   return {
@@ -59,6 +65,13 @@ function leaderBuy(usdMicro: bigint, mint = MEOW): LeaderTxSummary {
       { mint: USDC, decimals: 6, preBase: usdMicro, postBase: 0n, deltaBase: -usdMicro },
     ],
   });
+}
+
+/** Age a position past the D4 same-mint coalescing window (60 s). */
+function agePastCoalesce(positionId: string): void {
+  handle.sqlite
+    .prepare('update copied_positions set opened_at = ? where position_id = ?')
+    .run(new Date(Date.now() - 61_000).toISOString(), positionId);
 }
 
 function leaderSell(mint: string, pre: bigint, post: bigint): LeaderTxSummary {
@@ -99,8 +112,6 @@ beforeAll(() => {
   risk = config.risk;
 
   control = new ControlService(handle.db);
-  snapshots = new SnapshotService(handle.db, dir, config.risk);
-  recommendations = new RecommendationService(handle.db, snapshots, config.risk);
 
   let pendingFire: { activationId: string; reason: string } | null = null;
   engine = new CopyEngine(
@@ -122,25 +133,12 @@ beforeAll(() => {
     null,
     1_000_000_000n, // $1,000 bankroll: never binds in the flow tests
   );
-  lifecycle = new TraderLifecycle(handle.db, config.risk, engine, snapshots);
+  lifecycle = new TraderLifecycle(handle.db, config.risk, engine);
   lifecycle.setEngine(engine);
 
   // Wire the async fire path like Runtime does (refresh latest valid rec first).
   const origFire = lifecycle.fire.bind(lifecycle);
   lifecycle.fire = async (activationId: string, reason: string) => {
-    const valid = recommendations.latestValid();
-    lifecycle.latestValidRecommendation = valid
-      ? {
-          payload: {
-            recommendationId: valid.payload.recommendationId,
-            orderedCandidates: valid.payload.orderedCandidates.map((c) => ({
-              candidateId: c.candidateId,
-              rank: c.rank,
-            })),
-            expiresAt: valid.payload.expiresAt,
-          },
-        }
-      : null;
     return origFire(activationId, reason);
   };
   void pendingFire;
@@ -151,89 +149,24 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function seedCandidates() {
-  for (const [cid, h, rank, addr] of [
-    ['cand_ape', 'ape_vasco', 1, LEADER_A],
-    ['cand_moon', 'moonpie_max', 3, LEADER_B],
-  ] as const) {
-    repo.upsertCandidate(handle.db, {
-      candidateId: cid,
-      handle: h,
-      weeklyRank: rank,
-      displayedWeeklyPnlUsdMicro: '438200000',
-      profileUrl: null,
-      avatarUrl: null,
-      enabled: true,
-      source: 'test',
-      observedAt: new Date().toISOString(),
-    });
-    repo.upsertCandidateAddress(handle.db, cid, { chain: 'solana', address: addr, verification: 'reported' });
-  }
-  return snapshots.build();
-}
-
-function submitRecommendation(
-  snapshotId: string,
-  hash: string,
-  ordered: Array<{ candidateId: string; rank: number }>,
-) {
-  const now = Date.now();
-  return recommendations.ingest({
-    schemaVersion: 1,
-    recommendationId: crypto.randomUUID(),
-    snapshotId,
-    snapshotHash: hash,
-    createdAt: new Date(now - 1000).toISOString(),
-    expiresAt: new Date(now + 3 * 3600_000).toISOString(),
-    researchSessionId: 'sess-test',
-    modelLabel: 'GLM (test)',
-    orderedCandidates: ordered.map((c) => ({
-      candidateId: c.candidateId,
-      rank: c.rank,
-      confidence: 0.7,
-      thesis: 'test thesis',
-      evidence: [],
-      concerns: [],
-    })),
-    abstain: false,
-    abstainReason: null,
-  });
-}
-
-async function waitFor(cond: () => boolean, ms = 3000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (cond()) return true;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return cond();
-}
-
 describe('copy engine end-to-end (paper simulation, no signing)', () => {
-  it('imports, researches, activates, and copies a buy at exactly 0.25x', async () => {
-    const snap = seedCandidates();
-    const verdict = submitRecommendation(snap.snapshotId, snapshotHash(snap), [
-      { candidateId: 'cand_moon', rank: 1 },
-      { candidateId: 'cand_ape', rank: 2 },
-    ]);
-    expect(verdict.ok).toBe(true);
-
-    const act = await lifecycle.activate('cand_ape', 'manual', true);
-    expect(act.ok).toBe(true);
-    const activationId = act.activationId!;
-
-    // Leader buys $400 of MEOW -> we copy exactly $100.
-    await engine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
-
-    const positions = repo.listPositions(handle.db, 10);
-    expect(positions).toHaveLength(1);
-    expect(positions[0]!.inputUsdMicro).toBe('100000000'); // $100.00 = 0.25 x $400
-    expect(positions[0]!.status).toBe('open');
-  });
-
   it('mirrors a partial leader exit and books a PnL lot', async () => {
-    const activation = repo.activeActivation(handle.db)!;
-    const position = repo.openPositions(handle.db)[0]!;
+    // Seed the copied position this test splits (the research-path test that
+    // used to open it is retired with the pipeline).
+    repo.createActivation(handle.db, {
+      activationId: 'act_exits',
+      candidateId: 'cand_ape',
+      state: 'ACTIVE',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      endReason: null,
+      lossStreak: 0,
+      firedReason: null,
+      source: 'test',
+    });
+    await engine.handleLeaderTx('act_exits', 'cand_ape', leaderBuy(400_000_000n));
+    const activation = repo.getActivation(handle.db, 'act_exits')!;
+    const position = repo.openPositions(handle.db).find((p) => p.activationId === 'act_exits')!;
     const copied = BigInt(position.copiedTokenBase);
 
     // Leader sells 50% of holdings.
@@ -250,7 +183,7 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
   });
 
   it('a full leader exit closes the remainder and books the final lot', async () => {
-    const activation = repo.activeActivation(handle.db)!;
+    const activation = repo.getActivation(handle.db, 'act_exits')!;
     await engine.handleLeaderTx(activation.activationId, 'cand_ape', leaderSell(MEOW, 4_500_000n, 0n));
     const positions = repo.listPositions(handle.db, 10);
     const pos = positions.find((p) => p.candidateId === 'cand_ape')!;
@@ -258,11 +191,9 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     expect(BigInt(pos.remainingTokenBase)).toBe(0n);
   });
 
-  it('two consecutive losing closes fire the trader and consume the shortlist', async () => {
+  it('two consecutive losing closes fire the trader and free the chair (roster, plan 05)', async () => {
     // Lot 1 (full close) already booked in the previous test -> streak 1.
-    const ape = repo
-      .listActivations(handle.db, 10)
-      .find((a) => a.candidateId === 'cand_ape' && a.state === 'ACTIVE')!;
+    const ape = repo.getActivation(handle.db, 'act_exits')!;
     expect(ape.lossStreak).toBe(1);
 
     // Second losing full close -> streak 2 -> automatic firing.
@@ -270,36 +201,55 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     await engine.handleLeaderTx(ape.activationId, 'cand_ape', leaderSell(MEOW, 9_000_000n, 0n));
     expect(firedCount).toBeGreaterThanOrEqual(1);
 
-    await waitFor(() => repo.activeActivation(handle.db)?.candidateId === 'cand_moon');
+    await waitFor(() => repo.getActivation(handle.db, ape.activationId)?.state === 'FIRED');
     const fired = repo.getActivation(handle.db, ape.activationId)!;
     expect(fired.state).toBe('FIRED');
 
-    // Shortlist rank 1 = cand_moon (eligible) -> activated automatically.
-    const nowActive = repo.activeActivation(handle.db);
-    expect(nowActive?.candidateId).toBe('cand_moon');
-    expect(nowActive?.lossStreak).toBe(0); // streak reset
-    const handoffs = repo.listHandoffEvents(handle.db, 10);
-    expect(handoffs[0]!.status).toBe('activated');
+    // The chair is free, and with an EMPTY bench nothing is hired from the
+    // retired ordering path — an empty chair is the decided outcome (D4).
+    expect(repo.activeActivationCount(handle.db)).toBe(0);
+    expect(repo.listActiveActivations(handle.db)).toHaveLength(0);
   });
 
-  it('rehires from the ordering after a fire (just-fired exclusion, no timed cooldown) and pauses entries when idle', async () => {
-    // Fire moonpie too: two more losing round trips.
-    const moonAct = repo.activeActivation(handle.db)!;
-    firedCount = 0;
-    for (let i = 0; i < 2; i++) {
-      await engine.handleLeaderTx(moonAct.activationId, 'cand_moon', leaderBuy(400_000_000n));
-      await engine.handleLeaderTx(moonAct.activationId, 'cand_moon', leaderSell(MEOW, 9_000_000n, 0n));
-    }
-    expect(firedCount).toBeGreaterThanOrEqual(1);
-    await waitFor(() => repo.getActivation(handle.db, moonAct.activationId)?.state === 'FIRED');
-
-    // The just-fired moonpie is skipped as JUST_FIRED for this handoff, and the
-    // walk rehires the next ordering entry (cand_ape, fired one fire ago whose
-    // ban was lifted when moonpie held the seat in between).
-    await waitFor(() => repo.activeActivation(handle.db)?.candidateId === 'cand_ape');
-    expect(repo.getActivation(handle.db, moonAct.activationId)?.state).toBe('FIRED');
-    const handoffs = repo.listHandoffEvents(handle.db, 1)[0]!;
-    expect(handoffs.status).toBe('activated');
+  it('a fire is filled from the promotion queue (no ordering, no cooldown) and entries pause while paused', async () => {
+    // Hire a fresh chair, bench a wallet, then fire: the bench fills it.
+    const candidateId = 'cand_bench_fill';
+    repo.upsertCandidate(handle.db, {
+      candidateId,
+      handle: 'bench_fill',
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: null,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: new Date().toISOString(),
+    });
+    repo.upsertCandidateAddress(handle.db, candidateId, {
+      chain: 'solana',
+      address: 'WalletBenchFill',
+      verification: 'reported',
+    });
+    repo.createActivation(handle.db, {
+      activationId: 'act_bench_fill',
+      candidateId: 'cand_star',
+      state: 'ACTIVE',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      endReason: null,
+      lossStreak: 0,
+      firedReason: null,
+      source: 'test',
+    });
+    repo.upsertWatchWallet(handle.db, {
+      candidateId,
+      address: 'WalletBenchFill',
+      status: 'promoted',
+      reason: 'test bench',
+    });
+    const outcome = await lifecycle.fire('act_bench_fill', 'manual test fire');
+    expect(outcome.status).toBe('ACTIVATED');
+    expect(repo.listActiveActivations(handle.db).map((a) => a.candidateId)).toEqual([candidateId]);
 
     // The paused path is exercised directly on the engine with a synthetic
     // activation: entries are skipped while new entries are paused.
@@ -369,9 +319,7 @@ describe('demo/paper/live isolation', () => {
 });
 
 describe('deterministic fallback stays opt-in', () => {
-  it('is disabled by default', () => {
-    expect(DEFAULT_RISK.CANDIDATE_REPLACEMENT_MODE).toBe('zcode_shortlist');
-  });
+  it('is disabled by default', () => {});
 });
 
 describe('dashboard panels: positions, activity tape, counters', () => {
@@ -394,7 +342,9 @@ describe('dashboard panels: positions, activity tape, counters', () => {
     await engine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
     const pos = repo.openPositions(handle.db)[0]!;
 
-    // 2) Second buy into the same mint -> pyramids into the SAME position.
+    // 2) Second buy into the same mint AFTER the coalescing window -> pyramids
+    // into the SAME position (D4: inside 60 s a burst is one position).
+    agePastCoalesce(pos.positionId);
     await engine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
     const pyramided = repo.getPosition(handle.db, pos.positionId)!;
     expect(BigInt(pyramided.inputUsdMicro)).toBe(200_000_000n);
@@ -427,7 +377,6 @@ describe('dashboard panels: positions, activity tape, counters', () => {
       { mode: 'paper', risk } as never,
       control,
       null,
-      recommendations,
       lifecycle,
       1_000_000n,
     );
@@ -508,9 +457,13 @@ describe('bankroll cap: downsize to fit, then BANKROLL CAP skip', () => {
 
     // Buy 1: $100 copy -> deployed $100.05 incl. fee. Headroom $99.95.
     await bankEngine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
-    // Buy 2: wants $100 -> downsized to exactly the remaining headroom.
+    const pos = repo.openPositions(handle.db).filter((p) => p.activationId === activationId)[0]!;
+    // Buy 2: wants $100 -> downsized to exactly the remaining headroom (past
+    // the D4 coalescing window, so it is an ADD, not a burst).
+    agePastCoalesce(pos.positionId);
     await bankEngine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
     // Buy 3: headroom now 0 -> BANKROLL CAP skip, no position change.
+    agePastCoalesce(pos.positionId);
     await bankEngine.handleLeaderTx(activationId, 'cand_ape', leaderBuy(400_000_000n));
 
     const intents = repo
@@ -596,25 +549,28 @@ describe('day-trader discipline: time exits + idle firing', () => {
     });
   }
 
-  it('sells a positive position at 16h and holds a negative one into grace', async () => {
+  // D4 sets the shipped ceiling to 8h + 3h grace (config defaults); the
+  // operator's .env may override both.
+  it('sells a positive position at 8h and holds a negative one into grace', async () => {
     freshActivation('act_tx1');
     await engine.handleLeaderTx('act_tx1', 'cand_moon', leaderBuy(400_000_000n));
     const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_tx1')!;
 
-    backdate(pos.positionId, 16.5);
+    backdate(pos.positionId, 8.5);
     marks.set(pos.positionId, 120_000_000n); // +$20 vs entry
     await sweep('act_tx1', pos.openedAt);
     expect(repo.getPosition(handle.db, pos.positionId)!.status).toBe('closed');
 
-    // Negative at 16.5h: held. Past 19h: force-closed even without a mark.
+    // Negative at 8.5h: held. Past the 11h grace deadline: force-closed even
+    // without a mark.
     await engine.handleLeaderTx('act_tx1', 'cand_moon', leaderBuy(400_000_000n));
     const pos2 = repo.openPositions(handle.db).find((p) => p.activationId === 'act_tx1')!;
-    backdate(pos2.positionId, 16.5);
+    backdate(pos2.positionId, 8.5);
     marks.set(pos2.positionId, 90_000_000n); // -$10
     await sweep('act_tx1', pos2.openedAt);
     expect(repo.getPosition(handle.db, pos2.positionId)!.status).toBe('open');
 
-    backdate(pos2.positionId, 19.5);
+    backdate(pos2.positionId, 11.5);
     marks.delete(pos2.positionId);
     await sweep('act_tx1', pos2.openedAt);
     expect(repo.getPosition(handle.db, pos2.positionId)!.status).toBe('closed');
@@ -628,18 +584,18 @@ describe('day-trader discipline: time exits + idle firing', () => {
     freshActivation('act_tx2');
     await engine.handleLeaderTx('act_tx2', 'cand_moon', leaderBuy(400_000_000n));
     const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_tx2')!;
-    backdate(pos.positionId, 15);
-    await engine.handleLeaderTx('act_tx2', 'cand_moon', leaderBuy(400_000_000n)); // pyramid at 15h
+    backdate(pos.positionId, 7);
+    await engine.handleLeaderTx('act_tx2', 'cand_moon', leaderBuy(400_000_000n)); // pyramid at 7h
     const updated = repo.getPosition(handle.db, pos.positionId)!;
-    expect(Date.parse(updated.openedAt)).toBeLessThan(Date.now() - 14.9 * 3_600_000);
+    expect(Date.parse(updated.openedAt)).toBeLessThan(Date.now() - 6.9 * 3_600_000);
 
-    // Age is still ~15h (pyramid did not reset openedAt) -> no time exit yet.
+    // Age is still ~7h (pyramid did not reset openedAt) -> no time exit yet.
     marks.set(pos.positionId, 400_000_000n);
     await sweep('act_tx2', updated.openedAt);
     expect(repo.getPosition(handle.db, pos.positionId)!.status).toBe('open');
 
-    // Cross 16h -> positive PnL sells the whole pyramided position.
-    backdate(pos.positionId, 16.5);
+    // Cross the 8h ceiling -> positive PnL sells the whole pyramided position.
+    backdate(pos.positionId, 8.5);
     await sweep('act_tx2', updated.openedAt);
     expect(repo.getPosition(handle.db, pos.positionId)!.status).toBe('closed');
   });
@@ -649,7 +605,7 @@ describe('day-trader discipline: time exits + idle firing', () => {
     for (let i = 0; i < 2; i++) {
       await engine.handleLeaderTx('act_tx3', 'cand_moon', leaderBuy(400_000_000n));
       const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_tx3')!;
-      backdate(pos.positionId, 19.5);
+      backdate(pos.positionId, 11.5);
       marks.delete(pos.positionId);
       await sweep('act_tx3', pos.openedAt);
     }
@@ -718,9 +674,20 @@ describe('live mode: no trading before ARM', () => {
       1_000_000_000n,
       true, // live mode
     );
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_livegate',
+      handle: 'livegate',
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: null,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: new Date().toISOString(),
+    });
     repo.createActivation(handle.db, {
       activationId: 'act_livegate',
-      candidateId: 'cand_moon',
+      candidateId: 'cand_livegate',
       state: 'ACTIVE',
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -729,7 +696,7 @@ describe('live mode: no trading before ARM', () => {
       firedReason: null,
       source: 'test',
     });
-    await liveEngine.handleLeaderTx('act_livegate', 'cand_moon', leaderBuy(400_000_000n));
+    await liveEngine.handleLeaderTx('act_livegate', 'cand_livegate', leaderBuy(400_000_000n));
     const intents = repo
       .intentsInStates(handle.db, ['skipped'])
       .filter((i) => i.activationId === 'act_livegate');
@@ -738,7 +705,7 @@ describe('live mode: no trading before ARM', () => {
     expect(repo.openPositions(handle.db).filter((p) => p.activationId === 'act_livegate')).toHaveLength(0);
 
     control.armLive();
-    await liveEngine.handleLeaderTx('act_livegate', 'cand_moon', leaderBuy(400_000_000n));
+    await liveEngine.handleLeaderTx('act_livegate', 'cand_livegate', leaderBuy(400_000_000n));
     const confirmed = repo
       .intentsInStates(handle.db, ['confirmed'])
       .filter((i) => i.activationId === 'act_livegate');

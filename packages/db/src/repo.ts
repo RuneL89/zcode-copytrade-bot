@@ -4,9 +4,6 @@ import { schema } from './connection.js';
 
 type Db = AppDatabase;
 
-type SnapshotInsert = (typeof schema.researchSnapshots)['$inferInsert'];
-type RecommendationInsert = (typeof schema.candidateRecommendations)['$inferInsert'];
-type RecommendationCandidateInsert = (typeof schema.recommendationCandidates)['$inferInsert'];
 type ActivationInsert = (typeof schema.traderActivations)['$inferInsert'];
 type ObservedEventInsert = (typeof schema.observedLeaderEvents)['$inferInsert'];
 type PositionInsert = (typeof schema.copiedPositions)['$inferInsert'];
@@ -16,10 +13,11 @@ type FillInsert = (typeof schema.fills)['$inferInsert'];
 type PnlLotInsert = (typeof schema.realizedPnlLots)['$inferInsert'];
 type StreakEventInsert = (typeof schema.lossStreakEvents)['$inferInsert'];
 type FiringEventInsert = (typeof schema.firingEvents)['$inferInsert'];
-type HandoffEventInsert = (typeof schema.handoffEvents)['$inferInsert'];
 type RiskRejectionInsert = (typeof schema.riskRejections)['$inferInsert'];
 type ReconciliationInsert = (typeof schema.reconciliationCases)['$inferInsert'];
 type ProviderHealthInsert = (typeof schema.providerHealth)['$inferInsert'];
+type WatchEventInsert = (typeof schema.watchEvents)['$inferInsert'];
+type ShadowTradeInsert = (typeof schema.shadowTrades)['$inferInsert'];
 
 const nowIso = () => new Date().toISOString();
 
@@ -286,6 +284,106 @@ export function getCandidate(db: Db, candidateId: string) {
     .get();
 }
 
+/** Candidate by the fomoapi stable user id (D3 identity). */
+export function findCandidateByUserId(db: Db, userId: string) {
+  return db.select().from(schema.traderCandidates).where(eq(schema.traderCandidates.userId, userId)).get();
+}
+
+/**
+ * Deterministic candidate id for a handle. Handles are labels (D3), so this is
+ * only the *first* key of a row: an existing row keeps its id and a known
+ * user id wins over the handle-derived one (see upsertCandidateByUser). It
+ * also lets a legacy handle-only row merge with its API row instead of
+ * duplicating it.
+ */
+export function candidateIdForHandle(handle: string): string {
+  return (
+    'cand_' +
+    handle
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+  );
+}
+
+/**
+ * Candidate owning a Solana wallet. One address can sit under two handles
+ * (D2 evidence: `okura`/`okuracrypto`), so the lowest candidate_id wins — the
+ * stable answer for dedupe; the caller may still see duplicates.
+ */
+export function findCandidateByWallet(db: Db, address: string) {
+  const row = db
+    .select({ candidateId: schema.candidateAddresses.candidateId })
+    .from(schema.candidateAddresses)
+    .where(and(eq(schema.candidateAddresses.chain, 'solana'), eq(schema.candidateAddresses.address, address)))
+    .orderBy(schema.candidateAddresses.candidateId)
+    .limit(1)
+    .get();
+  return row ? getCandidate(db, row.candidateId) : undefined;
+}
+
+/**
+ * Upsert a candidate keyed on the fomoapi `userId` (D3): handles change, the
+ * user id does not. The surviving candidate_id is returned so callers key
+ * their own rows on it; an existing user row keeps its original id and only
+ * gets the fresh handle / address / observation time.
+ */
+export function upsertCandidateByUser(
+  db: Db,
+  input: {
+    candidateId: string;
+    userId: string;
+    handle: string;
+    source: string;
+    observedAt: string;
+    address?: string | null;
+    /** Window PnL in USD as displayed by the API — context only (never a hire gate). */
+    pnlUsd?: number | null;
+  },
+): string {
+  const ts = nowIso();
+  const existing = findCandidateByUserId(db, input.userId);
+  const candidateId = existing?.candidateId ?? input.candidateId;
+  const displayedPnlUsdMicro =
+    input.pnlUsd === null || input.pnlUsd === undefined ? null : String(Math.trunc(input.pnlUsd * 1e6));
+  db.insert(schema.traderCandidates)
+    .values({
+      candidateId,
+      handle: input.handle,
+      userId: input.userId,
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: displayedPnlUsdMicro,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: input.source,
+      observedAt: input.observedAt,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+    .onConflictDoUpdate({
+      target: schema.traderCandidates.candidateId,
+      set: {
+        userId: input.userId,
+        handle: input.handle,
+        // A window PnL reading only overwrites the stored value when this row
+        // carries one: an alerts-only upsert must not erase a board reading.
+        ...(displayedPnlUsdMicro === null ? {} : { displayedWeeklyPnlUsdMicro: displayedPnlUsdMicro }),
+        observedAt: input.observedAt,
+        updatedAt: ts,
+      },
+    })
+    .run();
+  if (input.address) {
+    upsertCandidateAddress(db, candidateId, {
+      chain: 'solana',
+      address: input.address,
+      verification: 'reported',
+    });
+  }
+  return candidateId;
+}
+
 export function listCandidateAddresses(db: Db, candidateId?: string) {
   const q = db.select().from(schema.candidateAddresses);
   return candidateId ? q.where(eq(schema.candidateAddresses.candidateId, candidateId)).all() : q.all();
@@ -355,118 +453,6 @@ export function pruneLeaderboardObservations(db: Db, keepDays = 30): number {
   return result.changes;
 }
 
-// --- research snapshots / recommendations --------------------------------------
-
-export function saveSnapshot(db: Db, input: SnapshotInsert): void {
-  db.insert(schema.researchSnapshots)
-    .values(input)
-    .onConflictDoUpdate({ target: schema.researchSnapshots.snapshotId, set: input })
-    .run();
-}
-
-export function getSnapshot(db: Db, snapshotId: string) {
-  return db
-    .select()
-    .from(schema.researchSnapshots)
-    .where(eq(schema.researchSnapshots.snapshotId, snapshotId))
-    .get();
-}
-
-export function latestSnapshot(db: Db) {
-  return db
-    .select()
-    .from(schema.researchSnapshots)
-    .orderBy(desc(schema.researchSnapshots.createdAt))
-    .limit(1)
-    .get();
-}
-
-export interface RecommendationRecord {
-  recommendationId: string;
-  snapshotId: string;
-  snapshotHash: string;
-  createdAt: string;
-  receivedAt: string;
-  expiresAt: string;
-  modelLabel: string | null;
-  researchSessionId: string | null;
-  abstain: boolean;
-  abstainReason: string | null;
-  status: 'pending' | 'validated' | 'rejected' | 'consumed' | 'expired';
-  validationError: string | null;
-  rawJson: string;
-  normalizedJson: string | null;
-}
-
-export function saveRecommendation(
-  db: Db,
-  rec: RecommendationInsert,
-  candidates: Array<RecommendationCandidateInsert>,
-): void {
-  db.transaction((tx) => {
-    tx.insert(schema.candidateRecommendations).values(rec).run();
-    if (candidates.length > 0) tx.insert(schema.recommendationCandidates).values(candidates).run();
-  });
-}
-
-export function getRecommendation(db: Db, id: string) {
-  return db
-    .select()
-    .from(schema.candidateRecommendations)
-    .where(eq(schema.candidateRecommendations.recommendationId, id))
-    .get();
-}
-
-export function listRecommendations(db: Db, limit = 50) {
-  return db
-    .select()
-    .from(schema.candidateRecommendations)
-    .orderBy(desc(schema.candidateRecommendations.receivedAt))
-    .limit(limit)
-    .all();
-}
-
-export function latestValidRecommendation(db: Db) {
-  return db
-    .select()
-    .from(schema.candidateRecommendations)
-    .where(inArray(schema.candidateRecommendations.status, ['validated']))
-    .orderBy(desc(schema.candidateRecommendations.receivedAt))
-    .limit(1)
-    .get();
-}
-
-export function listRecommendationCandidates(db: Db, recommendationId: string) {
-  return db
-    .select()
-    .from(schema.recommendationCandidates)
-    .where(eq(schema.recommendationCandidates.recommendationId, recommendationId))
-    .orderBy(schema.recommendationCandidates.rank)
-    .all();
-}
-
-export function markRecommendationStatus(db: Db, id: string, status: string): void {
-  db.update(schema.candidateRecommendations)
-    .set({ status })
-    .where(eq(schema.candidateRecommendations.recommendationId, id))
-    .run();
-}
-
-export function recordChoice(
-  db: Db,
-  input: {
-    recommendationId: string | null;
-    chosenCandidateId: string | null;
-    firedFromCandidateId: string | null;
-    result: string;
-    skippedJson?: string;
-  },
-): void {
-  db.insert(schema.recommendationChoices)
-    .values({ ...input, skippedJson: input.skippedJson ?? null, createdAt: nowIso() })
-    .run();
-}
-
 export function recordCandidateRejection(
   db: Db,
   input: { recommendationId: string | null; candidateId: string; reason: string; detail?: string },
@@ -476,7 +462,7 @@ export function recordCandidateRejection(
     .run();
 }
 
-/** Most recent rejection per row, newest first — used to dedupe idle-hire rejections. */
+/** Most recent rejection per row, newest first — the promotion/hire audit trail. */
 export function listCandidateRejections(db: Db, limit = 20) {
   return db
     .select()
@@ -524,6 +510,30 @@ export function listActivations(db: Db, limit = 50) {
     .orderBy(desc(schema.traderActivations.startedAt))
     .limit(limit)
     .all();
+}
+
+/** Every activation that still owns a roster chair (D4: roster of N, not one). */
+export function listActiveActivations(db: Db) {
+  return db
+    .select()
+    .from(schema.traderActivations)
+    .where(inArray(schema.traderActivations.state, ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION']))
+    .orderBy(schema.traderActivations.startedAt)
+    .all();
+}
+
+export function activeActivationCount(db: Db): number {
+  const row = db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.traderActivations)
+    .where(inArray(schema.traderActivations.state, ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION']))
+    .get();
+  return row?.n ?? 0;
+}
+
+/** Free roster chairs for a configured roster size (D4: a roster of N leaders). */
+export function freeRosterSlots(db: Db, rosterSize: number): number {
+  return Math.max(0, rosterSize - activeActivationCount(db));
 }
 
 export function getCursor(db: Db, address: string) {
@@ -728,12 +738,242 @@ export function latestFiringEventForActivation(db: Db, activationId: string) {
     .get();
 }
 
-export function insertHandoffEvent(db: Db, input: HandoffEventInsert): void {
-  db.insert(schema.handoffEvents).values(input).run();
+/** The newest firings (the dashboard's fired lane), newest first. */
+export function listRecentFirings(db: Db, limit = 5) {
+  return db.select().from(schema.firingEvents).orderBy(desc(schema.firingEvents.firedAt)).limit(limit).all();
 }
 
-export function listHandoffEvents(db: Db, limit = 100) {
-  return db.select().from(schema.handoffEvents).orderBy(desc(schema.handoffEvents.id)).limit(limit).all();
+/** Firings inside the window (the dashboard pipeline's exits stage). */
+export function listFiringEventsSince(db: Db, sinceIso: string) {
+  return db.select().from(schema.firingEvents).where(gte(schema.firingEvents.firedAt, sinceIso)).all();
+}
+
+/**
+ * When this candidate was last fired, or null when never fired. This is the
+ * D4 re-entry clock: a fired trader may only return after a funded buy newer
+ * than this timestamp.
+ */
+export function lastFiredAt(db: Db, candidateId: string): string | null {
+  const row = db
+    .select({ firedAt: schema.firingEvents.firedAt })
+    .from(schema.firingEvents)
+    .where(eq(schema.firingEvents.candidateId, candidateId))
+    .orderBy(desc(schema.firingEvents.firedAt))
+    .limit(1)
+    .get();
+  return row?.firedAt ?? null;
+}
+
+// --- watch list / shadow ledger (D3/D4) ----------------------------------------
+
+export interface WatchWalletUpsert {
+  candidateId: string;
+  userId?: string | null;
+  address: string;
+  status: string; // watching|cooling|promoted|archived
+  reason?: string | null;
+  admittedAt?: string;
+}
+
+/**
+ * Admit (or re-admit) a wallet to the watch list. The row's original
+ * `admitted_at` survives a re-upsert — it is the admission clock, and the
+ * funded-buy/sell stamps are owned by the event path, never reset here.
+ */
+export function upsertWatchWallet(db: Db, input: WatchWalletUpsert): void {
+  const ts = nowIso();
+  db.insert(schema.watchWallets)
+    .values({
+      candidateId: input.candidateId,
+      userId: input.userId ?? null,
+      address: input.address,
+      status: input.status,
+      admittedAt: input.admittedAt ?? ts,
+      updatedAt: ts,
+      reason: input.reason ?? null,
+    })
+    .onConflictDoUpdate({
+      target: schema.watchWallets.candidateId,
+      set: {
+        userId: input.userId ?? null,
+        address: input.address,
+        status: input.status,
+        reason: input.reason ?? null,
+        updatedAt: ts,
+      },
+    })
+    .run();
+}
+
+export function getWatchWallet(db: Db, candidateId: string) {
+  return db.select().from(schema.watchWallets).where(eq(schema.watchWallets.candidateId, candidateId)).get();
+}
+
+export function listWatchWallets(db: Db, status?: string) {
+  const q = db.select().from(schema.watchWallets);
+  return (status ? q.where(eq(schema.watchWallets.status, status)) : q)
+    .orderBy(schema.watchWallets.admittedAt, schema.watchWallets.candidateId)
+    .all();
+}
+
+export function setWatchStatus(db: Db, candidateId: string, status: string, reason?: string | null): void {
+  db.update(schema.watchWallets)
+    .set({ status, reason: reason ?? null, updatedAt: nowIso() })
+    .where(eq(schema.watchWallets.candidateId, candidateId))
+    .run();
+}
+
+/**
+ * Record a funded swap. Idempotent on (candidate, signature, side): a
+ * re-scanned signature inserts nothing and returns false. On a fresh insert
+ * the denormalised last-funded stamp on `watch_wallets` advances — monotonic,
+ * so an older re-observation can never move it backwards.
+ */
+export function insertWatchEvent(db: Db, input: WatchEventInsert): boolean {
+  const res = db.insert(schema.watchEvents).values(input).onConflictDoNothing().run();
+  if (res.changes === 0) return false;
+  const stamp =
+    input.side === 'buy'
+      ? { lastFundedBuyAt: input.observedAt, updatedAt: nowIso() }
+      : { lastFundedSellAt: input.observedAt, updatedAt: nowIso() };
+  const stampColumn =
+    input.side === 'buy' ? schema.watchWallets.lastFundedBuyAt : schema.watchWallets.lastFundedSellAt;
+  db.update(schema.watchWallets)
+    .set(stamp)
+    .where(
+      and(
+        eq(schema.watchWallets.candidateId, input.candidateId),
+        sql`(${stampColumn} is null or ${stampColumn} < ${input.observedAt})`,
+      ),
+    )
+    .run();
+  return true;
+}
+
+export function listWatchEvents(db: Db, candidateId: string, limit = 100) {
+  return db
+    .select()
+    .from(schema.watchEvents)
+    .where(eq(schema.watchEvents.candidateId, candidateId))
+    .orderBy(desc(schema.watchEvents.id))
+    .limit(limit)
+    .all();
+}
+
+/** Newest observed funded buy for the candidate, or null when none exists. */
+export function lastFundedBuyAt(db: Db, candidateId: string): string | null {
+  return newestWatchEventAt(db, candidateId, 'buy');
+}
+
+/** Newest observed funded sell for the candidate, or null when none exists. */
+export function lastFundedSellAt(db: Db, candidateId: string): string | null {
+  return newestWatchEventAt(db, candidateId, 'sell');
+}
+
+function newestWatchEventAt(db: Db, candidateId: string, side: string): string | null {
+  const row = db
+    .select({ observedAt: schema.watchEvents.observedAt })
+    .from(schema.watchEvents)
+    .where(and(eq(schema.watchEvents.candidateId, candidateId), eq(schema.watchEvents.side, side)))
+    .orderBy(desc(schema.watchEvents.observedAt))
+    .limit(1)
+    .get();
+  return row?.observedAt ?? null;
+}
+
+/**
+ * Drop one candidate's whole watch record (events, lots, cursor). The test-only
+ * seed route uses it so a re-seed in the same data dir is deterministic; it is
+ * never called by the runtime.
+ */
+export function resetWatchRecord(db: Db, candidateId: string): void {
+  db.delete(schema.watchEvents).where(eq(schema.watchEvents.candidateId, candidateId)).run();
+  db.delete(schema.shadowTrades).where(eq(schema.shadowTrades.candidateId, candidateId)).run();
+  db.delete(schema.watchCursors).where(eq(schema.watchCursors.candidateId, candidateId)).run();
+}
+
+/** Open a pretend position at our notional; returns its row id. */
+export function openShadowTrade(db: Db, input: Omit<ShadowTradeInsert, 'status'>): number {
+  const res = db
+    .insert(schema.shadowTrades)
+    .values({ ...input, status: 'open' })
+    .run();
+  return Number(res.lastInsertRowid);
+}
+
+export function closeShadowTrade(
+  db: Db,
+  id: number,
+  input: { closedAt: string; exitReason: string; exitPriceUsdMicro: string; pnlUsdMicro: string },
+): void {
+  db.update(schema.shadowTrades)
+    .set({ status: 'closed', ...input })
+    .where(eq(schema.shadowTrades.id, id))
+    .run();
+}
+
+/** A partial sell shrinks the open lot: entry price and open time are kept. */
+export function updateShadowTradeNotional(db: Db, id: number, notionalUsdMicro: string): void {
+  db.update(schema.shadowTrades).set({ notionalUsdMicro }).where(eq(schema.shadowTrades.id, id)).run();
+}
+
+export function listOpenShadowTrades(db: Db, candidateId?: string) {
+  const where = candidateId
+    ? and(eq(schema.shadowTrades.status, 'open'), eq(schema.shadowTrades.candidateId, candidateId))
+    : eq(schema.shadowTrades.status, 'open');
+  return db
+    .select()
+    .from(schema.shadowTrades)
+    .where(where)
+    .orderBy(schema.shadowTrades.openedAt, schema.shadowTrades.id)
+    .all();
+}
+
+export interface ShadowAggregates {
+  closedCount: number;
+  /** Net of closed trades, micro-USD (bigint: never floating point). */
+  netPnlUsdMicro: bigint;
+  lastClosedAt: string | null;
+}
+
+/** D4 promotion evidence: how many shadow trades closed and how they netted. */
+export function shadowAggregates(db: Db, candidateId: string): ShadowAggregates {
+  const rows = db
+    .select({
+      pnlUsdMicro: schema.shadowTrades.pnlUsdMicro,
+      closedAt: schema.shadowTrades.closedAt,
+    })
+    .from(schema.shadowTrades)
+    .where(and(eq(schema.shadowTrades.candidateId, candidateId), eq(schema.shadowTrades.status, 'closed')))
+    .all();
+  let net = 0n;
+  let lastClosedAt: string | null = null;
+  for (const row of rows) {
+    if (row.pnlUsdMicro) net += BigInt(row.pnlUsdMicro);
+    if (row.closedAt && (lastClosedAt === null || row.closedAt > lastClosedAt)) lastClosedAt = row.closedAt;
+  }
+  return { closedCount: rows.length, netPnlUsdMicro: net, lastClosedAt };
+}
+
+export function getWatchCursor(db: Db, address: string) {
+  return db.select().from(schema.watchCursors).where(eq(schema.watchCursors.address, address)).get();
+}
+
+export function setWatchCursor(
+  db: Db,
+  input: {
+    address: string;
+    candidateId: string;
+    lastSignature: string;
+    lastSlot: number;
+    lastTransactionIndex: number;
+  },
+): void {
+  const ts = nowIso();
+  db.insert(schema.watchCursors)
+    .values({ ...input, updatedAt: ts })
+    .onConflictDoUpdate({ target: schema.watchCursors.address, set: { ...input, updatedAt: ts } })
+    .run();
 }
 
 // --- risk / reconciliation / health ------------------------------------------------

@@ -1,6 +1,6 @@
 import type { MicroUsd } from './money.js';
 
-export type SizingAction = 'copy' | 'skip_below_min' | 'skip_invalid' | 'skip_headroom';
+export type SizingAction = 'copy' | 'skip_invalid' | 'skip_headroom';
 
 export interface SizingInput {
   /** Leader's measured input notional in micro-USD (already priced). */
@@ -8,13 +8,9 @@ export interface SizingInput {
   /** Copy scale as an exact rational, e.g. 1/4 for 0.25x. */
   scaleNumerator: bigint;
   scaleDenominator: bigint;
+  /** Hard floor: a copy that scales below it is placed at it, never skipped. */
   minPerBuyUsdMicro: MicroUsd;
   maxPerBuyUsdMicro: MicroUsd;
-  /**
-   * When false (the default and the documented default), a desired notional
-   * below MIN_PER_BUY_USD is skipped, never silently rounded up.
-   */
-  allowBelowMinRoundUp: boolean;
 }
 
 export interface SizingResult {
@@ -24,7 +20,7 @@ export interface SizingResult {
   /** Notional actually used when action === 'copy'. */
   finalUsdMicro: MicroUsd | null;
   /** Which limit, if any, shaped the outcome. */
-  applied: 'none' | 'capped_at_max' | 'rounded_up_to_min' | 'below_min' | 'invalid_input';
+  applied: 'none' | 'capped_at_max' | 'rounded_up_to_min' | 'invalid_input';
 }
 
 /**
@@ -33,20 +29,15 @@ export interface SizingResult {
  * Rules (documented; tests pin them):
  * - desired = floor(leaderInput * num / den) in micro-USD.
  * - desired > max  -> copy exactly max.
- * - desired < min  -> skip (action 'skip_below_min') unless allowBelowMinRoundUp,
- *                     in which case copy exactly min. The UI must disclose the
- *                     override whenever it is enabled.
- * - leaderInput <= 0 -> skip invalid.
+ * - desired < min  -> copy exactly min ('rounded_up_to_min'). MIN_PER_BUY_USD is
+ *                     an absolute floor: even a leader buy whose scaled copy
+ *                     falls below it is copied at the floor, never skipped.
+ *                     The 0.25x scale yields to the floor in that case.
+ * - leaderInput <= 0 -> skip invalid (the only skip left in sizing).
  */
 export function computeCopyNotional(input: SizingInput): SizingResult {
-  const {
-    leaderInputUsdMicro,
-    scaleNumerator,
-    scaleDenominator,
-    minPerBuyUsdMicro,
-    maxPerBuyUsdMicro,
-    allowBelowMinRoundUp,
-  } = input;
+  const { leaderInputUsdMicro, scaleNumerator, scaleDenominator, minPerBuyUsdMicro, maxPerBuyUsdMicro } =
+    input;
   if (scaleNumerator <= 0n || scaleDenominator <= 0n) {
     return { action: 'skip_invalid', desiredUsdMicro: 0n, finalUsdMicro: null, applied: 'invalid_input' };
   }
@@ -63,15 +54,12 @@ export function computeCopyNotional(input: SizingInput): SizingResult {
     };
   }
   if (desired < minPerBuyUsdMicro) {
-    if (allowBelowMinRoundUp) {
-      return {
-        action: 'copy',
-        desiredUsdMicro: desired,
-        finalUsdMicro: minPerBuyUsdMicro,
-        applied: 'rounded_up_to_min',
-      };
-    }
-    return { action: 'skip_below_min', desiredUsdMicro: desired, finalUsdMicro: null, applied: 'below_min' };
+    return {
+      action: 'copy',
+      desiredUsdMicro: desired,
+      finalUsdMicro: minPerBuyUsdMicro,
+      applied: 'rounded_up_to_min',
+    };
   }
   return { action: 'copy', desiredUsdMicro: desired, finalUsdMicro: desired, applied: 'none' };
 }

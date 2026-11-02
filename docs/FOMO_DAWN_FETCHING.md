@@ -1,5 +1,15 @@
 # Canonical fetching method: FOMO leaderboard + Dawn wallet resolution
 
+> **Fallback procedure since D3 (2026-11-01).** The automatic handle and wallet
+> source is now the **fomoapi leaderboard**: `FomoApiClient`
+> (`packages/providers/src/fomoapi.ts`) driven by `DiscoveryService`
+> (`apps/server/src/services/discovery.ts`) — on demand, on boot catch-up, and
+> through the _Sync discovery now_ op / the `discovery-sync` CLI. The native
+> desktop-Chrome capture below is **no longer scheduled**, and Dawn is **out of
+> the automatic loop**. This document stays canonical for the manual fallback:
+> when the API is unavailable, or when a handle outside the boards must be
+> resolved.
+
 **This document is law.** It encodes the operator-verified procedure (2026-10-27)
 after a full night of debugging hallucinated slugs, rate-limits, poisoned wallets
 and browser security blocks. Do not deviate; do not "optimize" against these steps.
@@ -25,12 +35,11 @@ and browser security blocks. Do not deviate; do not "optimize" against these ste
 
 ## Procedure A — FOMO leaderboard refresh (GUI + clipboard)
 
-**Who runs it.** The 30-minute research sweep owns this procedure now, and since
-2026-10-30 it runs **unconditionally on every sweep**: there is no pool-age
-condition anymore — every 30-minute run refreshes the board once (the rank-fire
-rule needs scan evidence every 30 minutes), imports the rows, and rebuilds the
-snapshot. A human can still run it by hand. Nothing here may be done by the
-research subagent or by the MCP server.
+**Who runs it.** A human, by hand — the automatic loop no longer uses this
+procedure. Discovery is the fomoapi leaderboard (`DiscoveryService`), so this
+capture is the **fallback** for when the API is unavailable or a handle outside
+the boards must be checked. Nothing here is scheduled, and no agent or server
+runs it.
 
 1. Launch desktop Chrome: `https://fomo.family/leaderboard?range=24h`.
    Dismiss the "Restore pages?" bubble if present. An automated run must then raise
@@ -61,17 +70,12 @@ research subagent or by the MCP server.
    resolves them, so pruning would strand the pool at the few candidates that already
    have wallets. Manual runs may still prune deliberately:
    `update trader_candidates set enabled=0 where enabled=1 and handle not in (...)`.
-8. Rebuild the derived snapshot **without restarting the server**:
-   from `zcode-bot/apps/server`, `pnpm exec tsx src/cli/snapshot-rebuild.ts`.
-   (The old "delete `research_snapshots` + `launch.bat`" recipe is still valid for a
-   manual run, but an unattended loop must not bounce the server.)
-   Verify `data/research/snapshot/snapshot.json`: `sourceFreshnessSeconds` is the age
-   of the NEWEST row, `oldestObservedAt` / `staleCandidateCount` describe the tail.
+8. Verify the import landed: the newest `trader_candidates.observed_at` advanced
+   and the audit trail carries the import id.
 9. Close desktop Chrome when finished.
-10. If the new ordering is fresher than the current hire and the hire has no open
-    position, the researcher marks the recommendation `rotateIfFlat: true` and the
-    engine fires + re-hires from that ordering. This is automatic; see
-    `PLAN-leaderboard-refresh-and-rotation.md`.
+10. The imported handles enter the pool like any other source. Admission to the
+    watch list is decided by the funded-buy scan and the D4 gates — never by the
+    board position, and there is no rotation.
 
 ## Procedure B — Dawn wallet resolution (sequential, response-driven)
 
@@ -129,87 +133,67 @@ research subagent or by the MCP server.
 - `Get-Clipboard` is the source of truth for any URL/type that matters.
   Screenshots are for layout only (which row is where), never for reading
   identifiers.
-- Snapshot table is a derived cache: `delete from research_snapshots;` +
-  restart forces a rebuild (needed after DB-only pool changes).
+- The 30-minute device: after a manual fallback import there is nothing to
+  rebuild — the pool is read from SQLite on every dashboard rebuild, and the
+  legacy `research_snapshots` table is retired (D6, kept for the record).
 - GUI toolkit lives in `Temp/zcode-gui/` (`gui.ps1` shot/click/key/type,
   `hover-rows.ps1`, `copy-profile-urls.ps1`, `wheel-at.ps1`,
   `drag-scrollbar.ps1`, `capture-fomo.ps1` PrintWindow captures).
 - Zoom state persists per-origin in Chrome: a fresh window on fomo.family may
   open at the last-used zoom (67%-80% helps fit more rows; Ctrl+- / Ctrl+0).
 
-## Sweep automation
+## Automation is retired (D3/D5/D6)
 
-The hourly research sweep (event-driven + capped) is defined in
-`docs/research-sweep-automation.md` (currently PAUSED at operator request;
-recreate from there). It spawns the pinned `zcode-research` subagent which
-submits recommendations via the restricted research MCP — see `AGENTS.md`
-for the subagent-exclusivity rule.
+There is no sweep and no scheduled research: discovery is the fomoapi leaderboard
+(`DiscoveryService`), demand-driven and rate-limited, and the runtime runs in the
+server process. The pinned `zcode-research` subagent, the research MCP server and
+the snapshot it read are deleted. Nothing in this document is scheduled, and
+nothing here should be recreated as an automation.
 
-## Day-trader mode (operator-ratified 2026-10-27; sort re-ratified 2026-10-29)
+## What replaced the day-trader pipeline (D2–D6)
 
-The pool is restricted to **day traders**: fast, currently-active, positive today. Decisions:
+The lines below are kept for the record; the current pipeline is:
 
-- **Capture** (the sweep, automated): the always-visible top rows of the 24H board — no scrolling, **every 30-minute run unconditionally**. Clipboard URL per row, imported by `fomo-import`, snapshot rebuilt by `snapshot-rebuild`. Manual capture follows the same shape. The import writes the row's displayed 24h PnL into `pnl_24h_usd` (stamped with the scan time), so a newly seen trader carries a fresh positive-day figure immediately; Dawn's card later replaces it.
-- **Activity gate (on-chain, hard):** ≥5 swaps in the last 24h on-chain, last swap ≤20h — confirmed before every hire. Data arrives fast: a board import triggers an automatic activity refresh for any wallet-having candidate with missing or stale stamps (throttled to one per 20 min), alongside the boot + 6h schedule. **Primary source since 2026-10-31: the free public Solana RPC** (direction-aware: buys/sells counts + most-recent-buy at any age); Helius is the fallback and keeps the 8-second leader monitor exclusively. Never spend Helius credits on the bulk refresh.
-- **Direction gate (engine, hard, 2026-10-31):** every hire — both the actively-trading tier AND the merit pass — verifies the wallet's most recent BUY is inside `ACTIVE_BUY_WINDOW_HOURS` (live walk; the cached evidence decides when the walk fails, and only a failed/never-run check fails open). A wallet proven quiet is not a day-trader hire, whichever tier it sits in.
-- **Momentum gate (researcher, hard):** `pnl24hUsd > 0` with `statsCheckedAt` within 12h. A trader with a non-positive or unknown day is not qualified, however good the week looks — the system holds ≤16h, so only the current window is copyable.
-- **Board-presence hire guard (engine, hard, 2026-10-30):** every hire requires the handle to be on the latest captured scan; combined with the rank-fire rule below, the board decides both holding and hiring.
-- **Wallet resolution (Dawn):** owned by the 30-minute data sweep since
-  2026-10-31 (operator decision): every sweep runs
-  `tsx src/cli/dawn-lookup.ts --all-missing --limit 20` — walletless candidates
-  only — right after the board import. The server NO LONGER auto-runs Dawn
-  (no boot run, no 6h timer, no post-rebuild auto-run); operator-initiated
-  manual runs still work. One polite message per candidate → wallet + paper
-  PnL marks + win rate stored (realized PnL is null for everyone: the rich
-  card is unreachable).
-- **Rank-fire rule (engine, 2026-10-30):** the hired trader is fired when he is absent from the latest scan once, or outside displayed top-3 in two consecutive scans; both branches stand down when the latest scan is older than 2h. No fired-trader cooldown exists — a fired trader is rehireable the moment he qualifies again.
-- **Stall watcher (wired 2026-10-29):** a hired leader whose wallet shows no on-chain activity for `LEADER_STALL_FIRE_HOURS` (8h, tunable in Settings) while we hold is fired — regardless of open-position winners — and replaced from the shortlist. Judged only when the Helius activity stamp is fresh; backstop for board outages.
-- **Ranking (researcher):** board-first — the latest scan's handles are the hireable universe (the snapshot's `latestScan` names them; the engine rejects everything else), qualify on the activity gate + positive fresh day, then order by 24h PnL descending (tie-break: fresher activity check, then more swaps). Divergence concerns (all-time >> 30d, day-hot/week-cold) are recorded, not enforced — the engine's reactive controls (rank-fire, 2-loss fire, 12h idle fire, 16h time exit, 8h stall fire) are the real protection.
-- **Hiring from a pause (2026-10-30):** a fresh validated ordering is hired automatically when nobody is active — paper always, live while armed. A hire itself signs nothing; every order still passes the armed-executor boundary.
-- Known trade-off: the 24H PnL board under-represents pure scalpers — if the gate yields too few, scan deeper (ranks 10–50) rather than loosening the activity requirements.
+- **Discovery** — the fomoapi 24h/7d/30d boards + alerts, unioned by `userId` and
+  deduped by wallet, on demand (bench thin, or a free chair with nothing
+  promotable behind it) and rate-limited. The displayed PnL is context, never a
+  hire gate.
+- **Admission** — the funded-buy scan (a coin bought against a stable or SOL leg):
+  ≥`ADMISSION_MIN_BUYS_24H` (3) funded buys in 24h with the last inside
+  `ADMISSION_MAX_LAST_BUY_HOURS` (24). Funded sells are recorded as observability,
+  never as an admission requirement.
+- **Shadow ledger** — every funded buy opens a pretend position at the D1 notional
+  and closes on the leader's sell or at the age ceiling at a live Jupiter price
+  (D4's 1% per-side assumption rides in the PnL).
+- **Promotion** — ≥`PROMOTION_MIN_CLOSED` (8) closed shadow trades, net >
+  `PROMOTION_MIN_NET_USD` ($3), a funded buy inside `PROMOTION_MAX_LAST_BUY_HOURS`
+  (4), no re-entry ban, a free chair and shared-pool headroom.
+- **Lifecycle** — a chair is lost to two losing close units, a silent wallet
+  (`LEADER_STALL_FIRE_HOURS`), a stale last buy (`MAX_LEADER_STALL_HOURS`) or an
+  idle chair (`IDLE_FIRE_HOURS`). The board is never a fire condition.
 
-## Day-trader data pipeline (implemented 2026-10-28)
+## Fallback data pipeline (manual)
 
-Order of operations, each stage feeding the next. Every identifier comes from
-the clipboard; numbers come from the row or the profile page, never from OCR.
+When the API is unavailable, this is the shape of a manual fallback run. Every
+identifier comes from the clipboard; numbers come from the row or the profile
+page, never from OCR.
 
-1. `tools/gui/board-pass.ps1` - visible leaderboard rows -> `board.json`
-   (rank + canonical profile URL). (The automated sweep performs the equivalent
-   in-line; this script is the manual equivalent.)
-2. `apps/server: pnpm exec tsx src/cli/fomo-import.ts entries.json` - pool upsert.
-   Omitted stats are preserved, not cleared; duplicate ranks produce a warning.
-   (`tools/gui/profile-stats.ps1` and the `avg_hold_hours`/`trades_count_7d`
-   columns it filled are retired — the Stage-1 gate they fed was never enforced
-   and was removed 2026-10-29; the columns remain in the DB, unused.)
-3. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts [--limit 30] [--source public|helius]` -
+1. `tools/gui/board-pass.ps1` — visible leaderboard rows → `board.json`
+   (rank + canonical profile URL).
+2. `apps/server: pnpm exec tsx src/cli/fomo-import.ts entries.json` — pool upsert.
+   Omitted stats are preserved, not cleared; duplicate ranks produce a warning;
+   handle-derived candidate ids keep the rows reconciled with the API inlet.
+3. `apps/server: pnpm exec tsx src/cli/candidate-activity.ts [--limit 30] [--source public|helius]` —
    activity refresh per wallet: free public Solana RPC primary (direction-aware:
-   `swaps_24h`, `last_swap_at`, `buys_24h`/`sells_24h`, `last_buy_at` = most
-   recent BUY within the lookback at any age, `activity_check_status`),
-   Helius fallback. Addresses that pass the pre-hire gate are upgraded to
-   verification "verified". Also runs on the 6h server timer, on snapshot
-   rebuilds (top-7, throttled), and via the Ops action "Refresh candidate
-   activity now". `tsx src/cli/wallet-activity.ts <address> [--hours N]` is the
-   ad-hoc single-wallet verifier (read-only, no DB writes).
-4. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` -
-   Dawn compact card -> PnL 24h/7d/30d/all-time + ranks, lifetime trades, volume,
-   recent buys/sells, coins, last-trade age; win rate/realized when present.
-   Run by the 30-minute data sweep for walletless candidates only (see
-   Day-trader mode above); audit lines record every outcome
-   (`lookup run starting`, `resolved N address(es)`, `Telegram session needs
-login; QR login window opened`, or `lookup skipped: another run already in
-progress`). A dead Telegram session is the one state that needs a human: scan
-   the QR code once. Research never runs Dawn itself; the research subagent is
-   forbidden from it.
-5. Snapshot rebuild (30 min timer, debounced ~60s after a Dawn/Helius run that
-   changed rows, after each import via `snapshot-rebuild`, or clear
-   `research_snapshots` + restart) ->
-   `publicStats` carries all of it to the researcher, including both freshness
-   stamps: `activityCheckedAt` (step 3, Helius) and `statsCheckedAt` (step 4,
-   Dawn card). A candidate is treated as stale only when BOTH stamps are old —
-   `observedAt` older than 12h AND `activityCheckedAt` older than 6h. A stale
-   observation with a recently verified wallet stays usable (the board rotates
-   daily; a resolved wallet is permanent), and the researcher flags the stale
-   PnL marks as a concern rather than dropping the candidate.
+   `swaps_24h`, `last_swap_at`, `buys_24h`/`sells_24h`, `last_buy_at`,
+   `activity_check_status`), Helius fallback. `tsx src/cli/wallet-activity.ts <address>`
+   is the ad-hoc single-wallet verifier (read-only, no DB writes).
+4. `apps/server: pnpm exec tsx src/cli/dawn-lookup.ts --all-missing --limit 25` —
+   the Dawn compact card (PnL periods, trades, volume, recent buys/sells) for a
+   walletless candidate. Dawn is a wallet fallback only; the fomoapi rows carry
+   verified wallets, so the automatic path never needs it.
+5. `apps/server: pnpm exec tsx src/cli/discovery-sync.ts --force` — the API inlet
+   itself, if you want the primary source rather than the fallback.
 
 ### Dawn card layouts (measured)
 
@@ -235,19 +219,11 @@ the only adjacent action is "Copytrade", which is forbidden (it starts a task;
 ours stopped at the chain prompt and `/copytrade` confirmed 0/50 slots). So
 realized/win stay null on our path; profitability ranking uses the PnL periods.
 
-### Ranking rule (researcher, re-ratified 2026-10-29)
+### (retired) Researcher ranking rule
 
-Qualify on copyable activity (`swaps24h` >= 3 copyable coin movements and last copyable trade <= 20h — fee payouts and dust never count, or the compact-card
-equivalents `lastTradeAgeHours` / `recentBuys + recentSells`) AND a positive
-fresh day: `pnl24hUsd > 0` with `statsCheckedAt` within 12h. Then order by
-`pnl24hUsd` desc, tie-break fresher `activityCheckedAt`, then higher `swaps24h`.
-The system holds <=16h, so the day is the only window that gets copied; 7d/30d
-figures are context. Judge how fresh the
-activity numbers are by `activityCheckedAt` (public-RPC refresh: top-7 on
-snapshot rebuilds + 6h pool timer); `statsCheckedAt`
-only advances on Dawn fetches and says nothing about the activity fields.
-Divergence (all-time >> 30d, day-hot/week-cold) is flagged as point-farm
-suspicion in `concerns` — never a silent filter.
+The board ranking rule is retired with the research pipeline (D6). Nothing ranks
+board PnL anymore: a wallet is judged by its own funded buys and its shadow
+record, and promotion is the deterministic D4 gate.
 
 ## Two traps worth remembering
 

@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The three deployable units of ZCode Bot: the trading runtime and API
-(`server`), the operator dashboard (`web`), and the restricted research bridge
-(`zcode-mcp`). Each has its own process boundary and its own child contract.
+The two deployable units of ZCode Bot: the trading runtime and API
+(`server`) and the operator dashboard (`web`). Each has its own process
+boundary and its own child contract.
 
 ## Ownership
 
@@ -12,8 +12,6 @@ The three deployable units of ZCode Bot: the trading runtime and API
   process that monitors leaders, sizes, executes, signs, and reconciles.
 - `apps/web` — presentation only. It renders server state and sends user
   intents back as API calls.
-- `apps/zcode-mcp` — a thin, least-privilege MCP facade over the research
-  snapshot/inbox directories. No trading, no secrets, no database.
 
 ## Local Contracts
 
@@ -25,9 +23,6 @@ The three deployable units of ZCode Bot: the trading runtime and API
 - The REST/SSE payload shapes are a contract shared by `apps/server` and
   `apps/web`. Changing `apps/server/src/services/state.ts` or
   `apps/web/src/types.ts` requires updating both sides in the same change.
-- `apps/zcode-mcp` is environment-isolated: it receives only the
-  `ZCODE_MCP_*` variables and must not import `@zcode-bot/db`, server code, or
-  wallet code.
 - No app may be used to write demo fixtures into live tables; demo replay is
   in-memory in the server.
 
@@ -44,7 +39,6 @@ The three deployable units of ZCode Bot: the trading runtime and API
 
 - Per app: `pnpm --filter @zcode-bot/server test`,
   `pnpm --filter @zcode-bot/web test`,
-  `pnpm --filter @zcode-bot/zcode-mcp test`.
 - Browser behavior: `pnpm e2e` (see `web/e2e/AGENTS.md`).
 - Whole repo: the root validation gate — `pnpm format:check && pnpm typecheck
 && pnpm test && pnpm build`.
@@ -55,4 +49,3 @@ The three deployable units of ZCode Bot: the trading runtime and API
   - `server/src/services/AGENTS.md` — worker service layer.
 - `web/AGENTS.md` — dashboard, SSE client, settings/audit/ops pages.
   - `web/e2e/AGENTS.md` — Playwright browser suite.
-- `zcode-mcp/AGENTS.md` — restricted research MCP server.

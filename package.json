@@ -2,7 +2,7 @@
   "name": "zcode-bot",
   "private": true,
   "version": "0.1.0",
-  "description": "Self-hosted Solana copy-trading bot with ZCode candidate research, deterministic 0.25x copy engine, and animated dashboard",
+  "description": "Self-hosted Solana copy-trading bot: fomoapi discovery, a watch-list shadow ledger, a deterministic 0.25x copy engine, and an animated dashboard",
   "type": "module",
   "packageManager": "pnpm@12.15.0",
   "engines": {
@@ -24,7 +24,6 @@
     "wallet:create": "pnpm --filter @zcode-bot/server run wallet:create",
     "wallet:send": "pnpm --filter @zcode-bot/server run wallet:send",
     "user:token": "pnpm --filter @zcode-bot/server run user:token",
-    "mcp:start": "pnpm --filter @zcode-bot/zcode-mcp run start",
     "e2e": "pnpm --filter @zcode-bot/web run e2e",
     "e2e:install": "pnpm --filter @zcode-bot/web run e2e:install"
   },

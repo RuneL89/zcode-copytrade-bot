@@ -70,7 +70,7 @@ export function EquityHero({ state }: { state: DashboardState }) {
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-3 gap-2">
+      <div className="mt-3 grid grid-cols-2 min-[600px]:grid-cols-4 gap-2">
         <div className="panel px-3 py-2">
           <p className="label !text-[10px]">Bankroll</p>
           <p className="money text-[14px] font-semibold mt-0.5" data-testid="bankroll-line">
@@ -88,6 +88,12 @@ export function EquityHero({ state }: { state: DashboardState }) {
           <p className="money text-[14px] font-semibold mt-0.5">
             {counters.deployedPct.toFixed(1)}
             <span className="text-faint text-[11px]"> / {counters.maxDeployedPct}%</span>
+          </p>
+        </div>
+        <div className="panel px-3 py-2">
+          <p className="label !text-[10px]">Open positions</p>
+          <p className="money text-[14px] font-semibold mt-0.5" data-testid="hero-open-positions">
+            {counters.openPositions}
           </p>
         </div>
       </div>

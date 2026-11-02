@@ -8,13 +8,14 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File                | Owns                                                                                                                                                                 |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`         | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
-| `lifecycle.ts`      | Activation, atomic firing/handoff, replacement, day-trader activity gates, board-presence hire guard, just-fired hire exclusion (no timed cooldowns).                |
-| `monitor.ts`        | Leader polling timer, cursor persistence, dedupe, restart reconciliation.                                                                                            |
+| `lifecycle.ts`      | Activation (roster chairs), atomic firing, roster refill from the promotion queue, the D4 promotion gate, the `canReenter` rule (no timed cooldowns).                |
+| `monitor.ts`        | Roster polling (one pass per activation), cursor persistence per hire, dedupe, restart reconciliation.                                                               |
+| `discovery.ts`      | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                     |
+| `watch.ts`          | The watch list and shadow ledger: admission, funded-swap application, ceilings, promotion/demotion, cooling rotation.                                                |
 | `dawn-targets.ts`   | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
 | `activity-check.ts` | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                       |
 | `executors.ts`      | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
 | `builder.ts`        | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                              |
-| `research.ts`       | Snapshot publication, inbox intake, recommendation validation via `packages/core`.                                                                                   |
 | `state.ts`          | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                               |
 | `control.ts`        | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                  |
 | `readiness.ts`      | The live-readiness checklist.                                                                                                                                        |
@@ -23,17 +24,17 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | `withdraw.ts`       | Wallet withdrawal flow and its guards.                                                                                                                               |
 | `ops.ts`            | The fixed whitelisted operations runner.                                                                                                                             |
 
-Timers are owned by `runtime.ts` (inbox watch, health sampling, snapshot
-refresh with the rank watch, activity refresh, optional adapters) and
-`monitor.ts` (leader polling). Scheduled Dawn runs left the server on
-2026-10-31: the 30-minute data-sweep cron drives `dawn-lookup.ts --all-missing`
-for walletless candidates; only operator-initiated manual runs remain
-server-side. `engine.ts` is called, it does not schedule itself.
+Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
+list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
+(health, fee ledger, activity refresh, reports). Discovery is demand-driven, not
+scheduled. Dawn and the native board capture are manual fallbacks only.
+`engine.ts` is called, it does not schedule itself.
 
 ## Ownership
 
-The worker owns all time-sensitive work. ZCode is the research agent only: it
-never monitors, sizes, exits, fires, signs, or reconciles.
+The worker owns all time-sensitive work, discovery included: the pipeline is
+deterministic (fomoapi → watch list → shadow ledger → promotion → roster) with
+no LLM in the loop (D6).
 
 ## Local Contracts
 
@@ -41,10 +42,10 @@ never monitors, sizes, exits, fires, signs, or reconciles.
   or `monitor.ts`; other services expose functions and must not start their own
   unbounded loops. `engine.ts` is invoked per event, never on its own timer.
 - **Firing is transactional.** Mark `FIRING` and cancel unsigned intents
-  atomically, then apply position policy and shortlist consumption in that
-  order; the just-fired exclusion is derived from the activation rows
-  (`deriveJustFiredExclusion`), never registered. A crash must not leave a
-  half-fired trader.
+  atomically, then apply the position policy and `fillRoster()` in that
+  order; a fired trader returns only after a funded buy observed after the
+  firing (D4's `canReenter`), never on a timed cooldown. A crash must not
+  leave a half-fired trader.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
@@ -55,11 +56,7 @@ never monitors, sizes, exits, fires, signs, or reconciles.
 - **Emergency stop** blocks new entries and non-risk-reducing signing, and
   keeps monitoring/reconciliation running. It cannot recall submitted
   transactions; neither code nor UI may imply otherwise.
-- **Research intake is fail-closed.** `research.ts` validates through
-  `packages/core/src/recommendation.ts` and rejects with the exact core code
-  (`SNAPSHOT_MISMATCH`, `EXPIRED`, `REPLAYED_RECOMMENDATION_ID`, …). An
-  exhausted or stale shortlist pauses to `PAUSED_WAITING_FOR_ZCODE`; it never
-  invents a trader.
+- **Nothing external writes trading state.** The retired research intake is gone (D6); the only writers are the worker's own services and the dashboard's authenticated, CSRF-guarded routes.
 - **`state.ts` is a public contract.** Every field it emits is consumed by the
   dashboard and must carry source + freshness. Do not emit an unlabeled
   estimate.

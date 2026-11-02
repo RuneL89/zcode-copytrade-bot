@@ -65,11 +65,9 @@ export const api = {
     }),
   activate: (candidateId: string) =>
     request<{ ok: boolean }>('/api/activate', { method: 'POST', body: JSON.stringify({ candidateId }) }),
-  importRecommendation: (payload: unknown) =>
-    request<{ ok: boolean; code?: string }>('/api/recommendation/import', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+  // The roster addresses one chair: the dashboard always names the activation.
+  fire: (activationId: string) =>
+    request<{ ok: boolean }>('/api/fire', { method: 'POST', body: JSON.stringify({ activationId }) }),
   pause: (reason?: string) =>
     request<{ ok: boolean }>('/api/control/pause', { method: 'POST', body: JSON.stringify({ reason }) }),
   resume: () => request<{ ok: boolean }>('/api/control/resume', { method: 'POST', body: '{}' }),
@@ -96,7 +94,6 @@ export const api = {
   demoStart: () => request<{ ok: boolean }>('/api/demo/start', { method: 'POST', body: '{}' }),
   audit: () => request<{ events: Array<Record<string, unknown>> }>('/api/audit'),
   rejections: () => request<{ rejections: Array<Record<string, unknown>> }>('/api/rejections'),
-  recommendation: () => request<{ recommendations: Array<Record<string, unknown>> }>('/api/recommendation'),
   candidates: () =>
     request<{ candidates: Array<Record<string, unknown>>; addresses: Array<Record<string, unknown>> }>(
       '/api/candidates',
@@ -113,6 +110,23 @@ export const api = {
     request<{ ok: boolean; run?: import('./types').OpRun }>(`/api/ops/${encodeURIComponent(id)}/run`, {
       method: 'POST',
       body: JSON.stringify({ confirm }),
+    }),
+  // D4 watch list actions. Promote is refused with the gate's reason; archive
+  // and unarchive only move the membership status.
+  watchPromote: (candidateId: string) =>
+    request<{ ok: boolean; outcome: string }>('/api/watch/promote', {
+      method: 'POST',
+      body: JSON.stringify({ candidateId }),
+    }),
+  watchArchive: (candidateId: string) =>
+    request<{ ok: boolean }>('/api/watch/archive', {
+      method: 'POST',
+      body: JSON.stringify({ candidateId }),
+    }),
+  watchUnarchive: (candidateId: string) =>
+    request<{ ok: boolean }>('/api/watch/unarchive', {
+      method: 'POST',
+      body: JSON.stringify({ candidateId }),
     }),
   withdrawable: () => request<Record<string, string | boolean | null>>('/api/wallet/withdrawable'),
   withdraw: (asset: 'USDC' | 'SOL', destination: string, amount: string, walletSecret: string) =>

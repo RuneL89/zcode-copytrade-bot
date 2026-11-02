@@ -21,7 +21,7 @@ export interface AuditLike {
 
 const ANOMALY_CATEGORIES = new Set(['recommendation', 'fomo-web', 'dawn-lookup', 'reconciliation', 'risk']);
 const ANOMALY_PATTERN =
-  /rejected|failed|unreadable|fail closed|needs-login|session missing|expired|PAUSED_WAITING_FOR_ZCODE|LEADER_STALLED|LOW_ACTIVITY/i;
+  /rejected|failed|unreadable|fail closed|needs-login|session missing|expired|PAUSED_NO_TRADER|LEADER_STALLED|LOW_ACTIVITY/i;
 
 /** Pure selection: audit rows newer than lastSeenId that look like anomalies. */
 export function selectAnomalies(rows: AuditLike[], lastSeenId: number): AuditLike[] {

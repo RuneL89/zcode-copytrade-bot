@@ -4,14 +4,14 @@
 
 The deterministic heart of the bot: money math, 0.25x sizing, proportional
 exits, loss streaks, order/position state machines, event classification and
-ordering, recommendation validation, eligibility, and risk evaluation. Pure
+ordering-free roster rules, watch/promotion gates, and risk evaluation. Pure
 functions that the server wires to real providers and persistence.
 
 ## Ownership
 
-`money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `recommendation`,
-`eligibility`, `shortlist`, `events`, `eventOrder`, `risk`, `positionAge`,
-`transfer`. Everything is re-exported from `src/index.ts`.
+`money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
+`events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
+`freshness`. Everything is re-exported from `src/index.ts`.
 
 ## Local Contracts
 
@@ -23,17 +23,16 @@ functions that the server wires to real providers and persistence.
 - **Copy sizing is 0.25x measured input notional**, bounded by the configured
   per-buy, per-position, exposure, and daily limits. Exit quantities are
   proportional to the copied share.
-- **Recommendation validation returns exact, stable codes**
-  (`SNAPSHOT_MISMATCH`, `EXPIRED`, `REPLAYED_RECOMMENDATION_ID`, …). The server
-  and the audit UI depend on these strings; rename only with a coordinated
-  change.
-- **Fail closed by default.** Ambiguous events are skipped, stale
-  recommendations rejected, and exhausted shortlists reported as exhausted
-  rather than filled with an invented candidate.
+- **Watch/promotion gates return exact, stable reason codes** (`FEWER_THAN_K_CLOSED`,
+  `NET_BELOW_THRESHOLD`, `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`, `NO_SLOT`,
+  `NO_HEADROOM`). The dashboard shows them verbatim; rename only with a
+  coordinated change.
+- **Fail closed by default.** Ambiguous events are skipped, an unpriced mint or
+  a missing quote never invents a fill, and an unproven wallet is reported as
+  blocked rather than promoted.
 - **Purity:** no network, database, filesystem, or clock access. The only
-  non-local imports are `zod`, `node:crypto` (`createHash` for the snapshot
-  digest), and type-only imports from `@zcode-bot/config`. Time and IDs come
-  from arguments.
+  non-local imports are `zod` and type-only imports from `@zcode-bot/config`.
+  Time and IDs come from arguments.
 
 ## Work Guidance
 
@@ -47,8 +46,8 @@ functions that the server wires to real providers and persistence.
 
 ## Verification
 
-- `pnpm --filter @zcode-bot/core test` — `sizing`, `recommendation`,
-  `events`, `positionAge`, `transfer` suites.
+- `pnpm --filter @zcode-bot/core test` — `sizing`, `swap`, `events`,
+  `activity`, `watch`, `positionAge`, `transfer` suites.
 - `pnpm --filter @zcode-bot/core typecheck`
 - Any behavior change must have a test that fails before the change.
 

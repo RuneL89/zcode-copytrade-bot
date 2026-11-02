@@ -13,14 +13,13 @@ function dualTime(iso: string, now: number): string {
 const POLL_MS = 15_000;
 
 /**
- * Audit trail: recommendations (expandable rows), risk rejections,
- * reconciliation cases, and the event log. Refreshes every 15s and on demand
+ * Audit trail: risk rejections, reconciliation cases, and the event log (the
+ * watch/promotion decisions land there too). Refreshes every 15s and on demand
  * so the page never sits frozen at mount-time data.
  */
 export function AuditPage({ onBack }: { onBack: () => void }) {
   const [events, setEvents] = useState<Array<Record<string, unknown>>>([]);
   const [rejections, setRejections] = useState<Array<Record<string, unknown>>>([]);
-  const [recommendations, setRecommendations] = useState<Array<Record<string, unknown>>>([]);
   const [cases, setCases] = useState<Array<Record<string, unknown>>>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -29,15 +28,9 @@ export function AuditPage({ onBack }: { onBack: () => void }) {
 
   const load = useCallback(async () => {
     try {
-      const [a, r, rec, c] = await Promise.all([
-        api.audit(),
-        api.rejections(),
-        api.recommendation(),
-        api.reconciliation(),
-      ]);
+      const [a, r, c] = await Promise.all([api.audit(), api.rejections(), api.reconciliation()]);
       setEvents(a.events);
       setRejections(r.rejections);
-      setRecommendations(rec.recommendations);
       setCases(c.cases);
       setFetchedAt(new Date().toISOString());
       setError(null);
@@ -83,73 +76,6 @@ export function AuditPage({ onBack }: { onBack: () => void }) {
           {error}
         </p>
       )}
-
-      <section className="card p-4 mb-3.5">
-        <p className="label">Recommendations</p>
-        {recommendations.length === 0 && <p className="text-[12px] text-muted mt-2">none yet</p>}
-        <ul className="mt-2 space-y-1.5">
-          {recommendations.slice(0, 12).map((r: Record<string, unknown>) => {
-            const id = String(r.recommendationId);
-            const candidates =
-              (r.candidates as Array<{
-                rank: number;
-                candidateId: string;
-                confidence: number;
-                thesis: string;
-              }>) ?? [];
-            const open = expanded === id;
-            const status = String(r.status).toUpperCase();
-            const statusCls =
-              status === 'VALIDATED'
-                ? 'bg-posdim text-pos'
-                : status === 'CONSUMED'
-                  ? 'bg-infodim text-info'
-                  : status === 'REJECTED'
-                    ? 'bg-negdim text-neg'
-                    : 'bg-inset text-faint';
-            return (
-              <li key={id} className="panel overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setExpanded(open ? null : id)}
-                  aria-expanded={open}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer"
-                >
-                  <span className={`tag chip shrink-0 ${statusCls}`}>{status}</span>
-                  <span className="mono text-[9.5px] text-faint truncate">{id.slice(0, 13)}…</span>
-                  <span className="text-[10.5px] text-faint ml-auto shrink-0">
-                    {dualTime(String(r.createdAt), now)}
-                  </span>
-                  <span aria-hidden="true" className="text-faint text-[10px] shrink-0">
-                    {open ? '▾' : '▸'}
-                  </span>
-                </button>
-                {open && (
-                  <div className="px-3 pb-2.5 border-t border-insetborder">
-                    <p className="mono text-[9.5px] text-faint pt-1.5">
-                      expires {new Date(String(r.expiresAt)).toLocaleTimeString()} ·{' '}
-                      {r.modelLabel ? String(r.modelLabel) : 'model —'}
-                    </p>
-                    <ul className="mt-1 space-y-1 text-[11.5px]">
-                      {candidates.map((c) => (
-                        <li key={c.rank}>
-                          <strong>
-                            #{c.rank} {c.candidateId}
-                          </strong>{' '}
-                          <span className="text-faint">· confidence {c.confidence}</span> — {c.thesis}
-                        </li>
-                      ))}
-                    </ul>
-                    {r.validationError ? (
-                      <p className="text-neg text-[11.5px] mt-1">{String(r.validationError)}</p>
-                    ) : null}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
 
       <section className="card p-4 mb-3.5">
         <p className="label">Risk rejections</p>

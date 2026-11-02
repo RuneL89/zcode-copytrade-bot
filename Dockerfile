@@ -8,7 +8,6 @@ RUN corepack enable
 COPY pnpm-workspace.yaml package.json ./
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
-COPY apps/zcode-mcp/package.json apps/zcode-mcp/
 COPY packages/config/package.json packages/config/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
@@ -23,7 +22,6 @@ RUN pnpm --filter @zcode-bot/config run build \
   && pnpm --filter @zcode-bot/core run build \
   && pnpm --filter @zcode-bot/db run build \
   && pnpm --filter @zcode-bot/providers run build \
-  && pnpm --filter @zcode-bot/zcode-mcp run build \
   && pnpm --filter @zcode-bot/server run build \
   && pnpm --filter @zcode-bot/web run build
 
@@ -38,7 +36,6 @@ COPY pnpm-workspace.yaml package.json ./
 COPY --from=build /app/apps/server/dist apps/server/dist
 COPY --from=build /app/apps/server/package.json apps/server/
 COPY --from=build /app/apps/web/dist apps/web/dist
-COPY --from=build /app/apps/zcode-mcp apps/zcode-mcp
 COPY --from=build /app/packages/config/package.json packages/config/
 COPY --from=build /app/packages/config/dist packages/config/dist
 COPY --from=build /app/packages/core/package.json packages/core/

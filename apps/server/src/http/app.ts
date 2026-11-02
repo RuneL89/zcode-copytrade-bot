@@ -2,9 +2,8 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
-import { settingsPatchSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
+import { settingsPatchSchema, riskConfigSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
 import { parseManualCsv, parseManualJson } from '@zcode-bot/providers';
-import { snapshotHash } from '@zcode-bot/core';
 import {
   applyCsrfCookie,
   applySessionCookie,
@@ -41,7 +40,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       mode: rt.config.mode,
       armed: rt.control.flags.armed,
       fictional: rt.config.mode === 'demo',
-      appState: state?.appState ?? 'PAUSED_WAITING_FOR_CANDIDATE',
+      appState: state?.appState ?? 'PAUSED_NO_TRADER',
       setupTokenFileHint: needsSetup ? 'the one-time setup token is printed on the server console' : null,
       // NODE_ENV=test only — see Runtime.currentSetupTokenForTests().
       testSetupToken: rt.currentSetupTokenForTests(),
@@ -150,26 +149,6 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   );
   app.get('/api/positions', requireAuth(sessions), (c) => c.json({ positions: repo.listPositions(db, 200) }));
   app.get('/api/closes', requireAuth(sessions), (c) => c.json({ lots: repo.listPnlLots(db, 500) }));
-  app.get('/api/recommendation', requireAuth(sessions), (c) => {
-    const rows = repo.listRecommendations(db, 20).map((r) => ({
-      recommendationId: r.recommendationId,
-      status: r.status,
-      createdAt: r.createdAt,
-      expiresAt: r.expiresAt,
-      modelLabel: r.modelLabel,
-      abstain: r.abstain,
-      abstainReason: r.abstainReason,
-      validationError: r.validationError,
-      candidates: repo.listRecommendationCandidates(db, r.recommendationId).map((c2) => ({
-        rank: c2.rank,
-        candidateId: c2.candidateId,
-        confidence: Number(c2.confidence),
-        thesis: c2.thesis,
-        concerns: JSON.parse(c2.concernsJson) as string[],
-      })),
-    }));
-    return c.json({ recommendations: rows });
-  });
   app.get('/api/candidates', requireAuth(sessions), (c) =>
     c.json({
       candidates: repo.listCandidates(db),
@@ -208,19 +187,14 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         },
         telegramConfigured: Boolean(rt.config.env.TELEGRAM_BOT_TOKEN && rt.config.env.TELEGRAM_CHAT_ID),
         fomoWebConfigured: Boolean(process.env.FOMO_LEADERBOARD_URL),
+        // Never the key itself — presence only (D3 inlet).
+        fomoApiConfigured: Boolean(rt.config.env.FOMOAPI_KEY?.trim()),
+        fomoApiBaseUrl: rt.config.env.FOMOAPI_BASE_URL,
       },
       wallet: {
         exists: Boolean(walletPublicKey(rt.config.env.DATA_DIR)),
         publicKey: walletPublicKey(rt.config.env.DATA_DIR),
       },
-      snapshot: rt.snapshots.currentSnapshot()
-        ? {
-            snapshotId: rt.snapshots.currentSnapshot()!.snapshotId,
-            hash: snapshotHash(rt.snapshots.currentSnapshot()!),
-            createdAt: rt.snapshots.currentSnapshot()!.createdAt,
-            candidates: rt.snapshots.currentSnapshot()!.candidates.length,
-          }
-        : null,
       readiness: rt.readiness(),
       control: rt.control.flags,
       liveAckString: LIVE_ACK_STRING,
@@ -235,6 +209,20 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         {
           error: 'invalid settings patch',
           issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+        },
+        400,
+      );
+    }
+    // The patch may be individually valid yet leave the merged config
+    // inconsistent (e.g. MIN_PER_BUY_USD raised above MAX_PER_BUY_USD):
+    // validate the merged result so an inverted pair is refused here, not
+    // discovered at order time.
+    const mergedRisk = riskConfigSchema.safeParse({ ...rt.config.risk, ...parsed.data });
+    if (!mergedRisk.success) {
+      return c.json(
+        {
+          error: 'invalid settings patch',
+          issues: mergedRisk.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
         },
         400,
       );
@@ -258,7 +246,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     const result = format === 'csv' ? parseManualCsv(content) : parseManualJson(content);
     for (const entry of result.entries) {
-      const candidateId = 'cand_' + entry.handle.toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+      const candidateId = repo.candidateIdForHandle(entry.handle);
       repo.upsertCandidate(db, {
         candidateId,
         handle: entry.handle,
@@ -294,7 +282,6 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       warnings: result.warnings,
       skipped: result.skipped,
     });
-    rt.rebuildSnapshot();
     return c.json({
       ok: true,
       importId: result.importId,
@@ -309,19 +296,170 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     const body = await c.req.json().catch(() => null);
     const { candidateId } = (body ?? {}) as { candidateId?: string };
     if (!candidateId) return c.json({ error: 'candidateId required' }, 400);
-    const result = await rt.lifecycle.activate(candidateId, 'manual', true);
+    // The roster is addressed per candidate: a candidate already holding a chair
+    // is refused here rather than silently double-booked (plan 05).
+    if (repo.listActiveActivations(db).some((a) => a.candidateId === candidateId)) {
+      return c.json({ error: 'that candidate already holds a roster chair' }, 409);
+    }
+    const result = await rt.lifecycle.activate(candidateId, 'manual');
     rt.rebuildState();
     if (!result.ok) return c.json({ error: result.reason }, 400);
     return c.json({ ok: true, activationId: result.activationId });
   });
 
   app.post('/api/fire', requireAuth(sessions), requireCsrf, async (c) => {
-    const active = repo.activeActivation(db);
-    if (!active) return c.json({ error: 'no active trader' }, 400);
-    const outcome = await rt.lifecycle.fire(active.activationId, 'manual fire from dashboard');
+    // The roster addresses ONE chair: an explicit activationId (or candidateId)
+    // picks it; a bare call is only unambiguous with a single active leader.
+    const body = (await c.req.json().catch(() => ({}))) as { activationId?: string; candidateId?: string };
+    const active = repo.listActiveActivations(db);
+    const target = body.activationId
+      ? active.find((a) => a.activationId === body.activationId)
+      : body.candidateId
+        ? active.find((a) => a.candidateId === body.candidateId)
+        : active.length === 1
+          ? active[0]
+          : undefined;
+    if (!target) {
+      return c.json(
+        {
+          error:
+            active.length === 0
+              ? 'no active trader'
+              : 'several leaders are active; specify activationId or candidateId',
+        },
+        400,
+      );
+    }
+    const outcome = await rt.lifecycle.fire(target.activationId, 'manual fire from dashboard');
     rt.rebuildState();
     return c.json({ ok: true, outcome });
   });
+
+  // ---- watch list (D4) ----------------------------------------------------------------
+  // Demo mode is fictional: a promotion would hire a real trader into the live
+  // tables, so the actions are refused there (the panel's own promote button is
+  // disabled by its blocked reason in that mode anyway).
+  app.post('/api/watch/promote', requireAuth(sessions), requireCsrf, async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { candidateId?: string };
+    if (!body.candidateId) return c.json({ error: 'candidateId required' }, 400);
+    if (rt.config.mode === 'demo') {
+      return c.json({ error: 'watch list actions are disabled in demo mode' }, 409);
+    }
+    const result = await rt.watch.promoteNow(body.candidateId);
+    if (!result.ok) return c.json({ error: `cannot promote: ${result.reason}` }, 400);
+    return c.json({ ok: true, outcome: result.reason });
+  });
+
+  app.post('/api/watch/archive', requireAuth(sessions), requireCsrf, async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { candidateId?: string };
+    if (!body.candidateId) return c.json({ error: 'candidateId required' }, 400);
+    if (rt.config.mode === 'demo') {
+      return c.json({ error: 'watch list actions are disabled in demo mode' }, 409);
+    }
+    if (!repo.getWatchWallet(db, body.candidateId)) return c.json({ error: 'not on the watch list' }, 404);
+    repo.setWatchStatus(db, body.candidateId, 'archived', 'archived from the dashboard');
+    repo.audit(db, 'watch', 'watch archived from the dashboard', { candidateId: body.candidateId });
+    rt.rebuildState();
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/watch/unarchive', requireAuth(sessions), requireCsrf, async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { candidateId?: string };
+    if (!body.candidateId) return c.json({ error: 'candidateId required' }, 400);
+    if (rt.config.mode === 'demo') {
+      return c.json({ error: 'watch list actions are disabled in demo mode' }, 409);
+    }
+    if (!repo.getWatchWallet(db, body.candidateId)) return c.json({ error: 'not on the watch list' }, 404);
+    // Back to watching: the promotion gate re-decides on the next tick.
+    repo.setWatchStatus(db, body.candidateId, 'watching', 'unarchived from the dashboard');
+    repo.audit(db, 'watch', 'watch unarchived from the dashboard', { candidateId: body.candidateId });
+    rt.rebuildState();
+    return c.json({ ok: true });
+  });
+
+  // ---- test-only seeding (NODE_ENV=test) ----------------------------------------------
+  // The e2e suite needs watch-list rows to render, and the write path is a
+  // network scan. This route exists only when NODE_ENV=test (same guard as
+  // /api/bootstrap's testSetupToken) and only ever touches the caller's DB.
+  if (process.env.NODE_ENV === 'test') {
+    app.post('/api/test/seed-watch', async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        handle?: string;
+        closedTrades?: number;
+        netPerTradeUsd?: number;
+        lastBuyMinutesAgo?: number;
+        openNotionalUsd?: number;
+        openAgeHours?: number;
+      };
+      const handle = (body.handle ?? 'seeded_watch').trim();
+      const candidateId = repo.candidateIdForHandle(handle);
+      const now = Date.now();
+      // Deterministic per call: a re-seed replaces the candidate's whole record
+      // instead of piling new lots onto the old ones.
+      repo.resetWatchRecord(db, candidateId);
+      repo.upsertCandidate(db, {
+        candidateId,
+        handle,
+        weeklyRank: null,
+        displayedWeeklyPnlUsdMicro: null,
+        profileUrl: null,
+        avatarUrl: null,
+        enabled: true,
+        source: 'test-seed',
+        observedAt: new Date(now).toISOString(),
+      });
+      repo.upsertCandidateAddress(db, candidateId, {
+        chain: 'solana',
+        address: `SeedWallet${handle}`,
+        verification: 'reported',
+      });
+      repo.upsertWatchWallet(db, {
+        candidateId,
+        address: `SeedWallet${handle}`,
+        status: 'watching',
+        reason: 'test seed',
+      });
+      repo.insertWatchEvent(db, {
+        candidateId,
+        address: `SeedWallet${handle}`,
+        signature: `seed-buy-${handle}`,
+        side: 'buy',
+        mint: 'SeedMint1111111111111111111111111111111111111',
+        tokenAmountBase: '6000000',
+        decimals: 6,
+        usdMicro: '6000000',
+        blockTime: Math.floor(now / 1000) - 60,
+        observedAt: new Date(now - (body.lastBuyMinutesAgo ?? 5) * 60_000).toISOString(),
+        source: 'test-seed',
+      });
+      for (let i = 0; i < (body.closedTrades ?? 0); i++) {
+        const id = repo.openShadowTrade(db, {
+          candidateId,
+          mint: 'SeedMint1111111111111111111111111111111111111',
+          openedAt: new Date(now - (i + 1) * 3_600_000).toISOString(),
+          entryPriceUsdMicro: '1000000',
+          notionalUsdMicro: '5000000',
+        });
+        repo.closeShadowTrade(db, id, {
+          closedAt: new Date(now - (i + 1) * 3_600_000 + 60_000).toISOString(),
+          exitReason: 'leader_sell',
+          exitPriceUsdMicro: '1000000',
+          pnlUsdMicro: String(Math.trunc((body.netPerTradeUsd ?? 0) * 1e6)),
+        });
+      }
+      if (body.openNotionalUsd) {
+        repo.openShadowTrade(db, {
+          candidateId,
+          mint: 'SeedMint1111111111111111111111111111111111111',
+          openedAt: new Date(now - (body.openAgeHours ?? 1) * 3_600_000).toISOString(),
+          entryPriceUsdMicro: '1000000',
+          notionalUsdMicro: String(Math.trunc(body.openNotionalUsd * 1e6)),
+        });
+      }
+      rt.rebuildState();
+      return c.json({ ok: true, candidateId });
+    });
+  }
 
   // ---- operations console (no-terminal command runner) --------------------------------
   app.get('/api/ops', requireAuth(sessions), (c) => {
@@ -543,25 +681,6 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     rt.control.disarm();
     rt.unmountLiveExecutor();
     return { ok: true };
-  });
-
-  // ---- recommendation import (JSON-file fallback, same validation) ---------------------
-  app.post('/api/recommendation/import', requireAuth(sessions), requireCsrf, async (c) => {
-    const body = await c.req.json().catch(() => null);
-    if (!body || typeof body !== 'object') return c.json({ error: 'JSON payload required' }, 400);
-    const verdict = rt.recommendations.ingest(body);
-    rt.rebuildState();
-    return c.json(verdict, verdict.ok ? 200 : 422);
-  });
-
-  // ---- internal MCP submission endpoint (local random token) ----------------------------
-  app.post('/internal/recommendation', async (c) => {
-    const token = c.req.header('x-submit-token');
-    if (!token || !rt.checkSubmitToken(token)) return c.json({ error: 'invalid submit token' }, 403);
-    const body = await c.req.json().catch(() => null);
-    const verdict = rt.recommendations.ingest(body);
-    rt.rebuildState();
-    return c.json(verdict, verdict.ok ? 200 : 422);
   });
 
   // ---- demo replay controls --------------------------------------------------------------

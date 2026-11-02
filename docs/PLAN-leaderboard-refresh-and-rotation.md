@@ -1,5 +1,10 @@
 # Plan — unattended 24h-leaderboard refresh + flat-only trader rotation
 
+> **RETIRED (D2/D3/D6, 2026-11-01).** Board-driven rotation, the rank-fire
+> rule and the research bridge this plan describes are gone: the board is a
+> discovery feed, chairs are filled from the promotion queue, and the research
+> pipeline is deleted. Kept for the record only — do not implement any step here.
+
 Status: approved 2026-10-29 (implementation in progress)
 Owner: operator
 Scope: zcode-bot research loop

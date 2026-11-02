@@ -4,8 +4,7 @@ import {
   measureCopyableActivity,
   type CopyableActivityOptions,
 } from '../src/activity.js';
-import type { LeaderTxSummary, TokenDelta } from '../src/events.js';
-import { STABLE_MINTS, WRAPPED_SOL_MINT } from '../src/events.js';
+import { STABLE_MINTS, WRAPPED_SOL_MINT, type LeaderTxSummary, type TokenDelta } from '../src/tx.js';
 
 const USDC = [...STABLE_MINTS][0]!;
 const NOW = Date.parse('2026-11-01T12:00:00.000Z');
@@ -49,9 +48,12 @@ function opts(over: Partial<CopyableActivityOptions> = {}): CopyableActivityOpti
 }
 
 describe('measureCopyableActivity', () => {
-  it('counts an attributable buy as one entry', () => {
-    // 5,000 base @ 6 decimals = 0.005 token × $200 = $1.00
-    const s = measureCopyableActivity([tx({ tokenDeltas: [leg('TOKEN', 5_000n)] })], opts());
+  it('counts a funded buy as one entry (D4 definition)', () => {
+    // 5,000 base @ 6 decimals = 0.005 token × $200 = $1.00, paid with 1 USDC.
+    const s = measureCopyableActivity(
+      [tx({ tokenDeltas: [leg('TOKEN', 5_000n), leg(USDC, -1_000_000n)] })],
+      opts(),
+    );
     expect(s.copyableTrades24h).toBe(1);
     expect(s.entries24h).toBe(1);
     expect(s.exits24h).toBe(0);
@@ -59,22 +61,33 @@ describe('measureCopyableActivity', () => {
     expect(s.lastTradeAt).toBe(s.lastEntryAt);
   });
 
-  it('counts an attributable sell as an exit, not an entry', () => {
-    const s = measureCopyableActivity([tx({ tokenDeltas: [leg('TOKEN', -5_000n)] })], opts());
+  it('counts a funded sell as an exit, not an entry', () => {
+    const s = measureCopyableActivity(
+      [tx({ tokenDeltas: [leg('TOKEN', -5_000n), leg(USDC, 1_000_000n)] })],
+      opts(),
+    );
     expect(s.copyableTrades24h).toBe(1);
     expect(s.exits24h).toBe(1);
     expect(s.entries24h).toBe(0);
     expect(s.lastEntryAt).toBeNull();
   });
 
-  it('counts a token-for-token swap as one trade with an entry and an exit', () => {
+  it('counts a funded buy paid with SOL (native funding leg)', () => {
+    const s = measureCopyableActivity(
+      [tx({ tokenDeltas: [leg('TOKEN', 5_000n)], nativeDeltaBase: -1_000_000n })],
+      opts(),
+    );
+    expect(s.entries24h).toBe(1);
+  });
+
+  it('a token-for-token swap is a movement, never a funded buy or sell', () => {
     const s = measureCopyableActivity(
       [tx({ tokenDeltas: [leg('TOKEN', 5_000n), leg('CHEAP', -2_000_000n)] })],
       opts(),
     );
-    expect(s.copyableTrades24h).toBe(1);
-    expect(s.entries24h).toBe(1);
-    expect(s.exits24h).toBe(1);
+    expect(s.copyableTrades24h).toBe(1); // the coins moved
+    expect(s.entries24h).toBe(0); // but no funding leg was paid
+    expect(s.exits24h).toBe(0);
   });
 
   it('ignores a fee payout with no coin movement', () => {
@@ -96,9 +109,21 @@ describe('measureCopyableActivity', () => {
     expect(s.lastEntryAt).toBeNull();
   });
 
-  it('counts an airdrop above the floor as an entry (operator choice)', () => {
+  it('an airdrop above the floor is a movement but never an entry (D4)', () => {
     const s = measureCopyableActivity([tx({ tokenDeltas: [leg('TOKEN', 5_000n)] })], opts());
-    expect(s.entries24h).toBe(1);
+    expect(s.copyableTrades24h).toBe(1);
+    expect(s.entries24h).toBe(0);
+    expect(s.lastEntryAt).toBeNull();
+  });
+
+  it('a creator-fee distribution is never an entry anywhere', () => {
+    // Two fee inflows and a native payout: no funding leg was ever paid.
+    const s = measureCopyableActivity(
+      [tx({ tokenDeltas: [leg('TOKEN', 9_000_000n), leg('CHEAP', 2_000n)], nativeDeltaBase: 700_000n })],
+      opts(),
+    );
+    expect(s.entries24h).toBe(0);
+    expect(s.lastEntryAt).toBeNull();
   });
 
   it('ignores dust below the $1 floor', () => {
@@ -126,22 +151,20 @@ describe('measureCopyableActivity', () => {
   });
 
   it('stops at the lookback edge (newest-first input)', () => {
+    const funded = [leg('TOKEN', 5_000n), leg(USDC, -1_000_000n)];
     const s = measureCopyableActivity(
-      [
-        tx({ agesHours: 1, tokenDeltas: [leg('TOKEN', 5_000n)] }),
-        tx({ agesHours: 30, tokenDeltas: [leg('TOKEN', 5_000n)] }),
-      ],
+      [tx({ agesHours: 1, tokenDeltas: funded }), tx({ agesHours: 30, tokenDeltas: funded })],
       opts(),
     );
     expect(s.copyableTrades24h).toBe(1);
     expect(s.scannedTxs).toBe(1);
   });
 
-  it('reports the newest entry and newest trade independently', () => {
+  it('reports the newest funded buy and newest trade independently', () => {
     const s = measureCopyableActivity(
       [
-        tx({ agesHours: 1, tokenDeltas: [leg('TOKEN', -5_000n)] }), // exit 1h ago
-        tx({ agesHours: 3, tokenDeltas: [leg('TOKEN', 5_000n)] }), // entry 3h ago
+        tx({ agesHours: 1, tokenDeltas: [leg('TOKEN', -5_000n), leg(USDC, 1_000_000n)] }), // exit 1h ago
+        tx({ agesHours: 3, tokenDeltas: [leg('TOKEN', 5_000n), leg(USDC, -1_000_000n)] }), // buy 3h ago
       ],
       opts(),
     );
@@ -154,7 +177,10 @@ describe('measureCopyableActivity', () => {
 
   it('respects the scan cap', () => {
     const many = Array.from({ length: 5 }, (_, i) =>
-      tx({ agesHours: i + 1, tokenDeltas: [leg('TOKEN', 5_000n)] }),
+      tx({
+        agesHours: i + 1,
+        tokenDeltas: [leg('TOKEN', 5_000n), leg(USDC, -1_000_000n)],
+      }),
     );
     const s = measureCopyableActivity(many, opts({ maxTradeScan: 2 }));
     expect(s.copyableTrades24h).toBe(2);

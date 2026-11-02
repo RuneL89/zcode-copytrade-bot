@@ -12,32 +12,44 @@ Architecture, commands, security boundaries, and validation rules for any agent
 
 A self-hosted Solana copy-trading application ("ZCode Bot"):
 
-- Discovers weekly FOMO leaderboard traders via manual import or a read-only
-  browser adapter.
-- ZCode (via a restricted local MCP server + scheduled research task) submits
-  ordered candidate recommendations.
-- A single Node.js worker validates recommendations, copies the selected
-  trader's Solana swaps at 0.25x measured input notional, mirrors exits,
-  fires traders after two consecutive losing units, and replaces them from the
-  ordered recommendation — or fails closed to PAUSED_WAITING_FOR_ZCODE.
+- Discovers traders through the fomoapi leaderboard (24h + 7d + 30d + the
+  alerts feed); the native browser capture and Dawn stay manual fallbacks.
+- A Node.js worker watches the qualified wallets' funded buys, proves them on a
+  shadow ledger (our own exits, D4 gates), promotes the best onto a roster of up
+  to five leaders sharing one budget pool, and copies their swaps at 0.25x
+  measured input notional (floored, D1). Exits mirror the leader or hit the
+  position-age ceiling; a chair may stay empty rather than hire something
+  unproven.
 - An animated mobile-first React dashboard shows everything.
 
-**ZCode is the research agent — never the trading runtime.** All
-time-sensitive work (monitoring, sizing, exits, firing, orders, signing,
-reconciliation) belongs to the worker process.
+**ZCode is not the trading runtime.** All time-sensitive work (monitoring,
+sizing, exits, firing, orders, signing, reconciliation) belongs to the worker
+process. The runtime trades a **roster** of leaders (D4: up to `ROSTER_SIZE`,
+one shared budget pool, one position per mint per leader, same-mint bursts
+inside 60 s coalesced), filled from the watch list's promotion queue — never
+from a board ranking.
+
+The pipeline is deterministic and demand-driven (D3/D5): the fomoapi leaderboard
+is the discovery inlet, the watch list observes funded buys and runs a shadow
+ledger with our own exits (leader sell or the age ceiling at a live quote), and
+promotion needs the D4 sample, net and recency gates. There are exactly two
+monitoring clocks — the watch list (`WATCH_POLL_MS`) and the roster
+(`ROSTER_POLL_MS`); discovery runs only when the bench is thin or a chair is
+free with nothing promotable behind it, and a full roster plus a full bench
+spends nothing external. The LLM research pipeline (snapshot, MCP server, pinned
+agent, orderings, rotation) is RETIRED (D6) — do not recreate it.
 
 ## Repository layout
 
-| Path                 | Purpose                                                                                                                                            |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/server`        | Hono REST+SSE API, background worker, wallet CLI, demo replay                                                                                      |
-| `apps/web`           | React+Vite+Tailwind dashboard, Playwright e2e                                                                                                      |
-| `apps/zcode-mcp`     | Restricted MCP server for ZCode research (3 tools only)                                                                                            |
-| `packages/core`      | Domain: money (micro-USD bigints), 0.25x sizing, proportional exits, loss streaks, state machines, recommendation validation, event classification |
-| `packages/db`        | Drizzle ORM + SQLite (WAL), migrations, repositories                                                                                               |
-| `packages/providers` | Leaderboard import + FOMO web adapter, Dawn, Helius, free public Solana RPC (activity refresh), Jupiter, pricing, notifications                    |
-| `packages/config`    | Zod-validated env + risk configuration                                                                                                             |
-| `fixtures`           | Example leaderboard imports, fictional demo timeline                                                                                               |
+| Path                 | Purpose                                                                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/server`        | Hono REST+SSE API, background worker, wallet CLI, demo replay                                                                             |
+| `apps/web`           | React+Vite+Tailwind dashboard, Playwright e2e                                                                                             |
+| `packages/core`      | Domain: money (micro-USD bigints), 0.25x sizing, proportional exits, loss streaks, state machines, swap/event classification, watch rules |
+| `packages/db`        | Drizzle ORM + SQLite (WAL), migrations, repositories                                                                                      |
+| `packages/providers` | Leaderboard import + FOMO web adapter, Dawn, Helius, free public Solana RPC (activity refresh), Jupiter, pricing, notifications           |
+| `packages/config`    | Zod-validated env + risk configuration                                                                                                    |
+| `fixtures`           | Example leaderboard imports, fictional demo timeline                                                                                      |
 
 ## Commands
 
@@ -55,7 +67,6 @@ pnpm demo                   # start in fictional demo mode (28s replay)
 pnpm start                  # production start (serves web/dist + API + worker)
 pnpm wallet:create          # generate + encrypt the dedicated Solana wallet
 pnpm user:token             # reprint the one-time setup token
-pnpm mcp:start              # run the restricted MCP server standalone
 pnpm e2e                    # Playwright browser tests (chromium)
 pnpm e2e:install            # playwright install chromium
 ```
@@ -74,13 +85,15 @@ dashboard's OPS tab exposes a whitelist of these commands through
    screenshots, demo playback, or build verification. Live signing exists only
    behind `arm-live` + readiness + LIVE_TRADING_ACK and is never exercised by
    automated tests.
-3. **The ZCode MCP process gets ONLY** `ZCODE_MCP_SNAPSHOT_DIR` and
-   `ZCODE_MCP_INBOX_DIR` (and optionally the submit URL + token). It never
-   receives `.env`, wallet files, DB access, cookies, or trading tools.
+3. **No external process touches trading state.** The retired ZCode/MCP bridge
+   is gone (D6); the only network peers are the fomoapi leaderboard, the Solana
+   RPC providers and Jupiter. Nothing outside the worker reads the database or
+   the wallet.
 4. **Fail closed everywhere**: unknown outcomes → `REQUIRES_RECONCILIATION`
-   (never blind retry); ambiguous swaps are skipped; stale/expired
-   recommendations are rejected; exhausted shortlists pause instead of
-   inventing traders; unsupported chains return `SKIPPED_UNSUPPORTED_CHAIN`.
+   (never blind retry); ambiguous swaps are skipped; a stale API answer, an
+   unpriceable coin or a missing quote never invents a row; an empty chair stays
+   empty instead of hiring something unproven; unsupported chains return
+   `SKIPPED_UNSUPPORTED_CHAIN`.
 5. **Money is integer micro-USD (bigint)**; token amounts are base-unit
    strings with decimals. Never use JS floats for authoritative accounting.
 6. **Demo fixtures never touch live tables** (demo replay is in-memory);
@@ -106,11 +119,10 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 ```
 
 - Unit tests live next to each package (`packages/*/test`, `apps/*/test`).
-- Integration tests cover the engine lifecycle, firing/handoff, auth/CSRF, and
-  MCP least-privilege (`apps/server/test`, `apps/zcode-mcp/test`).
+- Integration tests cover the engine lifecycle, firing + roster refill, the
+  discovery inlet, the watch list/shadow ledger, auth/CSRF (`apps/server/test`).
 - Browser tests (`pnpm e2e`) run against the built app served by the server in
-  demo mode — including the fired-handoff animation and reduced-motion
-  behavior.
+  demo mode — the roster, watch-list and settings surfaces.
 - Provider tests use fixtures/mocks; none require or use a real key, wallet
   secret, or submit a transaction.
 - If a test fails, fix the code or the test's expectation — never delete or
@@ -128,10 +140,10 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Order-intent transitions are guarded (`packages/core/orderState.ts`); there
   is no transition from signed/submitted back to quotable. Preserve that.
 - Firing is transactional: mark FIRING + cancel unsigned intents atomically,
-  then position policy, shortlist consumption (see
-  `apps/server/src/services/lifecycle.ts`). The just-fired exclusion is the
-  only hiring ban: the most recently fired trader is un-hireable by automatic
-  paths until a different trader is activated; no timed cooldowns.
+  then position policy, then `fillRoster()` from the promotion queue (see
+  `apps/server/src/services/lifecycle.ts`). A fired trader returns only after a
+  funded buy observed after the firing (the `canReenter` rule); no timed
+  cooldowns. A stuck close freezes only its own chair.
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.
@@ -154,8 +166,8 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   every parent `AGENTS.md` above it.
 - This repository lives inside the `projects/` workspace. The workspace root
   `../AGENTS.md` carries parent-level operator rules that apply here — the
-  FOMO desktop-Chrome-only access policy and research-MCP subagent exclusivity.
-  No doc in this tree may weaken them.
+  FOMO desktop-Chrome-only access policy for any manual fallback capture. No doc
+  in this tree may weaken them.
 
 ### Read Before Editing
 
@@ -248,15 +260,14 @@ Guidance, Verification, Child DOX Index.
   - `apps/server/AGENTS.md` — trading runtime: HTTP/SSE API, worker, monitor,
     executors, ops console, CLIs.
     - `apps/server/src/services/AGENTS.md` — worker service layer: copy
-      engine, lifecycle, monitor, executors, research, state.
+      engine, lifecycle, monitor, watch, discovery, executors, state.
   - `apps/web/AGENTS.md` — mobile-first React dashboard and its SSE client.
     - `apps/web/e2e/AGENTS.md` — Playwright browser suite (demo mode, isolated
       data dir).
-  - `apps/zcode-mcp/AGENTS.md` — the restricted three-tool research MCP server.
-- `packages/AGENTS.md` — shared libraries and the package dependency direction.
+  - - `packages/AGENTS.md` — shared libraries and the package dependency direction.
   - `packages/config/AGENTS.md` — Zod env/risk validation and repo-root paths.
   - `packages/core/AGENTS.md` — pure domain logic: money, sizing, exits,
-    streaks, state machines, recommendation validation.
+    streaks, state machines, event classification.
   - `packages/db/AGENTS.md` — Drizzle schema, migrations, repositories, SQLite.
   - `packages/providers/AGENTS.md` — external IO: leaderboard, Dawn, Helius,
     Jupiter, pricing, notifications.

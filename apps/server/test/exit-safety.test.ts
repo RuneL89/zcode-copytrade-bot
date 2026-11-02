@@ -105,7 +105,7 @@ function seedPosition(recordsBase: string, inputUsdMicro = '90000000') {
     endReason: null,
     lossStreak: 0,
     firedReason: null,
-    source: 'zcode_shortlist',
+    source: 'manual',
   });
   const positionId = 'pos_' + crypto.randomUUID();
   repo.insertPosition(handle.db, {
@@ -231,7 +231,7 @@ describe('exit safety: sell what the wallet holds', () => {
   });
 });
 
-describe('exit safety: retries and handoff blocking', () => {
+describe('exit safety: retries and blocked fires', () => {
   it('retries a pre-submission failure and closes on the second attempt', async () => {
     const { positionId, activationId } = seedPosition('1000');
     const executor = new ScriptedExecutor([
@@ -253,7 +253,7 @@ describe('exit safety: retries and handoff blocking', () => {
     expect(repo.getPosition(handle.db, positionId)!.status).toBe('closed');
   });
 
-  it('reports a position as failed after every retry fails (handoff must block)', async () => {
+  it('reports a position as failed after every retry fails (the fire must stay blocked)', async () => {
     const { activationId } = seedPosition('1000');
     const executor = new ScriptedExecutor([
       { kind: 'failed', error: 'preflight rejected (not submitted): simulation failed' },

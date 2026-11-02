@@ -21,11 +21,6 @@ export default defineConfig({
       use: { ...devices['Pixel 7'] },
       testMatch: /mobile\.spec\.ts/,
     },
-    {
-      name: 'reduced-motion',
-      use: { ...devices['Desktop Chrome'], contextOptions: { reducedMotion: 'reduce' } },
-      testMatch: /reduced-motion\.spec\.ts/,
-    },
   ],
   webServer: {
     command: 'pnpm --filter @zcode-bot/server exec tsx src/index.ts',

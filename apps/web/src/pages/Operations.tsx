@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import type { OpDefinition, OpRun, OpsSystem } from '../types';
+import type { DashboardState, OpDefinition, OpRun, OpsSystem } from '../types';
 import { clockFromSeconds } from '../types';
 import { PageTabs, TabPanel } from '../components/PageTabs';
+import { WatchlistPanel } from '../components/WatchlistPanel';
 
 type OpsTab = 'status' | 'commands' | 'wallet' | 'history';
 
 /**
  * Operations console, tabbed: Status (system + live terminal), Commands
- * (whitelisted ops), Wallet (setup + withdrawals), History. Every op id and
- * confirmation word is server-defined; the client sends only those two fields.
+ * (whitelisted ops + the D4 watch list), Wallet (setup + withdrawals), History.
+ * Every op id and confirmation word is server-defined; the client sends only
+ * those two fields.
  */
-export function OperationsPage({ onBack }: { onBack: () => void }) {
+export function OperationsPage({ state, onBack }: { state: DashboardState | null; onBack: () => void }) {
   const [tab, setTab] = useState<OpsTab>('status');
   const [ops, setOps] = useState<OpDefinition[]>([]);
   const [current, setCurrent] = useState<OpRun | null>(null);
@@ -149,31 +151,47 @@ export function OperationsPage({ onBack }: { onBack: () => void }) {
               <section key={g.id} className="card p-4 mb-3.5" aria-label={g.title.toLowerCase()}>
                 <p className="label">{g.title}</p>
                 <ul className="mt-1.5 divide-y divide-insetborder">
-                  {list.map((op) => (
-                    <li key={op.id} className="flex items-center gap-3 py-2.5" data-testid={`op-${op.id}`}>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[13px] font-semibold">{op.label}</p>
-                        <p className="text-[11px] text-muted">{op.description}</p>
-                      </div>
-                      <button
-                        disabled={busy}
-                        onClick={() => void run(op)}
-                        className={`shrink-0 rounded-[10px] mono text-[11px] font-semibold px-3 py-1.5 transition-colors disabled:opacity-40 cursor-pointer ${
-                          op.danger === 'destructive'
-                            ? 'border border-negborder bg-negdim text-neg hover:bg-negdim/70'
-                            : op.danger === 'confirm'
-                              ? 'border border-warnborder bg-warndim text-warn hover:bg-warndim/70'
-                              : 'border border-accentborder bg-accentdim text-accent hover:bg-accentdim/70'
-                        }`}
-                      >
-                        {busy && current?.opId === op.id
-                          ? 'RUNNING…'
-                          : op.danger === 'destructive'
-                            ? 'RESET…'
-                            : 'RUN'}
-                      </button>
-                    </li>
-                  ))}
+                  {list.map((op) => {
+                    // Result line: the most recent run's summary, so the
+                    // outcome (e.g. discovery: added/merged/credits) is visible
+                    // where the operator pressed the button.
+                    const last = history.find((h) => h.opId === op.id);
+                    return (
+                      <li key={op.id} className="py-2.5" data-testid={`op-${op.id}`}>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[13px] font-semibold">{op.label}</p>
+                            <p className="text-[11px] text-muted">{op.description}</p>
+                          </div>
+                          <button
+                            disabled={busy}
+                            onClick={() => void run(op)}
+                            className={`shrink-0 rounded-[10px] mono text-[11px] font-semibold px-3 py-1.5 transition-colors disabled:opacity-40 cursor-pointer ${
+                              op.danger === 'destructive'
+                                ? 'border border-negborder bg-negdim text-neg hover:bg-negdim/70'
+                                : op.danger === 'confirm'
+                                  ? 'border border-warnborder bg-warndim text-warn hover:bg-warndim/70'
+                                  : 'border border-accentborder bg-accentdim text-accent hover:bg-accentdim/70'
+                            }`}
+                          >
+                            {busy && current?.opId === op.id
+                              ? 'RUNNING…'
+                              : op.danger === 'destructive'
+                                ? 'RESET…'
+                                : 'RUN'}
+                          </button>
+                        </div>
+                        {last?.summary ? (
+                          <p
+                            data-testid={`op-result-${op.id}`}
+                            className={`text-[11px] mt-1 ${last.status === 'succeeded' ? 'text-pos' : 'text-neg'}`}
+                          >
+                            {last.status === 'succeeded' ? '✓' : '✗'} {last.summary}
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
                 {busy && (
                   <p className="label !text-[9.5px] !text-warn mt-2">
@@ -183,6 +201,8 @@ export function OperationsPage({ onBack }: { onBack: () => void }) {
               </section>
             );
           })}
+          {/* The D4 watch list is managed from here as well as the dashboard. */}
+          {state && <WatchlistPanel state={state} />}
         </TabPanel>
       )}
 
@@ -290,7 +310,7 @@ function TerminalPane({ current }: { current: OpRun | null }) {
       </div>
       <pre
         ref={boxRef}
-        className="mono mt-2 rounded-[12px] bg-page-elev border border-insetborder text-[#c9cede] text-[10.5px] leading-[1.55] p-3 h-44 overflow-auto whitespace-pre-wrap break-all"
+        className="mono mt-2 rounded-[12px] bg-page-elev border border-insetborder text-ink text-[10.5px] leading-[1.55] p-3 h-44 overflow-auto whitespace-pre-wrap break-all"
         data-testid="ops-output"
       >
         {current && current.lines.length > 0
@@ -606,8 +626,7 @@ function ConfirmModal({
   const destructive = op.danger === 'destructive';
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 anim-scrim"
-      style={{ background: 'rgba(4, 5, 8, 0.7)', backdropFilter: 'blur(5px)' }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 anim-scrim bg-scrim backdrop-blur-[5px]"
       role="dialog"
       aria-modal="true"
       aria-label={`confirm ${op.label}`}

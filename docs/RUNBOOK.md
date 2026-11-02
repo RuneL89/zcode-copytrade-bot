@@ -70,114 +70,41 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 
 ## 2. Daily operation
 
-1. The 30-minute sweep refreshes the 24h FOMO board when the pool is older than 6h
-   (Procedure A stage 0, desktop Chrome) and rebuilds the snapshot. To refresh by
-   hand, follow `docs/FOMO_DAWN_FETCHING.md` (Settings → MANUAL IMPORT is still a
-   valid fallback). Every import is audited.
-2. Ensure the ZCode scheduled research task is active (docs/ZCODE_AUTOMATION.md)
-   and confirm a `VALID` recommendation appears in **Audit**.
-3. Activate the first candidate (Settings → activate, or the worker does it
-   from the shortlist after a firing). The monitor initializes the leader
-   cursor at activation — activity before activation is never copied.
-4. Watch the dashboard: equity, active trader (COPY 0.25x · FIRE AT 2 L),
-   live mirror card, closes chart, WHO WE COPY, health row.
+1. Start the server (`launch.bat`) and open http://127.0.0.1:8787. On boot the runtime catches up: discovery when the bench is thin, one watch pass, then the promotion queue fills the free chairs.
+2. Watch **Audit** for the pipeline: `discovery run` (rows, traders, credits), `watch admitted`, `shadow opened/closed`, `watch promoted`, `watch hired into the roster`.
+3. Use **Ops → Sync discovery now** when you want a board read immediately (it spends ~750 credits per run; the demand trigger otherwise runs it only when needed).
+4. Watch the dashboard: the ROSTER panel (chairs, streaks, per-seat FIRE), the WATCH LIST panel (status, last buy, closed/net, blocked reason) and the positions/closes panels grouped by leader.
+5. Manual fallbacks, if the API is unavailable: `docs/FOMO_DAWN_FETCHING.md` (desktop-Chrome capture, Dawn) or Settings → MANUAL IMPORT. Every import is audited and no fallback is scheduled.
 
-### Automatic rotation after a refresh
+### Rotation and board-driven replacement are retired (D6)
 
-Rotation is evaluated only in the sweep that follows a board refresh (the engine
-requires a `board.refreshed_at` marker written within the last 45 minutes), and it
-keeps the incumbent while they sit in the **top-3 of the latest captured scan**
-(widened 2026-10-30 from rank-1-only to match the rank-fire rule). Within that
-window, the recommendation carries `rotateIfFlat: true`; on ingest the engine fires
-the active trader **only if** it holds no open position, no reconciliation case and
-no in-flight entry intent, and **only if** some candidate on the new ordering is
-hireable. Otherwise it skips and writes `rotation skipped: …` to the audit trail.
+The board is a discovery feed, never the hireable universe (D2/D3). There is no
+automatic rotation, no rank-fire rule and no research-driven replacement: chairs
+are filled from the promotion queue, and a fire frees exactly one chair. Any
+A rotation request (if one is ever produced) is audited as ignored.
 
-Guards worth knowing:
+See **2b. Roster operations** below and `DECISIONS.md` D3/D4/D5/D6.
 
-- Rotation never closes positions — a non-flat trader is simply kept, so there is
-  no market action from a rotation.
-- A fresh board with no resolved wallets (Dawn not yet run) can never rotate: the
-  hireable check fails and the current trader stays.
-- **The only hiring ban is the just-fired exclusion** (operator decision,
-  2026-10-31; supersedes the 2026-10-30 no-cooldown note): the trader fired most
-  recently is un-hireable by every automatic path until a different trader has
-  been activated — in his own replacement walk (`JUST_FIRED` skip reason) and in
-  the idle/cold-start hire that follows a paused fire. Derived from the
-  activation rows, so it survives restarts; there is no timed cooldown of any
-  kind, and manual activation from the dashboard overrides.
-- **Live rotation is ENABLED as of 2026-10-29** (`ROTATE_ON_REFRESH=true` in
-  `.env`, restart required after any change). Remove that line to return to
-  paper-only rotation; an ignored intent is audited as
-  `rotation ignored: live mode requires ROTATE_ON_REFRESH=true`.
-- To stop rotation entirely, remove the rotation paragraph from
-  `.zcode/agents/zcode-research.md` (it is the only producer of the intent).
+### (retired) Rank-fire rule
 
-### Rank-fire rule (wired 2026-10-30)
+Removed with the board-driven pipeline (D2/D3/D6). A leader is fired for the
+reasons in **2b**: losing close units, a silent wallet, a stale last buy, or an
+idle chair.
 
-Every snapshot rebuild (30-minute timer, boot, debounced rebuilds) runs the rank
-watch against the captured 24h leaderboard scans. The active trader is fired when
-either:
+### The fire → promotion → hire path
 
-- he is **absent from the latest scan** (one scan is enough — absence is decay), or
-- he is **outside displayed top-3 in two consecutive scans**.
+A fire closes the chair's positions under `FIRE_POSITION_POLICY`, marks the
+activation FIRED, moves the trader to `cooling` (he returns only after a funded
+buy observed after the firing) and immediately calls `fillRoster()`, which takes
+the best promoted bench wallet. Nothing is promotable → the chair stays empty and
+the demand trigger asks discovery for a fresh bench. A close-out that needs
+reconciliation freezes **only** that chair.
 
-Both branches stand down when the latest scan is older than 2 hours, so a dead
-capture pipeline never drives fires; the audit line then reads
-`rank-watch stand-down: latest scan older than the freshness window`. A fire
-audits `strikes N, latest rank R` followed by `rank fire outcome: <status>` and
-uses the normal position policy (close all) and replacement walk. Every hire —
-replacement, cold start, rotation, manual — additionally requires the candidate's
-handle to be on the latest scan (`NOT_ON_BOARD` rejection otherwise), so the bot
-never hires a trader the board has already dropped. Scans come from the sweep's
-30-minute Procedure A imports; the last five scans live in
-`leaderboard_observations` (`repo.listRecentScans`), pruned after 30 days.
+### (retired) Actively-trading tier
 
-### The fire → research → hire pipeline (all firing conditions, 2026-10-30)
-
-Every firing condition routes through the same `lifecycle.fire()` and therefore
-the same pipeline, illustrated by the same dashboard box — the OPEN POSITIONS
-card's chips `IDLE TIMER › FIRED › RESEARCH › NEW HIRE` with a headline that
-names the live stage and cause:
-
-- **idle fire** — flat hire, `IDLE_FIRE_HOURS` with zero positions; runs on
-  every monitor tick so it lands when the countdown hits zero;
-- **rank fire** — absent from the latest scan once, or outside top-3 twice;
-- **stall fire** — leader wallet silent `LEADER_STALL_FIRE_HOURS` while we hold;
-- **loss fire** — `FIRE_AFTER_CONSECUTIVE_LOSSES` consecutive time-exit losses;
-- **manual fire** — the dashboard's fire button.
-
-The fire cause (`hiring.firedReason`, from the firing event) is shown in the
-box for the whole pause — e.g. "FIRED: rank: left the board (absent from the
-top-7 scan …)" — next to the pause reason ("ordering … predates the latest
-scan …"). The fired overlay (first 20s) carries the same cause.
-
-**Research is hire-time only.** A fire either (a) hires instantly from a valid
-ordering that postdates the newest scan, or (b) pauses
-(`PAUSED_WAITING_FOR_ZCODE`, handoff `paused_for_fresh_research`) and writes a
-`research_request` control row, which the 5-minute fast tick consumes
-(research-first, ≤5 min). There are no speculative triggers: an expired ordering
-while a trader is active does not re-run research, and neither does pool growth.
-This made rotation dormant (`rotateIfFlat` only arrives inside research
-orderings); the rank-fire rule is the momentum mechanism. The freshness guard
-(5-minute tolerance, 2h stand-down) and the POOL_TOO_THIN abstention stage are
-unchanged, and the same guard applies to cold start and idle resume.
-
-### Actively-trading tier (2026-10-31)
-
-Hire selection prefers day traders over holders: candidates whose wallet shows a
-**buy** — not any swap — inside `ACTIVE_BUY_WINDOW_HOURS` (default 4, tunable in
-Settings) are hired ahead of the rest, each tier ranked by the usual merit
-(lastBuyAt freshness, then pnl24h). The top-7 board candidates get a
-direction-aware refresh on every snapshot cycle (~30 min) — free public Solana
-RPC primary, Helius fallback — so the tier is current; sell-only or quiet
-wallets are not "actively trading". When nobody qualifies, the whole ordering
-falls back to the merit order. Every hire is direction-verified in BOTH passes
-(since 2026-10-31 — the merit pass used to skip the check, which is how a
-wallet 15h past its last buy got hired during a rate-limit storm): the live
-walk decides; when the walk fails, the last SUCCESSFUL refresh decides (fail
-closed on data); only a failed or never-run check fails open. Skipped
-candidates are recorded with the `NOT_ACTIVELY_TRADING` reason.
+The board-tier hire priority is gone with the ordering pipeline (D2/D3). A
+wallet's funded buys are what matter now, and they are judged by the D4
+admission and promotion gates.
 
 ### Stall watcher (wired 2026-10-29)
 
@@ -189,30 +116,42 @@ staleness is never judged from stale evidence). The audit line reads
 closes any open positions and the replacement takes the slot. This is what makes
 "traders are discarded after no activity" literally true; the pre-hire gate
 (`MAX_LEADER_STALL_HOURS`, 20h) is a separate decision about who may be hired.
-The rank-fire rule above usually fires first; the stall watcher is the backstop
-for when the board itself is unavailable.
+With the board-driven rank-fire rule retired (D6), the stall watcher is the
+silence exit.
 
-### Wallet resolution runs in the data sweep — except one state
+### Wallet resolution (fallback only)
 
-Since 2026-10-31 the 30-minute data-sweep cron resolves missing wallets via
-`tsx src/cli/dawn-lookup.ts --all-missing --limit 20` right after each board
-import (walletless candidates only). The server itself no longer schedules
-Dawn — no boot run, no 6h timer, no post-rebuild auto-run; manual operator
-runs still work. Every run is audited: `lookup run starting`, `resolved N
-address(es), M unresolved`, or `lookup skipped: another run already in
-progress`. The one state that needs you:
+The fomoapi leaderboard rows carry verified wallets, so wallet resolution is no
+longer part of the loop. Dawn remains a **manual** fallback for a handle outside
+the boards (`pnpm exec tsx src/cli/dawn-lookup.ts --all-missing`, or the Ops
+action), and the native board capture stays a manual fallback per
+`docs/FOMO_DAWN_FETCHING.md`.
 
-> `Telegram session needs login; QR login window opened`
+## 2b. Roster operations (D4/plan 05)
 
-The Telegram Web session in `data/browser-profile-dawn` has died. A QR login window
-is already open on the desktop — scan it with the phone once and the next scheduled
-run proceeds on its own. If you miss the window, run the dashboard action
-"Open Telegram (Dawn) browser for login".
+The roster holds up to `ROSTER_SIZE` leaders (default 5) **sharing one budget
+pool** — there is no per-leader slice, and promotions are first-come.
 
-Candidate usability follows two independent clocks: a candidate needs a wallet and
-freshness on at least one of them — leaderboard observation within 24h **or**
-on-chain activity check within 6h. A stale observation with a freshly verified
-wallet stays usable; the researcher flags its outdated PnL marks as a concern.
+- **Fire one leader.** Dashboard → Roster → **FIRE** (per seat, asks for the
+  word FIRE) or `POST /api/fire {activationId}`. The OTHER seats keep trading;
+  only the fired leader's positions close. With several leaders active a bare
+  `POST /api/fire` is refused — name the chair.
+- **A fire frees exactly one chair.** The promotion queue fills it immediately
+  from the bench (best shadow record first, then oldest). No bench wallet → the
+  chair stays **empty**; that is acceptable, and discovery refills the bench
+  when it drops below `BENCH_TARGET`.
+- **Shared pool.** A hire is refused when the pool headroom is below
+  `MIN_HIRE_HEADROOM_USD` (`NO_HEADROOM`). Deployed % is computed across all
+  seats at once (`MAX_DEPLOYED_PCT`).
+- **Reconciliation isolation.** A seat stuck in `REQUIRES_RECONCILIATION`
+  freezes only itself: it keeps its chair, the other seats keep being polled
+  and can be fired. Resolve the case (section 6) to unfreeze it.
+- **Entry shaping.** One position per mint per leader; same-mint buys inside
+  60 s are coalesced into the existing position (`COALESCED_SAME_MINT_BURST`
+  in **Audit**). `PER_MINT_CAP_USD > 0` caps the roster-wide exposure to one
+  mint (`PER_MINT_CAP`); `0` disables the cap.
+- **Poll cadence.** Every hired wallet is polled every `ROSTER_POLL_MS`
+  (default 45 s); the watch list keeps its own 5-minute clock.
 
 ## 3. Pause / resume
 
@@ -220,14 +159,11 @@ wallet stays usable; the researcher flags its outdated PnL marks as a concern.
   monitoring, mirrored exits, reconciliation, emergency stop, and close-all
   all continue.
 - **Resume** re-enables entries.
-- **PAUSED_WAITING_FOR_ZCODE** (automatic): the shortlist is exhausted,
-  stale, or missing. The dashboard says so and the audit shows a
-  `replacement_request`. Since 2026-10-30 the pause self-heals: the next
-  validated ordering (the 30-minute sweep's research) is hired automatically —
-  paper always, live while armed — provided a candidate passes the
-  board-presence, activity and day gates. Until such an ordering exists the
-  pause stands; do not "fix" it by hand-activating candidates unless you
-  deliberately want a manual override.
+- **PAUSED_NO_TRADER** (automatic): no leader holds a chair. An empty chair is a
+  normal state (D4) — the promotion queue fills it as soon as a watched wallet
+  passes the D4 gate, and the demand trigger refills the bench in the meantime.
+  Do not "fix" it by hand-activating an unproven wallet unless you deliberately
+  want a manual override.
 
 ## 4. Emergency procedures
 
@@ -346,7 +282,7 @@ HELIUS DOWN in the dashboard health row.
 
 ## 8. Backups and recovery
 
-- Back up `DATA_DIR` (SQLite DB + WAL, wallet file, research dirs). Stop the
+- Back up `DATA_DIR` (SQLite DB + WAL, wallet file). Stop the
   server first (or copy both `-wal`/`-shm` files with it).
 - The wallet file is useless without the encryption secret — store them
   separately (password manager / offline paper).
@@ -359,7 +295,7 @@ HELIUS DOWN in the dashboard health row.
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | Badge STALE                                 | provider health failing or leaderboard observation older than `LEADERBOARD_MAX_AGE_SECONDS` → refresh import. |
 | Badge RECONCILIATION                        | open reconciliation case → §6.                                                                                |
-| PAUSED_WAITING_FOR_ZCODE                    | no eligible candidate → ZCode Run now / import recommendation.                                                |
+| PAUSED_NO_TRADER                            | no chair is filled → nothing to do; the promotion queue and the demand-driven discovery fill it.              |
 | Entries never happen                        | check Audit → RISK REJECTIONS (rule names map to `.env` limits); check pause/emergency state.                 |
 | Helius 429                                  | rate limited — increase `LEADER_POLL_INTERVAL_MS`.                                                            |
 | `worker lock held by another process`       | a worker is already running; stop it or remove a stale `data/worker.lock`.                                    |
@@ -367,6 +303,7 @@ HELIUS DOWN in the dashboard health row.
 
 ## 10. What ZCode Remote Control / chat channels are NOT
 
-ZCode Remote Control, chat channels, and scheduled tasks drive **research
-only**. They are not a cloud runtime: the worker, dashboard, and signing live
-on your machine, and chat messages cannot sign, arm, or trade.
+ZCode Remote Control and chat channels are **not** part of the trading loop and
+drive nothing in it (the LLM research pipeline is retired, D6). They are not a
+cloud runtime: the worker, dashboard, and signing live on your machine, and chat
+messages cannot sign, arm, or trade.

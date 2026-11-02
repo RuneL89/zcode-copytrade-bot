@@ -1,45 +1,42 @@
 /**
- * Copyable-trade measurement (operator decision, 2026-11-01).
+ * Copyable-trade measurement.
  *
- * A candidate's on-chain activity is measured in COIN MOVEMENTS, not raw
- * transactions and not buy/sell verdicts:
+ * Two layers, deliberately kept apart:
  *
- *   entry — the leader's own balance of a non-funding mint rose in the tx
- *   exit  — the leader's own balance of a non-funding mint fell in the tx
- *   trade — any tx that qualified at least one entry or exit, OR a tx the
- *           leader signed that moved a copyable coin on accounts we cannot
- *           attribute to him (program/PDA-routed trades). An unattributed
- *           trade counts as activity, never as an entry.
+ * 1. **Funded buys and sells** (D4's definition, `classifyFundedSwap`) — a coin
+ *    bought or sold against a funding leg (a stable mint or SOL). These are the
+ *    numbers admission and promotion use: `entries24h` / `lastEntryAt` are
+ *    funded buys, `exits24h` funded sells. A token inflow with no funding leg —
+ *    a creator-fee distribution, an airdrop — is therefore never an entry.
  *
- * The quote asset is irrelevant: paying with SOL, USDC or another token all
- * count the same. Funding mints (USD stables, wrapped SOL) are quote legs, not
- * the coin being copied.
+ * 2. **Coin movements** — the broader activity clock. Any transaction the
+ *    leader signed that moved a priceable, non-funding coin on his own accounts,
+ *    or that moved one on accounts we cannot attribute to him (program/PDA
+ *    routed trades), counts as a trade. `copyableTrades24h` / `lastTradeAt` /
+ *    `unattributedTrades24h` stay on this definition, so the pre-hire
+ *    "is he moving coins at all" gate keeps its meaning.
  *
  * A coin only counts if it is copyable: it must carry a price/route quote
  * (`priceOf`), otherwise the engine could not buy it on our side. Dust below
- * `minTradeUsdMicro` is ignored, which is what filters airdrops and spam from
- * posing as trades — unless the operator chose an airdrop-inclusive floor.
+ * `minTradeUsdMicro` is ignored, which is what filters spam from posing as
+ * trades — unless the operator chose an airdrop-inclusive floor.
  */
 
-import {
-  STABLE_MINTS,
-  WRAPPED_SOL_MINT,
-  type LeaderTxSummary,
-  type TokenDelta,
-} from './events.js';
+import { classifyFundedSwap } from './swap.js';
+import { STABLE_MINTS, WRAPPED_SOL_MINT, type LeaderTxSummary, type TokenDelta } from './tx.js';
 
 export interface CopyableActivitySample {
-  /** Trades that moved at least one copyable coin in the window. */
+  /** Trades that moved at least one copyable coin in the window (movement clock). */
   copyableTrades24h: number;
-  /** Coin inflows attributable to the leader's own accounts. */
+  /** Funded buys attributable to the leader's own accounts (D4 definition). */
   entries24h: number;
-  /** Coin outflows attributable to the leader's own accounts. */
+  /** Funded sells attributable to the leader's own accounts (D4 definition). */
   exits24h: number;
   /** Signed txs that moved a copyable coin on unattributable accounts. */
   unattributedTrades24h: number;
   /** Newest copyable trade (drives the quiet/stall clock). */
   lastTradeAt: string | null;
-  /** Newest attributable entry (drives "actively buying" at hire time). */
+  /** Newest funded buy (drives "actively buying" and watch-list admission). */
   lastEntryAt: string | null;
   /** Distinct mints that had a price quote in this measurement. */
   pricedMints: number;
@@ -117,7 +114,29 @@ export function measureCopyableActivity(
     if (tMs < cutoffMs) break; // newest-first: everything after is out of window
     sample.scannedTxs++;
     if (tx.err) continue; // failed txs move nothing
+    const isoTs = new Date(tMs).toISOString();
 
+    // --- funded layer: the D4 buy/sell definition --------------------------
+    const swap = classifyFundedSwap(tx);
+    if (swap) {
+      const price = opts.priceOf(swap.mint);
+      if (price === null) {
+        unbuyable.add(swap.mint);
+      } else {
+        const usd = usdValueMicro(swap.tokenDeltaBase, swap.decimals, price);
+        if (usd >= opts.minTradeUsdMicro) {
+          priced.add(swap.mint);
+          if (swap.side === 'buy') {
+            sample.entries24h++;
+            if (sample.lastEntryAt === null) sample.lastEntryAt = isoTs;
+          } else {
+            sample.exits24h++;
+          }
+        }
+      }
+    }
+
+    // --- movement layer: the broader activity clock ------------------------
     let entries = 0;
     let exits = 0;
     for (const leg of tx.tokenDeltas) {
@@ -154,12 +173,8 @@ export function measureCopyableActivity(
     if (entries === 0 && exits === 0 && !unattributed) continue;
 
     sample.copyableTrades24h++;
-    sample.entries24h += entries;
-    sample.exits24h += exits;
     if (unattributed) sample.unattributedTrades24h++;
-    const iso = new Date(tMs).toISOString();
-    if (sample.lastTradeAt === null) sample.lastTradeAt = iso;
-    if (entries > 0 && sample.lastEntryAt === null) sample.lastEntryAt = iso;
+    if (sample.lastTradeAt === null) sample.lastTradeAt = isoTs;
   }
 
   sample.pricedMints = priced.size;

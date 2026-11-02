@@ -39,8 +39,8 @@ interface AddressRow {
 }
 
 const ACTIVE_BUY_WINDOW_HOURS = 4; // ACTIVE_BUY_WINDOW_HOURS default (engine re-verifies live)
-const SWAPS_24H_MIN = 5; // researcher ranking gate
-const LAST_SWAP_MAX_HOURS = 20; // researcher ranking gate
+const SWAPS_24H_MIN = 5; // funded-activity screen shown in the pool table
+const LAST_SWAP_MAX_HOURS = 20; // the same screen's recency window
 
 const POLL_MS = 30_000;
 
@@ -66,7 +66,7 @@ function ageLabel(ageH: number | null): string {
 }
 
 /**
- * Buyer tier for the board sort — mirrors the researcher's ordering tiers
+ * Buyer tier for the pool table's sort — mirrors the watch list's admission
  * (actively trading → bought in 24h → rest). Unknown always sorts last: an
  * unverified wallet is not a buyer as far as this display is concerned.
  */
@@ -81,10 +81,10 @@ function buyerTier(row: CandidateRow, now: number): 0 | 1 | 2 {
 /**
  * "Who we copy", rebuilt around what the sweep captures and what the loop
  * considers: a board-pulse strip (how much of the board is actually buying),
- * the researcher's current ordering (who takes the slot if the holder is fired
+ * the promotion queue's order (who takes a chair if one frees
  * now), and every candidate on the board with a direction-aware buyer chip —
  * BUY with age, sell-heavy marker, or an explicit unknown state (CHECK FAILED
- * / NO DATA). Data: SSE recommendation + a 30s poll of GET /api/candidates.
+ * / NO DATA). Data: the dashboard state (SSE) + a 30s poll of GET /api/candidates.
  * The engine re-verifies every gate live at hire time — this is display-only.
  */
 export function CandidatesPanel({ state }: { state: DashboardState }) {
@@ -167,7 +167,6 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
     };
   };
 
-  const ordered = state.recommendation.status === 'VALID' ? state.recommendation.ordered : [];
   const board = useMemo(
     () =>
       [...rows]
@@ -204,9 +203,8 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
 
   const statusChip = (candidateId: string) => {
     const e = sseById.get(candidateId);
-    if (e?.active) return <span className="tag chip bg-posdim text-pos !text-[8.5px]">NOW</span>;
-    if (e?.fired) return <span className="tag chip bg-negdim text-neg !text-[8.5px]">FIRED</span>;
-    if (e?.awaitingZcode) return <span className="tag chip bg-warndim text-warn !text-[8.5px]">WAITING</span>;
+    if (e?.active) return <span className="tag chip bg-posdim text-pos !text-[10px]">NOW</span>;
+    if (e?.fired) return <span className="tag chip bg-negdim text-neg !text-[10px]">FIRED</span>;
     return null;
   };
 
@@ -217,7 +215,7 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
    */
   function BuyerChip({ row }: { row: CandidateRow }) {
     const g = gates(row);
-    const base = 'tag chip !text-[8.5px] shrink-0 whitespace-nowrap';
+    const base = 'tag chip !text-[10px] shrink-0 whitespace-nowrap';
     if (row.activityCheckStatus === 'failed') {
       return (
         <span
@@ -307,176 +305,19 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
         </p>
       )}
 
-      {/* Zone 1 — next up if fired now: the researcher's ordering + gates */}
+      {/* Chairs are filled from the watch list's promotion queue (D4). */}
       <div className="panel p-3 mt-2.5">
-        <p className="label !text-[10px]">
-          Next up if fired now
-          {state.recommendation.status === 'VALID' ? (
-            <span className="text-faint"> · ordering {state.recommendation.modelLabel ?? ''}</span>
-          ) : null}
+        <p className="label !text-[10px]">Next up if a chair frees</p>
+        <p className="text-[11.5px] text-muted mt-1">
+          {state.watchlist.bench > 0
+            ? `${state.watchlist.bench} promotable wallet(s) on the bench — the next chair goes to the best shadow record.`
+            : `No promotable wallet yet — the bench target is ${state.watchlist.benchTarget} and discovery refills it.`}
         </p>
-        {ordered.length === 0 ? (
-          <p className="text-[11.5px] text-muted mt-1">
-            {state.recommendation.status === 'NONE'
-              ? 'No ordering yet — research ranks the board after the next sweep + request.'
-              : `Recommendation ${state.recommendation.status.toLowerCase()} — the next fire pauses for fresh research.`}
-          </p>
-        ) : (
-          <ul className="mt-1.5 space-y-1.5">
-            {ordered.slice(0, 4).map((o) => {
-              const row = o.candidateId ? byId.get(o.candidateId) : undefined;
-              return (
-                <li key={o.candidateId} className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`mono text-[10px] font-bold w-4 text-center shrink-0 ${o.rank === 1 ? 'text-accent' : 'text-faint'}`}
-                  >
-                    {o.rank}
-                  </span>
-                  <Avatar name={o.handle ?? '?'} size={22} />
-                  <span className="text-[12px] font-semibold truncate min-w-0 flex-1">
-                    @{o.handle ?? o.candidateId.slice(0, 8)}
-                  </span>
-                  {row && <BuyerChip row={row} />}
-                  {o.eligibleNow ? (
-                    <span className="tag chip bg-posdim text-pos !text-[8px] shrink-0">ELIGIBLE</span>
-                  ) : (
-                    <span className="tag chip bg-inset text-faint !text-[8px] shrink-0">GATED</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
       </div>
 
-      {/* Zone 2 — on the board: capture-freshness per candidate */}
-      {board.length === 0 && !loadError ? (
-        <p className="text-[12px] text-muted mt-2.5">
-          No candidates imported yet — the sweep writes the board into Settings → Imports.
-        </p>
-      ) : (
-        <ul className="mt-2.5 space-y-1.5">
-          {board.map((r) => {
-            const e = sseById.get(r.candidateId);
-            const open = openId === r.candidateId;
-            const g = gates(r);
-            return (
-              <li key={r.candidateId} className="panel overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setOpenId(open ? null : r.candidateId)}
-                  aria-expanded={open}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-left cursor-pointer"
-                >
-                  <Avatar name={r.handle} url={r.avatarUrl} size={30} />
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className={`text-[13px] font-semibold truncate ${e?.fired ? 'line-through text-faint' : ''}`}
-                    >
-                      @{r.handle}
-                      {e?.active && <span className="label !text-[8.5px] ml-2 text-pos">NOW</span>}
-                    </p>
-                    <p className="mono text-[9.5px] text-faint">
-                      {r.rank24h !== null
-                        ? `#${r.rank24h} 24h`
-                        : r.weeklyRank !== null
-                          ? `#${r.weeklyRank} weekly`
-                          : '—'}
-                      {r.pnl24hUsd !== null && (
-                        <span className={`ml-2 ${r.pnl24hUsd > 0 ? 'text-pos' : 'text-neg'}`}>
-                          {signedUsd(String(Math.round(r.pnl24hUsd * 1e6)), 0)} 24h
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  {statusChip(r.candidateId)}
-                  <BuyerChip row={r} />
-                  <span aria-hidden="true" className="text-faint text-[9px] shrink-0">
-                    {open ? '▾' : '▸'}
-                  </span>
-                </button>
-                {open && (
-                  <div className="px-3 pb-2.5 border-t border-insetborder pt-1.5 anim-stage">
-                    <div className="mono text-[10px] text-muted grid grid-cols-2 gap-x-3 gap-y-1">
-                      <span>
-                        board <span className="text-ink">{ageLabel(g.obsAge)} ago</span>
-                      </span>
-                      <span>
-                        dawn stats <span className="text-ink">{ageLabel(g.statsAge)} ago</span>
-                      </span>
-                      <span>
-                        helius <span className="text-ink">{ageLabel(g.actAge)} ago</span>
-                      </span>
-                      <span>
-                        swaps 24h <span className="text-ink">{r.swaps24h ?? '—'}</span>
-                      </span>
-                      <span>
-                        last swap <span className="text-ink">{ageLabel(g.lastSwapAge)} ago</span>
-                      </span>
-                      <span>
-                        last buy <span className="text-ink">{ageLabel(g.lastBuyAge)} ago</span>
-                      </span>
-                      <span>
-                        buys 24h <span className="text-ink">{r.buys24h ?? '—'}</span>
-                      </span>
-                      <span>
-                        sells 24h <span className="text-ink">{r.sells24h ?? '—'}</span>
-                      </span>
-                      <span>
-                        check{' '}
-                        <span className={r.activityCheckStatus === 'failed' ? 'text-neg' : 'text-ink'}>
-                          {r.activityCheckStatus ?? 'never'}
-                          {g.actAge !== null ? ` · ${ageLabel(g.actAge)} ago` : ''}
-                        </span>
-                      </span>
-                      <span>
-                        win rate{' '}
-                        <span className="text-ink">
-                          {r.winRatePct !== null ? `${Math.round(r.winRatePct)}%` : '—'}
-                        </span>
-                      </span>
-                      <span>
-                        card buys/sells{' '}
-                        <span className="text-ink">
-                          {r.recentBuys ?? '—'}/{r.recentSells ?? '—'}
-                        </span>
-                      </span>
-                      <span className="col-span-2">
-                        addresses{' '}
-                        <span className="text-ink">
-                          {g.addrs.length === 0
-                            ? 'none resolved'
-                            : g.addrs
-                                .map((a) => `${a.chain}:${a.address.slice(0, 6)}… (${a.verification})`)
-                                .join(', ')}
-                        </span>
-                      </span>
-                      {e && e.contributionUsdMicro !== '0' && (
-                        <span className="col-span-2">
-                          session contribution{' '}
-                          <span className="money text-ink">{signedUsd(e.contributionUsdMicro)}</span>
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-faint mt-1.5 leading-snug">
-                      Gates and direction counts are display-only, from the sweep and the wallet refresh
-                      (board ≤ latest scan, Dawn stats ≤ 12h, activity ≤ 6h, active buy ≤{' '}
-                      {ACTIVE_BUY_WINDOW_HOURS}h). CHECK FAILED / NO DATA mean the direction is unknown — not
-                      that the wallet is quiet. The engine re-verifies everything live at hire time.
-                    </p>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
       <p className="label !text-[9.5px] !text-faint mt-3 border-t border-insetborder pt-2">
-        Weekly top on FOMO · recommendation{' '}
-        {state.recommendation.status === 'VALID'
-          ? `VALID (${state.recommendation.ordered.length} ordered · ${state.recommendation.modelLabel ?? 'model'})`
-          : state.recommendation.status.toLowerCase()}
+        Weekly top on FOMO · watch list {state.watchlist.size}/{state.watchlist.cap} · bench{' '}
+        {state.watchlist.bench}/{state.watchlist.benchTarget}
       </p>
     </section>
   );

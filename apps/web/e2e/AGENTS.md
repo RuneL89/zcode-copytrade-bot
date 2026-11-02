@@ -3,12 +3,12 @@
 ## Purpose
 
 Black-box browser tests for the dashboard. They drive the real built app
-through Playwright and assert what a phone/desktop operator would see, including
-the fired-handoff animation and reduced-motion behavior.
+through Playwright and assert what a phone/desktop operator would see.
 
 ## Ownership
 
-- Specs: `dashboard.spec.ts`, `mobile.spec.ts`, `reduced-motion.spec.ts`.
+- Specs: `dashboard.spec.ts`, `mobile.spec.ts`, `pipeline.spec.ts` (the plan-07
+  spine: order, counts vs the API payload, themes, reduced motion, states).
 - Harness: `playwright.config.ts` (repo root of the app), `global-setup.ts`,
   `helpers.ts`, `paths.ts`.
 
@@ -21,9 +21,10 @@ the fired-handoff animation and reduced-motion behavior.
   processes re-load it and would delete live data mid-run.
 - **Demo mode only.** No API keys, wallets, signing, or real market calls are
   exercised. Assertions must expect the `FICTIONAL DEMO` banner.
-- **Three projects:** `chromium` (Desktop Chrome), `mobile` (Pixel 7, only
-  `mobile.spec.ts`), `reduced-motion` (only `reduced-motion.spec.ts`). The
-  runner is serial (`fullyParallel: false`, `workers: 1`, no retries).
+- **Two projects:** `chromium` (Desktop Chrome), `mobile` (Pixel 7, only
+  `mobile.spec.ts`). A spec that needs reduced motion calls
+  `page.emulateMedia({ reducedMotion: 'reduce' })` itself. The runner is serial
+  (`fullyParallel: false`, `workers: 1`, no retries).
 - **The setup token shortcut is test-only.** `helpers.ts` reads
   `testSetupToken` from `/api/bootstrap`, which exists only under
   `NODE_ENV=test`. Never enable that field in any other environment.

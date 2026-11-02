@@ -46,9 +46,16 @@ export class LeaderMonitor {
       null,
   ) {}
 
-  start(): void {
+  /**
+   * Mark the monitor running. `selfSchedule` false lets the RUNTIME own the
+   * clock (its `rosterTimer` calls `tick()`), which keeps the two monitoring
+   * timers in one place — the roster every ROSTER_POLL_MS and the watch list
+   * every WATCH_POLL_MS (D5/plan 06).
+   */
+  start(selfSchedule = true): void {
     if (this.timer) return;
     this.running = true;
+    if (!selfSchedule) return;
     this.timer = setInterval(() => {
       void this.tick();
     }, this.pollIntervalMs);
@@ -60,62 +67,94 @@ export class LeaderMonitor {
     this.running = false;
   }
 
+  /**
+   * One pass over the ROSTER (plan 05): every ACTIVE/FIRING/
+   * REQUIRES_RECONCILIATION activation is polled and disciplined on its own, and
+   * a failure in one (provider error, bad data) is audited without stopping the
+   * others. A stuck reconciliation keeps its own chair frozen and nothing else.
+   */
   async tick(now = new Date()): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      const activation = repo.activeActivation(this.db);
-      if (activation) {
-        // Idle fire runs FIRST and on EVERY tick: the dashboard countdown hits
-        // zero to the minute, so the fire that follows it must not wait for the
-        // hourly sweep — nor be blocked by a provider failure in the poll
-        // below. Pure local DB math.
-        if (activation.state === 'ACTIVE') {
-          const idleFired = await this.checkIdle(activation.activationId, activation.startedAt, now);
-          if (idleFired) {
-            this.lastTickAt = now.toISOString();
-            this.lastError = null;
-            return;
-          }
-        }
-        const addresses = repo.listCandidateAddresses(this.db, activation.candidateId);
-        const solana = addresses.find((a) => a.chain === 'solana');
-        if (solana) {
-          // Provider failure is recorded but never skips the discipline checks.
-          try {
-            await this.pollAddress(solana.address, activation.activationId, activation.candidateId);
-          } catch (e) {
-            this.lastError = (e as Error).message;
-            repo.recordProviderHealth(this.db, {
-              provider: 'helius',
-              status: 'degraded',
-              latencyMs: null,
-              detail: this.lastError,
-              checkedAt: now.toISOString(),
-            });
-          }
-        }
-        // Day-trader discipline sweep, at most hourly: time exits + stall watcher.
-        // Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
-        // are in progress and close their own positions).
-        if (activation.state === 'ACTIVE' && now.getTime() - this.lastSweepCheckAt >= 3600_000) {
-          this.lastSweepCheckAt = now.getTime();
-          await this.sweep(activation.activationId, now);
+      this.lastError = null;
+      let firstError: string | null = null;
+      for (const activation of repo.listActiveActivations(this.db)) {
+        try {
+          await this.tickActivation(activation, now);
+        } catch (e) {
+          const detail = (e as Error).message;
+          firstError ??= detail;
+          repo.audit(this.db, 'monitor', `activation ${activation.activationId} tick failed: ${detail}`, {
+            activationId: activation.activationId,
+            candidateId: activation.candidateId,
+          });
+          repo.recordProviderHealth(this.db, {
+            provider: 'helius',
+            status: 'degraded',
+            latencyMs: null,
+            detail,
+            checkedAt: now.toISOString(),
+          });
         }
       }
+      // A poll failure inside tickActivation records itself; a crash sets the
+      // first error. Either way the tick reports the worst thing it saw.
+      if (firstError !== null) this.lastError = firstError;
       this.lastTickAt = now.toISOString();
-      this.lastError = null;
-    } catch (e) {
-      this.lastError = (e as Error).message;
-      repo.recordProviderHealth(this.db, {
-        provider: 'helius',
-        status: 'degraded',
-        latencyMs: null,
-        detail: this.lastError,
-        checkedAt: now.toISOString(),
-      });
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /** One activation's half of the tick: idle check, poll, discipline sweep. */
+  private async tickActivation(
+    activation: { activationId: string; candidateId: string; state: string; startedAt: string },
+    now: Date,
+  ): Promise<void> {
+    // Idle fire runs FIRST and on EVERY tick: the dashboard countdown hits
+    // zero to the minute, so the fire that follows it must not wait for the
+    // hourly sweep — nor be blocked by a provider failure in the poll
+    // below. Pure local DB math.
+    if (activation.state === 'ACTIVE') {
+      const idleFired = await this.checkIdle(activation.activationId, activation.startedAt, now);
+      if (idleFired) {
+        this.lastTickAt = now.toISOString();
+        this.lastError = null;
+        return;
+      }
+    }
+    const addresses = repo.listCandidateAddresses(this.db, activation.candidateId);
+    const solana = addresses.find((a) => a.chain === 'solana');
+    if (solana) {
+      // Provider failure is recorded but never skips the discipline checks.
+      try {
+        await this.pollAddress(solana.address, activation.activationId, activation.candidateId);
+      } catch (e) {
+        // Audited AND recorded as health: one chair's provider failure is
+        // visible, and the discipline checks below still run for it.
+        this.lastError = (e as Error).message;
+        repo.audit(
+          this.db,
+          'monitor',
+          `poll failed for activation ${activation.activationId} (continuing): ${this.lastError}`,
+          { activationId: activation.activationId, address: solana.address },
+        );
+        repo.recordProviderHealth(this.db, {
+          provider: 'helius',
+          status: 'degraded',
+          latencyMs: null,
+          detail: this.lastError,
+          checkedAt: now.toISOString(),
+        });
+      }
+    }
+    // Day-trader discipline sweep, at most hourly: time exits + stall watcher.
+    // Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
+    // are in progress and close their own positions).
+    if (activation.state === 'ACTIVE' && now.getTime() - this.lastSweepCheckAt >= 3600_000) {
+      this.lastSweepCheckAt = now.getTime();
+      await this.sweep(activation.activationId, now);
     }
   }
 
@@ -230,9 +269,11 @@ export class LeaderMonitor {
   }
 
   private async pollAddress(address: string, activationId: string, candidateId: string): Promise<void> {
-    let cursor = repo.getCursor(this.db, address);
-    if (!cursor) {
-      // Activation boundary: initialize to the latest confirmed signature.
+    const cursor = repo.getCursor(this.db, address);
+    if (!cursor || cursor.activationId !== activationId) {
+      // Activation boundary (AC9): a fresh hire — including a re-hire of the
+      // same address after a firing — starts at the latest confirmed signature,
+      // so the previous hire's backlog is never copied by the new chair.
       const latest = await this.helius.latestCursor(address);
       repo.setCursor(this.db, {
         address,

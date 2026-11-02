@@ -23,7 +23,7 @@ describe('anomaly selection', () => {
     row(5, 'dawn-lookup', 'resolved 2 address(es), 0 unresolved'), // watched category, healthy message
     row(6, 'recommendation', 'inbox file unreadable'),
     row(7, 'dawn-lookup', 'scheduled lookup failed (fail closed): Telegram Web session missing'),
-    row(8, 'recommendation', 'replacement paused: PAUSED_WAITING_FOR_ZCODE'),
+    row(8, 'recommendation', 'replacement paused: PAUSED_NO_TRADER'),
     row(9, 'recommendation', 'LEADER_STALLED: last on-chain swap 26.0h ago'),
   ];
 

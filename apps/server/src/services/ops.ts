@@ -182,6 +182,25 @@ export function opDefinitions(rt: Runtime): OpDefinition[] {
       },
     },
     {
+      id: 'discovery-sync-now',
+      label: 'Sync discovery now',
+      group: 'setup',
+      description:
+        'Unions the fomoapi 24h/7d/30d leaderboards plus the alerts feed into the candidate pool (D3 inlet). Requires FOMOAPI_KEY in .env; spends ~750 API credits per run.',
+      kind: 'action',
+      danger: 'confirm',
+      confirmWord: 'RUN',
+      action: async (ctx) => {
+        const r = await ctx.rt.syncDiscoveryNow(true);
+        if (r.skipped) return `skipped: ${r.reason}`;
+        return (
+          `${r.traders} trader(s): ${r.tradersNew} added, ${r.tradersUpdated} updated, ${r.merged} merged` +
+          ` · alerts +${r.alertsAdded}` +
+          ` · ${r.creditsSpent} credit(s) spent${r.creditsRemaining === null ? '' : `, ${r.creditsRemaining} left`}`
+        );
+      },
+    },
+    {
       id: 'open-dashboard',
       label: 'Open dashboard in browser',
       group: 'server',
@@ -197,7 +216,7 @@ export function opDefinitions(rt: Runtime): OpDefinition[] {
       id: 'open-data-folder',
       label: 'Open data folder',
       group: 'server',
-      description: 'Reveals the SQLite database, wallet and research files in Explorer.',
+      description: 'Reveals the SQLite database and wallet files in Explorer.',
       kind: 'action',
       danger: 'normal',
       action: (ctx) => {
@@ -630,11 +649,6 @@ function backupData(rt: Runtime): string {
   if (existsSync(wallet)) {
     mkdirSync(join(dest, 'wallet'), { recursive: true });
     cpSync(wallet, join(dest, 'wallet', 'zcode-bot-wallet.json'));
-  }
-  const submitToken = join(dataDir, 'research', 'submit-token');
-  if (existsSync(submitToken)) {
-    mkdirSync(join(dest, 'research'), { recursive: true });
-    cpSync(submitToken, join(dest, 'research', 'submit-token'));
   }
   return `backup written to ${basename(dest)}`;
 }

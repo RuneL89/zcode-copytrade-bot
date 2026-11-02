@@ -1,5 +1,40 @@
 import type { AppState, DashboardBadge } from '@zcode-bot/core';
 
+/** One watched wallet's row in the D4 watch-list panel. */
+export interface WatchlistRow {
+  candidateId: string;
+  handle: string;
+  status: 'watching' | 'cooling' | 'promoted' | 'archived';
+  profileUrl: string | null;
+  /** Newest funded buy on the watch record (the promotion recency clock). */
+  lastFundedBuyAt: string | null;
+  fundedBuys24h: number;
+  fundedSells24h: number;
+  /** Closed shadow trades (the K sample). */
+  closedTrades: number;
+  /** Net of the closed shadow trades, micro-USD. */
+  netShadowPnlUsdMicro: string;
+  /** Notional of the open pretend positions, micro-USD. */
+  openNotionalUsdMicro: string;
+  /** Open notional already at/over the age ceiling, awaiting a quote to close. */
+  ceilingExposureUsdMicro: string;
+  /** Why promotion is blocked right now, or null when it is not. */
+  blockedReason: string | null;
+  /** Where these numbers come from and how fresh they are. */
+  source: 'SHADOW_LEDGER';
+  lastEventAt: string | null;
+}
+
+/** The five pipeline stages (plan 07); the return lane is exits → watch. */
+export type PipelineStage = 'discovery' | 'pool' | 'watch' | 'roster' | 'exits';
+
+/** One stage-to-stage transition over the last 24h (thickness = volume). */
+export interface PipelineEdge {
+  from: PipelineStage;
+  to: PipelineStage;
+  count24h: number;
+}
+
 /** Full SSE/REST contract consumed by the React dashboard. */
 export interface DashboardState {
   version: number;
@@ -60,6 +95,8 @@ export interface DashboardState {
   /** Every non-closed copied position (open / partially closed / reconciling). */
   positions: Array<{
     positionId: string;
+    /** The roster chair this position belongs to (plan 05 grouping). */
+    leaderHandle: string | null;
     mintShort: string;
     symbol: string | null;
     status: string;
@@ -106,6 +143,8 @@ export interface DashboardState {
     deployedUsdMicro: string;
     deployedPct: number;
     maxDeployedPct: number;
+    /** Chairs the pipeline's roster grid renders (ROSTER_SIZE). */
+    rosterSize: number;
     /** Day-trader time-exit window (display). */
     maxPositionAgeHours: number;
     positionGraceHours: number;
@@ -140,86 +179,84 @@ export interface DashboardState {
       fired: boolean;
       active: boolean;
       contributionUsdMicro: string;
-      awaitingZcode: boolean;
     }>;
-  };
-  handoff: null | {
-    phase: 'FIRED' | 'WAITING_FOR_ZCODE' | 'PAUSED_FOR_FRESH_RESEARCH';
-    fromHandle: string;
-    fromRank: number | null;
-    fromPnlText: string | null;
-    /** Why the outgoing trader was fired (rank / rotation / stall / idle). */
-    fromReason: string | null;
-    toHandle: string | null;
-    toRank: number | null;
-    atIso: string;
-    demo: boolean;
   };
   /**
-   * The hiring loop, for the dashboard's hire/fire panel: after a fire the bot
-   * pauses instead of hiring from a ranking that predates the latest board
-   * scan, fresh research re-ranks the current board, and the top candidate is
-   * hired automatically once that ordering is validated.
+   * The roster (D4/plan 05): up to ROSTER_SIZE leaders sharing one budget pool.
+   * `activeTrader` above is `roster[0]` for one release; plan 06 removes it.
    */
-  hiring: {
-    /** Where the idle → fire → research → hire pipeline stands right now. */
-    stage:
-      | 'IDLE_COUNTDOWN'
-      | 'FIRED'
-      | 'RESEARCH_REQUESTED'
-      | 'RESEARCH_RUNNING'
-      | 'POOL_STALE'
-      | 'ORDERING_READY'
-      | 'HIRED'
-      | 'IDLE';
-    /** When the current stage was entered (handoff/activation/request time). */
-    stageSince: string | null;
-    /** No trader active and the pause is the deliberate wait for fresh research. */
-    pausedForResearch: boolean;
-    /** One-line reason from the latest pause (stale ordering / exhausted shortlist). */
-    reason: string | null;
-    /** Why the last trader was fired (idle / rank / stall / losses / rotation / manual). */
-    firedReason: string | null;
-    /** When the last trader was fired (from the firing event). */
-    firedAt: string | null;
-    /** Board scan the ordering is compared against (null when none captured). */
-    latestScanAt: string | null;
-    /** Creation time of the newest recommendation, valid or not. */
-    recommendationAt: string | null;
-    /** A research_request control event was recorded after the pause began. */
-    researchRequested: boolean;
-    /** The dispatcher acknowledged the request and started the research run. */
-    researchDispatched: boolean;
-    /** When the idle fire is due, while a flat hire is counting down. */
-    idleFireAtIso: string | null;
-    /**
-     * True when the newest board scan has direction data and NONE of its
-     * candidates bought inside ACTIVE_BUY_WINDOW_HOURS: nobody is hireable, and
-     * fresh research cannot change that. The dashboard says so instead of
-     * implying a hire is imminent.
-     */
-    noBuyerOnBoard: boolean;
-    /** How many of the latest scan's candidates bought inside the window. */
-    buyersOnBoard: number;
-    /** How many of the latest scan's candidates have a successful activity check. */
-    checkedOnBoard: number;
-    /** Constant: a validated ordering auto-hires its top eligible candidate. */
-    autoResume: true;
+  roster: Array<{
+    activationId: string;
+    candidateId: string;
+    handle: string;
+    avatarUrl: string | null;
+    status: string;
+    realizedPnlUsdMicro: string;
+    unrealizedPnlUsdMicro: string;
+    openPositions: number;
+    lastSix: Array<'W' | 'L' | 'B'>;
+    streak: number;
+    fireAfter: number;
+    sinceIso: string;
+  }>;
+  /**
+   * Watch list (D4): the wallets under observation and their shadow-ledger
+   * record — the evidence promotion reads. Every number carries its source and
+   * freshness; the fomo PnL mark never appears here as a gate.
+   */
+  watchlist: {
+    /** Wallets currently `watching`. */
+    size: number;
+    /** Configured watch-list cap. */
+    cap: number;
+    /** Wallets promoted and waiting for a chair. */
+    bench: number;
+    /** Configured bench target (the D5 discovery trigger). */
+    benchTarget: number;
+    /** Why the next discovery run will (or will not) happen. */
+    nextDiscoveryReason: string;
+    rows: WatchlistRow[];
   };
-  recommendation: {
-    status: 'NONE' | 'VALID' | 'EXPIRED' | 'REJECTED' | 'ABSTAIN';
-    ageMs: number | null;
-    expiresInMs: number | null;
-    modelLabel: string | null;
-    ordered: Array<{
+  /**
+   * The pipeline spine (plan 07): five stages, their 24h transitions and the
+   * roster seats. Every count is DB-derived here; the dashboard renders them
+   * verbatim and never derives its own.
+   */
+  pipeline: {
+    asOf: string;
+    discovery: {
+      lastSyncAt: string | null;
+      newHandles24h: number;
+      creditsRemaining: number | null;
+      sources: string[];
+    };
+    pool: { total: number; withWallet: number; fundedBuyers24h: number };
+    watch: { watching: number; cooling: number; promotable: number; benchTarget: number };
+    roster: Array<{
+      activationId: string;
       candidateId: string;
-      handle: string | null;
-      rank: number;
-      confidence: number;
-      thesis: string;
-      concerns: string[];
-      eligibleNow: boolean;
+      handle: string;
+      status: 'BUYING' | 'SELLING' | 'IDLE' | 'RECONCILING';
+      realizedPnlUsdMicro: string;
+      unrealizedPnlUsdMicro: string;
+      openPositions: number;
+      /** Newest observed leader signal (ISO), or null when none was seen. */
+      lastSignalAt: string | null;
     }>;
+    exits: {
+      fired24h: number;
+      replacements24h: number;
+      /** The fired lane: the last five firings with their replacement status. */
+      recent: Array<{
+        candidateId: string;
+        handle: string;
+        reason: string;
+        firedAt: string;
+        /** Handle of the hire that took the freed chair, or null while empty. */
+        replacedBy: string | null;
+      }>;
+    };
+    edges: PipelineEdge[];
   };
   health: {
     workerRunning: boolean;

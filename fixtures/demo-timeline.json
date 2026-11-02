@@ -4,8 +4,8 @@
     "fictional": true,
     "label": "FICTIONAL DEMO · NOT A PERFORMANCE CLAIM",
     "durationSeconds": 28,
-    "handoff1Seconds": 6.14,
-    "handoff2Seconds": 16.24,
+    "switch1Seconds": 6.14,
+    "switch2Seconds": 16.24,
     "inspiredByReference": true
   },
   "start": {
@@ -149,7 +149,7 @@
     },
     {
       "t": 6.14,
-      "type": "handoff",
+      "type": "switch",
       "fromHandle": "ape_vasco",
       "fromRank": 1,
       "toHandle": "moonpie_max",
@@ -377,7 +377,7 @@
     },
     {
       "t": 16.24,
-      "type": "handoff",
+      "type": "switch",
       "fromHandle": "moonpie_max",
       "fromRank": 3,
       "toHandle": "lunadegen",

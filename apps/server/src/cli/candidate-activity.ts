@@ -17,7 +17,12 @@
 import { loadAppConfig } from '../bootstrap.js';
 import { openDatabase, repo } from '@zcode-bot/db';
 import { audit } from '@zcode-bot/db/repo.js';
-import { HeliusProvider, JupiterPriceProvider, JupiterProvider, PublicSolanaProvider } from '@zcode-bot/providers';
+import {
+  HeliusProvider,
+  JupiterPriceProvider,
+  JupiterProvider,
+  PublicSolanaProvider,
+} from '@zcode-bot/providers';
 import { checkWalletActivity } from '../services/activity-check.js';
 
 async function main() {
@@ -32,7 +37,7 @@ async function main() {
   const config = loadAppConfig();
   const db = openDatabase(config.env.DATA_DIR);
   const helius = new HeliusProvider(config.env.HELIUS_API_KEY);
-const publicSolana = new PublicSolanaProvider(config.env.PUBLIC_SOLANA_RPC_URL, 4, helius);
+  const publicSolana = new PublicSolanaProvider(config.env.PUBLIC_SOLANA_RPC_URL, 4, helius);
   if (!publicSolana.configured) {
     console.error('PUBLIC_SOLANA_RPC_URL is empty — set the endpoint');
     db.close();

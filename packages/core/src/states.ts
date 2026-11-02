@@ -30,12 +30,7 @@ export function transitionActivation(from: ActivationState, to: ActivationState)
  * these plus mode (DEMO/PAPER/LIVE) and health flags.
  */
 export type AppState =
-  | 'RUNNING'
-  | 'PAUSED_NEW_ENTRIES'
-  | 'PAUSED_WAITING_FOR_CANDIDATE'
-  | 'PAUSED_WAITING_FOR_ZCODE'
-  | 'EMERGENCY_STOPPED'
-  | 'REQUIRES_RECONCILIATION';
+  'RUNNING' | 'PAUSED_NEW_ENTRIES' | 'PAUSED_NO_TRADER' | 'EMERGENCY_STOPPED' | 'REQUIRES_RECONCILIATION';
 
 export type DashboardBadge = 'DEMO' | 'PAPER' | 'LIVE' | 'PAUSED' | 'STALE' | 'RECONCILIATION';
 

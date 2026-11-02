@@ -1,14 +1,14 @@
 /**
- * Seed: create the initial research snapshot dir + optionally load example
- * leaderboard fixtures. Run AFTER db:migrate. Never inserts demo fixtures
- * into live trading tables (demo mode is fully in-memory).
+ * Seed: optionally load the example leaderboard fixtures. Run AFTER
+ * db:migrate. Never inserts demo fixtures into live trading tables (demo mode
+ * is fully in-memory).
  */
 import { openDatabase } from './connection.js';
 import * as repo from './repo.js';
 import { parseManualJson } from '@zcode-bot/providers';
 import { findRepoRoot, resolveDataDir } from '@zcode-bot/config';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // cwd is packages/db here (pnpm --filter); anchor everything at the workspace root.
 const repoRoot = findRepoRoot(import.meta.url);
@@ -18,10 +18,6 @@ async function main() {
   const handle = openDatabase(dataDir);
   const db = handle.db;
   try {
-    // Research dirs used by the MCP server.
-    mkdirSync(join(dataDir, 'research', 'snapshot'), { recursive: true });
-    mkdirSync(join(dataDir, 'research', 'inbox'), { recursive: true });
-
     // Optional: import the example manual leaderboard fixture.
     const example = resolve(repoRoot, 'fixtures', 'leaderboard.example.json');
     if (existsSync(example)) {
@@ -63,10 +59,6 @@ async function main() {
       }
       console.log(`seeded ${parsed.entries.length} candidates from ${example}`);
     }
-
-    // Write a placeholder so operators see where sanitized snapshots live.
-    const marker = join(dataDir, 'research', 'snapshot', '.gitkeep');
-    if (!existsSync(marker)) writeFileSync(marker, '');
 
     console.log(`seed complete (data dir ${resolve(dataDir)})`);
   } finally {

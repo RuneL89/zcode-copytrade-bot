@@ -1,7 +1,14 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import type { DashboardState } from '../types';
 import { signedUsd, timeAgo, usd } from '../types';
-import { hhmm } from './HiringPipeline';
+
+/** Seconds to a compact clock label (2h 5m). */
+function hhmm(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
 
 /** Lamports as a compact SOL string; em dash when the chain has not been read. */
 function solAmount(lamports: number | null): string {
@@ -46,7 +53,13 @@ function countdown(
 const TICK_MS = 10_000;
 
 export function PositionsPanel({ state }: { state: DashboardState }) {
-  const positions = state.positions;
+  // Grouped by leader (plan 05): the roster shares one pool, so the panel shows
+  // which chair each position belongs to instead of one trader's book.
+  const positions = [...state.positions].sort(
+    (a, b) =>
+      (a.leaderHandle ?? '').localeCompare(b.leaderHandle ?? '') || a.openedIso.localeCompare(b.openedIso),
+  );
+  let lastLeader: string | null = null;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
@@ -76,6 +89,8 @@ export function PositionsPanel({ state }: { state: DashboardState }) {
       ) : (
         <ul className="mt-2.5 space-y-2">
           {positions.map((p) => {
+            const leaderHeader = p.leaderHandle !== null && p.leaderHandle !== lastLeader;
+            lastLeader = p.leaderHandle;
             const chip = posChip(p.status);
             const pnl = p.unrealizedPnlUsdMicro ? BigInt(p.unrealizedPnlUsdMicro) : null;
             const markAge =
@@ -95,47 +110,56 @@ export function PositionsPanel({ state }: { state: DashboardState }) {
                   ? 'bg-negdim border-negborder text-neg'
                   : 'bg-inset border-insetborder text-muted';
             return (
-              <li key={p.positionId} className="panel px-3 py-2.5" data-testid="position-row">
-                <div className="flex items-center gap-2">
-                  <span className="text-[14px] font-bold">${p.symbol ?? p.mintShort}</span>
-                  {p.symbol && <span className="mono text-[9.5px] text-faint">{p.mintShort}</span>}
-                  <span className={`tag chip ml-auto ${chip.cls}`}>{chip.label}</span>
-                </div>
-                <div
-                  className={`mt-1.5 rounded-[10px] border px-3 py-1 text-center ${cdCls}`}
-                  data-testid="countdown"
-                  aria-label={`time exit countdown: ${cd.text}`}
-                >
-                  <span className="mono text-[10px] font-semibold tracking-wide">⏱ {cd.text}</span>
-                </div>
-                <div className="mt-1.5 grid grid-cols-3 gap-2 text-[12px]">
-                  <div>
-                    <p className="label !text-[9.5px]">We copy</p>
-                    <p className="money font-semibold">${usd(p.copyUsdMicro)}</p>
+              <Fragment key={p.positionId}>
+                {leaderHeader && (
+                  <li className="label !text-[9.5px] !text-faint pt-1" data-testid="position-leader">
+                    @{p.leaderHandle}
+                  </li>
+                )}
+                <li className="panel px-3 py-2.5" data-testid="position-row">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px] font-bold">${p.symbol ?? p.mintShort}</span>
+                    {p.symbol && <span className="mono text-[9.5px] text-faint">{p.mintShort}</span>}
+                    <span className={`tag chip ml-auto ${chip.cls}`}>{chip.label}</span>
                   </div>
-                  <div>
-                    <p className="label !text-[9.5px]">Mark{markAge}</p>
-                    <p className="money font-semibold">
-                      {p.markUsdMicro ? `$${usd(p.markUsdMicro)}` : 'pending'}
-                    </p>
+                  <div
+                    className={`mt-1.5 rounded-[10px] border px-3 py-1 text-center ${cdCls}`}
+                    data-testid="countdown"
+                    aria-label={`time exit countdown: ${cd.text}`}
+                  >
+                    <span className="mono text-[10px] font-semibold tracking-wide">⏱ {cd.text}</span>
                   </div>
-                  <div className="text-right">
-                    <p className="label !text-[9.5px]">P/L (open)</p>
-                    <p
-                      className={`money font-semibold ${
-                        pnl === null ? 'text-faint' : pnl >= 0n ? 'text-pos' : 'text-neg'
-                      }`}
-                    >
-                      {pnl === null ? '—' : signedUsd(p.unrealizedPnlUsdMicro)}
-                    </p>
+                  <div className="mt-1.5 grid grid-cols-3 gap-2 text-[12px]">
+                    <div>
+                      <p className="label !text-[9.5px]">We copy</p>
+                      <p className="money font-semibold">${usd(p.copyUsdMicro)}</p>
+                    </div>
+                    <div>
+                      <p className="label !text-[9.5px]">Mark{markAge}</p>
+                      <p className="money font-semibold">
+                        {p.markUsdMicro ? `$${usd(p.markUsdMicro)}` : 'pending'}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="label !text-[9.5px]">P/L (open)</p>
+                      <p
+                        className={`money font-semibold ${
+                          pnl === null ? 'text-faint' : pnl >= 0n ? 'text-pos' : 'text-neg'
+                        }`}
+                      >
+                        {pnl === null ? '—' : signedUsd(p.unrealizedPnlUsdMicro)}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <p className="label !text-[9px] !text-faint mt-1.5">
-                  opened {timeAgo(p.openedIso)} ago · fee {solAmount(p.entryFeeLamports)} SOL
-                  {p.feesUsdMicro !== null && p.feesUsdMicro !== '0' ? ` ($${usd(p.feesUsdMicro, 4)})` : ''} ·
-                  rent {solAmount(p.entryRentLamports)} SOL
-                </p>
-              </li>
+                  <p className="label !text-[9px] !text-faint mt-1.5">
+                    opened {timeAgo(p.openedIso)} ago · fee {solAmount(p.entryFeeLamports)} SOL
+                    {p.feesUsdMicro !== null && p.feesUsdMicro !== '0'
+                      ? ` ($${usd(p.feesUsdMicro, 4)})`
+                      : ''}{' '}
+                    · rent {solAmount(p.entryRentLamports)} SOL
+                  </p>
+                </li>
+              </Fragment>
             );
           })}
         </ul>

@@ -8,19 +8,16 @@ import { openDatabase, type AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type AppConfig } from '@zcode-bot/config';
 import type { DashboardState } from '../src/services/state.js';
-import { SnapshotService } from '../src/services/research.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
 import { LeaderMonitor } from '../src/services/monitor.js';
 import { StateBuilder } from '../src/services/builder.js';
 import { ControlService } from '../src/services/control.js';
-import { RecommendationService } from '../src/services/research.js';
 
 /**
- * The idle → fire → research → hire pipeline:
+ * The idle-fire path:
  * - the idle fire lands on the monitor tick that crosses the deadline, not on
  *   the next hourly discipline sweep (the dashboard countdown must mean it);
- * - the dashboard payload carries one explicit stage per step so the same box
- *   that shows the countdown can show the handoff after the fire.
+ * - a chair with time left, or one holding a position, is never fired.
  */
 
 const LEADER = 'LeaderA11111111111111111111111111111111111';
@@ -28,7 +25,6 @@ const LEADER = 'LeaderA11111111111111111111111111111111111';
 let dir: string;
 let handle: AppDatabase;
 let config: AppConfig;
-let snapshots: SnapshotService;
 let lifecycle: TraderLifecycle;
 let monitor: LeaderMonitor;
 
@@ -48,8 +44,7 @@ beforeEach(() => {
   });
   config = loadConfig({ SESSION_SECRET: 'x'.repeat(40) });
   config.risk.IDLE_FIRE_HOURS = 6;
-  snapshots = new SnapshotService(handle.db, dir, config.risk);
-  lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
+  lifecycle = new TraderLifecycle(handle.db, config.risk, null);
   monitor = new LeaderMonitor(
     handle.db,
     {} as never,
@@ -85,7 +80,6 @@ function seedHire(startedHoursAgo: number, withPosition = false): string {
     address: LEADER,
     verification: 'reported',
   });
-  snapshots.build();
   const activationId = 'act_idle_' + Math.random().toString(36).slice(2, 8);
   repo.createActivation(handle.db, {
     activationId,
@@ -96,7 +90,7 @@ function seedHire(startedHoursAgo: number, withPosition = false): string {
     endReason: null,
     lossStreak: 0,
     firedReason: null,
-    source: 'zcode_shortlist',
+    source: 'manual',
   });
   if (withPosition) {
     repo.insertPosition(handle.db, {
@@ -150,112 +144,5 @@ describe('idle fire runs on every monitor tick', () => {
     await monitor.tick(new Date());
 
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');
-  });
-});
-
-describe('pipeline stage in the dashboard payload', () => {
-  function builder(): StateBuilder {
-    return new StateBuilder(
-      handle.db,
-      { mode: 'paper', risk: config.risk } as never,
-      new ControlService(handle.db),
-      null,
-      new RecommendationService(handle.db, snapshots, config.risk),
-      lifecycle,
-      120_000_000n,
-    );
-  }
-
-  it('IDLE_COUNTDOWN while a flat hire counts down, with the deadline', async () => {
-    seedHire(1);
-    const s: DashboardState = builder().build();
-    expect(s.hiring.stage).toBe('IDLE_COUNTDOWN');
-    expect(s.hiring.idleFireAtIso).toBeTruthy();
-    expect(Date.parse(s.hiring.idleFireAtIso!)).toBeGreaterThan(Date.now());
-  });
-
-  it('HIRED with no deadline while a position is open', async () => {
-    seedHire(2, true);
-    const s = builder().build();
-    expect(s.hiring.stage).toBe('HIRED');
-    expect(s.hiring.idleFireAtIso).toBeNull();
-  });
-
-  it('FIRED, then RESEARCH_REQUESTED, then RESEARCH_RUNNING after a pause', async () => {
-    const activationId = seedHire(8);
-    repo.updateActivation(handle.db, activationId, {
-      state: 'FIRED',
-      endedAt: new Date().toISOString(),
-      endReason: 'fired',
-    });
-    repo.insertHandoffEvent(handle.db, {
-      fromCandidateId: 'cand_idler',
-      toCandidateId: null,
-      status: 'paused_for_fresh_research',
-      recommendationId: null,
-      source: 'zcode_shortlist',
-      detail: 'ordering written 2026-10-30T12:36:07.132Z predates the latest scan 2026-10-30T13:05:12.703Z',
-      createdAt: new Date(Date.now() - 60_000).toISOString(),
-    });
-
-    let s = builder().build();
-    expect(s.hiring.stage).toBe('FIRED');
-    expect(s.hiring.firedAt).toBeTruthy();
-    expect(s.hiring.pausedForResearch).toBe(true);
-
-    repo.controlEvent(handle.db, 'research_request', 'ordering predates the latest scan', 'worker');
-    s = builder().build();
-    expect(s.hiring.stage).toBe('RESEARCH_REQUESTED');
-    expect(s.hiring.researchRequested).toBe(true);
-    expect(s.hiring.researchDispatched).toBe(false);
-
-    repo.controlEvent(handle.db, 'research_dispatched', 'dispatcher started the run', 'worker');
-    s = builder().build();
-    expect(s.hiring.stage).toBe('RESEARCH_RUNNING');
-    expect(s.hiring.researchDispatched).toBe(true);
-  });
-
-  it('POOL_STALE after an abstention newer than the request (never a stuck HIRING)', () => {
-    const activationId = seedHire(8);
-    repo.updateActivation(handle.db, activationId, {
-      state: 'FIRED',
-      endedAt: new Date().toISOString(),
-      endReason: 'fired',
-    });
-    repo.insertHandoffEvent(handle.db, {
-      fromCandidateId: 'cand_idler',
-      toCandidateId: null,
-      status: 'paused_for_fresh_research',
-      recommendationId: null,
-      source: 'zcode_shortlist',
-      detail: 'ordering predates the latest scan',
-      createdAt: new Date(Date.now() - 120_000).toISOString(),
-    });
-    repo.controlEvent(handle.db, 'research_request', 'ordering predates the latest scan', 'worker');
-    const now = new Date().toISOString();
-    repo.saveRecommendation(
-      handle.db,
-      {
-        recommendationId: 'rec_abstain',
-        snapshotId: 'snap_test',
-        snapshotHash: '0'.repeat(64),
-        createdAt: now,
-        receivedAt: now,
-        expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
-        modelLabel: 'test-model',
-        researchSessionId: null,
-        abstain: true,
-        abstainReason: 'POOL_STALE: 2 of 7 scan handles usable',
-        status: 'consumed',
-        validationError: null,
-        rawJson: '{}',
-        normalizedJson: null,
-      },
-      [],
-    );
-
-    const s = builder().build();
-    expect(s.hiring.stage).toBe('POOL_STALE');
-    expect(s.hiring.pausedForResearch).toBe(true);
   });
 });

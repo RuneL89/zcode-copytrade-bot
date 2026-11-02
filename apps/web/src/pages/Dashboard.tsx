@@ -1,13 +1,20 @@
 import type { DashboardState } from '../types';
 import { Header } from '../components/Header';
 import { EquityHero } from '../components/EquityHero';
-import { ActiveTraderCard } from '../components/ActiveTraderCard';
+import { PipelineFlow } from '../components/pipeline/PipelineFlow';
+import { FiredLane } from '../components/FiredLane';
+import { RosterPanel } from '../components/RosterPanel';
 import { PositionsPanel } from '../components/PositionsPanel';
-import { ActivityFeed } from '../components/ActivityFeed';
+import { WatchRail } from '../components/WatchRail';
 import { ClosesChart } from '../components/ClosesChart';
 import { CandidatesPanel } from '../components/CandidatesPanel';
-import { HandoffOverlay } from '../components/HandoffOverlay';
 
+/**
+ * The dashboard (plan 07): context row → equity hero → pipeline spine →
+ * fired lane → roster grid → working area (positions 2/3, watch rail 1/3) →
+ * secondary detail. The hero and its text stay in a bounded column on desktop
+ * while the spine and the grids use the full 1080px container.
+ */
 export function Dashboard({
   state,
   connected,
@@ -36,25 +43,41 @@ export function Dashboard({
           </button>
         </div>
       )}
-      <EquityHero state={state} />
-      <ActiveTraderCard state={state} />
-      <PositionsPanel state={state} />
-      <ActivityFeed state={state} />
-      <ClosesChart state={state} />
+
+      <div className="min-[900px]:max-w-[600px]">
+        <EquityHero state={state} />
+      </div>
+
+      <PipelineFlow state={state} />
+      <FiredLane state={state} />
+      <RosterPanel state={state} />
+
+      <div className="min-[900px]:grid min-[900px]:grid-cols-3 min-[900px]:gap-3.5 min-[900px]:items-start">
+        <div className="min-[900px]:col-span-2">
+          <PositionsPanel state={state} />
+          <ClosesChart state={state} />
+        </div>
+        <div>
+          <WatchRail state={state} />
+        </div>
+      </div>
+
+      {/* The activity tape lives in the rail's activity tab (plan 07 item 5);
+          the sections below are the secondary detail. */}
       <CandidatesPanel state={state} />
+
       <footer className="pb-24 text-center">
-        <p className="label !text-[9.5px] !text-faint">
+        <p className="label !text-[10px] !text-faint">
           ZCode Bot · mode {state.mode} · {state.armed ? 'live armed' : 'not armed'} · worker{' '}
           {state.health.workerRunning ? 'ok' : 'down'} · helius {state.health.helius.toLowerCase()} · jupiter{' '}
           {state.health.jupiter.toLowerCase()}
         </p>
         {state.health.pendingReconciliations > 0 && (
-          <p className="label !text-[9.5px] !text-info mt-1">
+          <p className="label !text-[10px] !text-info mt-1">
             {state.health.pendingReconciliations} reconciliation case(s) open
           </p>
         )}
       </footer>
-      {state.handoff && <HandoffOverlay handoff={state.handoff} />}
     </>
   );
 }

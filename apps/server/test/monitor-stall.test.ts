@@ -8,7 +8,6 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { openDatabase, type AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type AppConfig } from '@zcode-bot/config';
-import { SnapshotService } from '../src/services/research.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
 import { LeaderMonitor } from '../src/services/monitor.js';
 
@@ -17,7 +16,6 @@ const LEADER = 'LeaderA11111111111111111111111111111111111';
 let dir: string;
 let handle: AppDatabase;
 let config: AppConfig;
-let snapshots: SnapshotService;
 let lifecycle: TraderLifecycle;
 let monitor: LeaderMonitor;
 
@@ -36,8 +34,7 @@ beforeEach(() => {
     ),
   });
   config = loadConfig({ SESSION_SECRET: 'x'.repeat(40) });
-  snapshots = new SnapshotService(handle.db, dir, config.risk);
-  lifecycle = new TraderLifecycle(handle.db, config.risk, null, snapshots);
+  lifecycle = new TraderLifecycle(handle.db, config.risk, null);
   monitor = new LeaderMonitor(
     handle.db,
     {} as never, // the sweep path under test never touches Helius
@@ -81,7 +78,6 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
     status: 'ok',
     checkedAt: new Date(Date.now() - activityFreshHours * 3600_000).toISOString(),
   });
-  snapshots.build();
 
   const activationId = 'act_' + crypto.randomUUID();
   repo.createActivation(handle.db, {
@@ -93,7 +89,7 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
     endReason: null,
     lossStreak: 0,
     firedReason: null,
-    source: 'zcode_shortlist',
+    source: 'manual',
   });
   return activationId;
 }

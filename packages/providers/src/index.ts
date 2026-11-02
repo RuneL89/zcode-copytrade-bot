@@ -2,6 +2,7 @@ export * from './leaderboard/types.js';
 export * from './leaderboard/import.js';
 export * from './leaderboard/fomo-web.js';
 export * from './leaderboard/profile-copy.js';
+export * from './fomoapi.js';
 export * from './dawn/dawn-lookup.js';
 export * from './solana/helius.js';
 export * from './solana/publicRpc.js';

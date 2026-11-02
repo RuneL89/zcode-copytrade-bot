@@ -22,7 +22,9 @@ describe('activity gate (pre-hire)', () => {
 
   it('rejects unknown activity (no data is not a pass)', () => {
     expect(evaluateActivityGate(null, cfg).reason).toBe('LEADER_STALLED');
-    expect(evaluateActivityGate({ lastTradeAgeHours: null, copyableTrades24h: 0 }, cfg).reason).toBe('LEADER_STALLED');
+    expect(evaluateActivityGate({ lastTradeAgeHours: null, copyableTrades24h: 0 }, cfg).reason).toBe(
+      'LEADER_STALLED',
+    );
   });
 
   it('treats the thresholds as inclusive', () => {

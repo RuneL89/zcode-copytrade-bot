@@ -80,7 +80,7 @@ export function Avatar({ name, url, size = 44 }: { name: string; url?: string | 
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: '#fff',
+        color: 'white',
         fontWeight: 600,
         fontSize: size * 0.34,
         textShadow: '0 1px 2px rgba(0,0,0,0.4)',

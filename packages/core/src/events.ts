@@ -5,7 +5,11 @@
  * The engine never guesses a buy, sell, amount, mint, or decimals.
  */
 
-export const PARSER_VERSION = 'leader-parser/1';
+import { classifyFundedSwap } from './swap.js';
+import { DUST_THRESHOLD_BASE, PARSER_VERSION, isFundingMint, type LeaderTxSummary } from './tx.js';
+
+/** The parser version this classifier stamps on every event. */
+export { PARSER_VERSION };
 
 /** Mainnet program IDs of common DEX/aggregator programs (balance evidence still required). */
 export const KNOWN_SWAP_PROGRAMS = new Set<string>([
@@ -23,46 +27,6 @@ export const KNOWN_SWAP_PROGRAMS = new Set<string>([
   'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DAMM
   'FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X', // Fluxbeam
 ]);
-
-/** Mainnet USD-stable mints. */
-export const STABLE_MINTS = new Set<string>([
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-]);
-
-export const WRAPPED_SOL_MINT = 'So11111111111111111111111111111111111111112';
-
-export interface TokenDelta {
-  mint: string;
-  decimals: number;
-  preBase: bigint;
-  postBase: bigint;
-  /** post - pre */
-  deltaBase: bigint;
-}
-
-/** Provider-normalized, leader-scoped transaction summary (from verified RPC data). */
-export interface LeaderTxSummary {
-  chain: string;
-  leaderAddress: string;
-  signature: string;
-  slot: number;
-  transactionIndex: number;
-  blockTime: number | null;
-  err: boolean;
-  /** Native SOL delta for the leader (base units, includes fees only as reported by RPC deltas). */
-  nativeDeltaBase: bigint;
-  /** Non-zero token deltas across token accounts owned by the leader. */
-  tokenDeltas: TokenDelta[];
-  /**
-   * Mints that moved on token accounts NOT owned by the leader (pool vaults,
-   * program/PDA accounts). Signer-attributed measurements use these to count a
-   * routed trade as activity without ever claiming it as an entry.
-   */
-  foreignTokenMints?: string[];
-  /** Program IDs invoked (outer + inner instructions). */
-  programs: string[];
-}
 
 export type LeaderClassifiedEvent = SwapBuyEvent | SwapSellEvent | SkippedEvent;
 
@@ -125,13 +89,6 @@ export interface SkippedEvent {
   detail?: string;
   parserVersion: string;
 }
-
-function isFundingMint(mint: string, decimals: number): boolean {
-  return STABLE_MINTS.has(mint) || mint === WRAPPED_SOL_MINT || (decimals === 6 && STABLE_MINTS.has(mint));
-}
-
-/** Deltas below this absolute base amount are treated as dust and ignored. */
-const DUST_THRESHOLD_BASE = 1n;
 
 /**
  * Result of scanning classified leader history for a recent buy.
@@ -234,68 +191,23 @@ export function classifyLeaderEvent(tx: LeaderTxSummary): LeaderClassifiedEvent 
     return { ...base, kind: 'skipped', reason: 'SKIPPED_STABLE_TO_STABLE' };
   }
 
-  // BUY: exactly one non-funding token in, exactly one funding leg out (or native SOL out).
-  if (tokenIns.length === 1 && tokenOuts.length === 0 && (fundingOuts.length === 1 || nativeOut)) {
-    const token = tokenIns[0]!;
-    if (fundingOuts.length === 1) {
-      const funding = fundingOuts[0]!;
-      return {
-        ...base,
-        kind: 'swap_buy',
-        blockTime: tx.blockTime ?? 0,
-        legIndex: 0,
-        mint: token.mint,
-        mintDecimals: token.decimals,
-        tokenDeltaBase: token.deltaBase,
-        fundingMint: funding.mint,
-        fundingDecimals: funding.decimals,
-        fundingDeltaBase: -funding.deltaBase,
-      };
-    }
-    return {
+  // The buy/sell definition itself is single-sourced in swap.ts; this module
+  // keeps its own gates (chain, failed tx, no balance changes, NFT-like legs,
+  // known swap program) and its own skip reasons around it.
+  const funded = classifyFundedSwap(tx);
+  if (funded) {
+    const leg = {
       ...base,
-      kind: 'swap_buy',
-      blockTime: tx.blockTime ?? 0,
+      blockTime: funded.blockTime ?? 0,
       legIndex: 0,
-      mint: token.mint,
-      mintDecimals: token.decimals,
-      tokenDeltaBase: token.deltaBase,
-      fundingMint: 'SOL',
-      fundingDecimals: 9,
-      fundingDeltaBase: -tx.nativeDeltaBase,
+      mint: funded.mint,
+      mintDecimals: funded.decimals,
+      tokenDeltaBase: funded.tokenDeltaBase,
+      fundingMint: funded.fundingMint,
+      fundingDecimals: funded.fundingDecimals,
+      fundingDeltaBase: funded.fundingDeltaBase,
     };
-  }
-
-  // SELL: exactly one non-funding token out, exactly one funding leg in (or native SOL in).
-  if (tokenOuts.length === 1 && tokenIns.length === 0 && (fundingIns.length === 1 || nativeIn)) {
-    const token = tokenOuts[0]!;
-    if (fundingIns.length === 1) {
-      const funding = fundingIns[0]!;
-      return {
-        ...base,
-        kind: 'swap_sell',
-        blockTime: tx.blockTime ?? 0,
-        legIndex: 0,
-        mint: token.mint,
-        mintDecimals: token.decimals,
-        tokenDeltaBase: token.deltaBase,
-        fundingMint: funding.mint,
-        fundingDecimals: funding.decimals,
-        fundingDeltaBase: funding.deltaBase,
-      };
-    }
-    return {
-      ...base,
-      kind: 'swap_sell',
-      blockTime: tx.blockTime ?? 0,
-      legIndex: 0,
-      mint: token.mint,
-      mintDecimals: token.decimals,
-      tokenDeltaBase: token.deltaBase,
-      fundingMint: 'SOL',
-      fundingDecimals: 9,
-      fundingDeltaBase: tx.nativeDeltaBase,
-    };
+    return funded.side === 'buy' ? { ...leg, kind: 'swap_buy' } : { ...leg, kind: 'swap_sell' };
   }
 
   return {

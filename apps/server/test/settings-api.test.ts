@@ -89,6 +89,60 @@ describe('settings PATCH', () => {
     };
     expect(state.counters.maxPositionAgeHours).toBe(9);
   });
+
+  it('persists the D4 watch/promotion fields across a runtime reload', async () => {
+    const res = await app.request('/api/settings', {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
+      body: JSON.stringify({
+        WATCH_LIST_SIZE: 25,
+        BENCH_TARGET: 12,
+        ROSTER_SIZE: 3,
+        PER_MINT_CAP_USD: 0, // 0 = cap disabled, not "unset"
+        WATCH_POLL_MS: 300000,
+        ROSTER_POLL_MS: 45000,
+        SHADOW_BACKFILL_ON_ADMIT: false,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { risk: Record<string, number | boolean> };
+    expect(body.risk.WATCH_LIST_SIZE).toBe(25);
+    expect(body.risk.BENCH_TARGET).toBe(12);
+    expect(body.risk.ROSTER_SIZE).toBe(3);
+    expect(body.risk.PER_MINT_CAP_USD).toBe(0);
+    expect(body.risk.SHADOW_BACKFILL_ON_ADMIT).toBe(false);
+
+    // A fresh Runtime over the same DATA_DIR re-applies the saved overrides.
+    const reloaded = loadConfig({ SESSION_SECRET: 't'.repeat(48), DATA_DIR: dir, MODE: 'paper' });
+    reloaded.env.DATA_DIR = dir;
+    const rt2 = new Runtime(reloaded);
+    try {
+      expect(rt2.config.risk.WATCH_LIST_SIZE).toBe(25);
+      expect(rt2.config.risk.BENCH_TARGET).toBe(12);
+      expect(rt2.config.risk.ROSTER_SIZE).toBe(3);
+      expect(rt2.config.risk.PER_MINT_CAP_USD).toBe(0);
+      expect(rt2.config.risk.SHADOW_BACKFILL_ON_ADMIT).toBe(false);
+    } finally {
+      rt2.stop();
+    }
+  });
+
+  it('refuses a bench target above the stored watch-list size (merged config)', async () => {
+    const res = await app.request('/api/settings', {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
+      body: JSON.stringify({ BENCH_TARGET: 99 }),
+    });
+    expect(res.status).toBe(400);
+    const state = (await (await app.request('/api/state', { headers: { cookie } })).json()) as {
+      version: number;
+    };
+    const settings = (await (await app.request('/api/settings', { headers: { cookie } })).json()) as {
+      risk: Record<string, number>;
+    };
+    expect(settings.risk.BENCH_TARGET).toBe(12);
+    expect(state.version).toBeGreaterThan(0);
+  });
 });
 
 function extractCsrf(cookie: string): string {
