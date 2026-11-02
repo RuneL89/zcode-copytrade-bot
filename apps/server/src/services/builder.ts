@@ -31,6 +31,25 @@ export function withinActivityWindow(tIso: string, nowMs: number): boolean {
 }
 
 /**
+ * What the tokens a position still holds actually cost. A partial exit sells its
+ * share of the position, and the engine books that share's cost basis, so the
+ * open PnL must compare the mark against the remaining basis — not against the
+ * whole input, which would charge the position for tokens it no longer holds.
+ */
+export function remainingCostBasis(p: {
+  inputUsdMicro: string;
+  copiedTokenBase: string;
+  remainingTokenBase: string;
+}): bigint {
+  const input = BigInt(p.inputUsdMicro);
+  const copied = BigInt(p.copiedTokenBase);
+  const remaining = BigInt(p.remainingTokenBase);
+  if (copied <= 0n || remaining >= copied) return input;
+  if (remaining <= 0n) return 0n;
+  return (input * remaining) / copied;
+}
+
+/**
  * Builds the authoritative dashboard state from persisted evidence. Every
  * number traces to demo fixtures, paper calculations, or live evidence, and
  * is labeled with source and freshness.
@@ -213,7 +232,7 @@ export class StateBuilder {
         entryRentLamports: entrySpend ? entrySpend.rentLamports : null,
         realizedPnlUsdMicro: p.realizedPnlUsdMicro,
         markUsdMicro,
-        unrealizedPnlUsdMicro: fresh ? (fresh.valueUsdMicro - BigInt(p.inputUsdMicro)).toString() : null,
+        unrealizedPnlUsdMicro: fresh ? (fresh.valueUsdMicro - remainingCostBasis(p)).toString() : null,
         markAgeSeconds: fresh ? markAgeSeconds : null,
         openedIso: p.openedAt,
         entries: this.openBuyEntries(p, fresh ? fresh.valueUsdMicro : null),
@@ -551,10 +570,11 @@ export class StateBuilder {
    *
    * The engine keeps one position per coin per leader, so a position aggregates
    * every copy of that coin: the MAMESUKE row that reads $67.69 is seven buys.
-   * Sold base is consumed FIFO, exactly as the exit path closes lots, so a buy
-   * that was sold drops out and a partially sold buy shows only its open part.
-   * A buy with no fill evidence is never listed (no invented transactions), and
-   * a buy's own PnL is mark-to-market against the coin's entry price.
+   * A partial exit costs each buy its share of the sold tokens (the engine books
+   * the aggregate cost basis proportionally), so every buy keeps its open part
+   * and the buys' PnL sums exactly to the position's. A buy with no fill
+   * evidence is never listed (no invented transactions), and a buy's own PnL is
+   * mark-to-market against the coin's entry price.
    */
   private openBuyEntries(
     p: { positionId: string; copiedTokenBase: string; remainingTokenBase: string },
@@ -564,7 +584,7 @@ export class StateBuilder {
     const remaining = BigInt(p.remainingTokenBase);
     // No early exit on a zero copied base: a position can record confirmed buys
     // whose fills produced no tokens, and those still spent the money.
-    let sold = copied > remaining ? copied - remaining : 0n;
+    const sold = copied > remaining && copied > 0n ? copied - remaining : 0n;
     const intents = repo.listEntryIntentsForPosition(this.db, p.positionId);
     if (intents.length === 0) return [];
     const baseByIntent = new Map<string, bigint>();
@@ -593,15 +613,14 @@ export class StateBuilder {
           intentId: intent.intentId,
           atIso: at,
           usdMicro: intent.inputUsdMicro ?? '0',
+          inputUsdMicro: intent.inputUsdMicro ?? '0',
           tokenBase: '0',
           unrealizedPnlUsdMicro: null,
           txSignature: intent.txSignature,
         });
         continue;
       }
-      const consumed = sold >= base ? base : sold;
-      sold -= consumed;
-      const openBase = base - consumed;
+      const openBase = sold > 0n ? (base * remaining) / copied : base;
       if (openBase <= 0n) continue;
       const usd = ((intent.inputUsdMicro === null ? 0n : BigInt(intent.inputUsdMicro)) * openBase) / base;
       const pnl =
@@ -610,6 +629,7 @@ export class StateBuilder {
         intentId: intent.intentId,
         atIso: atByIntent.get(intent.intentId) ?? intent.createdAt,
         usdMicro: usd.toString(),
+        inputUsdMicro: intent.inputUsdMicro ?? '0',
         tokenBase: openBase.toString(),
         unrealizedPnlUsdMicro: pnl === null ? null : pnl.toString(),
         txSignature: intent.txSignature,

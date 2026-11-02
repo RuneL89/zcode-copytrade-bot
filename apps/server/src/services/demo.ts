@@ -189,6 +189,7 @@ export class DemoEngine {
           intentId: `demo-intent-${i}`,
           atIso: isoAt(m.t),
           usdMicro: BigInt(Math.round(m.copyUsd * 1e6)).toString(),
+          inputUsdMicro: BigInt(Math.round(m.copyUsd * 1e6)).toString(),
           tokenBase: '1000',
           unrealizedPnlUsdMicro: m.pnlUsd === null ? null : BigInt(Math.round(m.pnlUsd * 1e6)).toString(),
           txSignature: null,

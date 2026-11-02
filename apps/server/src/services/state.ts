@@ -116,9 +116,9 @@ export interface DashboardState {
     /**
      * Every confirmed copy buy still open inside this position, newest first.
      * A position aggregates the copies of one coin by one leader, so these are
-     * the individual transactions the seat lists. Sold base is consumed FIFO
-     * (the same order the exit path closes lots), so a buy that was sold drops
-     * out; a partially sold buy shows only its open part.
+     * the individual transactions the seat lists. A partial exit costs each buy
+     * its share of the sold tokens, so a partly sold buy keeps its open part and
+     * the buys' PnL sums to the position's.
      */
     entries: Array<{
       intentId: string;
@@ -126,6 +126,8 @@ export interface DashboardState {
       atIso: string;
       /** USD spent on the open part of this buy. */
       usdMicro: string;
+      /** The buy's original size; larger than usdMicro once part of it was sold. */
+      inputUsdMicro: string;
       /** Tokens still held from this buy, base units. */
       tokenBase: string;
       /** This buy's own mark-to-market, null when the position has no fresh mark. */

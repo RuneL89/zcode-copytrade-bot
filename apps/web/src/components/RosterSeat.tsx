@@ -85,7 +85,12 @@ export function SeatPositionRow({
               data-testid={`seat-buy-${e.intentId}`}
               className="flex items-center gap-2 text-[10.5px]"
             >
-              <span className="money text-muted">${usd(e.usdMicro)}</span>
+              <span className="money text-muted">
+                ${usd(e.usdMicro)}
+                {e.inputUsdMicro !== e.usdMicro && (
+                  <span className="label !text-[10px] !text-faint"> of ${usd(e.inputUsdMicro)}</span>
+                )}
+              </span>
               <span
                 className={`money ${
                   e.unrealizedPnlUsdMicro === null

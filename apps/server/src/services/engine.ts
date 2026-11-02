@@ -35,6 +35,18 @@ const CLOSE_ATTEMPTS = 3;
 const CLOSE_BACKOFF_MS = 800;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Base units a position holds after selling `exitBase`. Always scoped to the
+ * position, never to the wallet: every seat shares one wallet, so the wallet's
+ * balance of a mint also counts tokens another chair's position owns. A full
+ * close ends at zero even when delivery slippage left the recorded amount above
+ * what the chain ever held.
+ */
+export function remainingAfterForSale(recordedBase: bigint, exitBase: bigint, full: boolean): bigint {
+  if (full) return 0n;
+  return recordedBase > exitBase ? recordedBase - exitBase : 0n;
+}
+
 export interface EngineCallbacks {
   /** Called when a close unit pushes the streak to the fire threshold. */
   onFired: (activationId: string, candidateId: string, reason: string) => void;
@@ -739,6 +751,10 @@ export class CopyEngine {
     // slippage; asking Jupiter for more fails with InsufficientFunds (6024).
     const remainingRecorded = BigInt(position.remainingTokenBase);
     const onChain = (await this.executor.availableBalance?.(position.mint).catch(() => null)) ?? null;
+    // One position can never sell another chair's tokens: the wallet is shared
+    // by every seat, so the on-chain balance is a ceiling, not this position's
+    // share.
+    if (exitBase > remainingRecorded) exitBase = remainingRecorded;
     if (onChain !== null && exitBase > onChain) {
       repo.audit(this.db, 'trade', 'exit clamped to on-chain balance', {
         positionId,
@@ -747,9 +763,11 @@ export class CopyEngine {
       });
       exitBase = onChain;
     }
-    // The chain is the truth for what remains after the sale.
-    if (onChain !== null) remainingAfter = onChain > exitBase ? onChain - exitBase : 0n;
-    else if (remainingRecorded >= exitBase) remainingAfter = remainingRecorded - exitBase;
+    // What THIS position still holds after the sale. The wallet's total balance
+    // also counts other seats' tokens of the same mint, so it must not be used
+    // here: it once inflated a position to 3.6× its real size after a partial
+    // exit. A full close ends at zero regardless of delivery slippage.
+    remainingAfter = remainingAfterForSale(remainingRecorded, exitBase, full);
 
     // Output notional estimation for the exit (token -> funding mint).
     const inputUsdEstimate = await this.estimateUsdMicroForTokens(position.mint, exitBase).catch(() => 0n);

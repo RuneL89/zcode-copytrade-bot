@@ -57,7 +57,10 @@ export interface DashboardState {
     entries: Array<{
       intentId: string;
       atIso: string;
+      /** USD spent on the open part of the buy. */
       usdMicro: string;
+      /** The buy's original size; larger after a partial exit. */
+      inputUsdMicro: string;
       tokenBase: string;
       unrealizedPnlUsdMicro: string | null;
       txSignature: string | null;

@@ -4,6 +4,7 @@ import type { HeliusProvider } from '@zcode-bot/providers';
 import { HeliusProvider as HeliusStatic } from '@zcode-bot/providers';
 import { isIdleOver, timeExitDecision, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
+import { remainingCostBasis } from './builder.js';
 import type { TraderLifecycle } from './lifecycle.js';
 import type { RiskConfig } from '@zcode-bot/config';
 
@@ -173,7 +174,7 @@ export class LeaderMonitor {
     for (const p of open) {
       if (p.status === 'requires_reconciliation') continue; // unknown outcome — operator resolves
       const mark = this.peekMark(p.positionId);
-      const unrealized = mark ? mark.valueUsdMicro - BigInt(p.inputUsdMicro) : null;
+      const unrealized = mark ? mark.valueUsdMicro - remainingCostBasis(p) : null;
       const graceKey = `timeexit.grace:${p.positionId}`;
       const graceEntered = repo.kvGet(this.db, graceKey) === '1';
       const decision = timeExitDecision({

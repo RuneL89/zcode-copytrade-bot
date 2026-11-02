@@ -370,7 +370,9 @@ describe('discovery status reads only its own run record (AC3)', () => {
 /**
  * A position aggregates every copy of one coin by one leader, so an operator
  * looking at a $67.69 row is really looking at seven buys. The payload carries
- * those buys individually (open ones only, FIFO), each with its own PnL.
+ * those buys individually (open ones only), each with its own PnL, and their PnL
+ * sums to the position's — otherwise the aggregate and the transaction lines
+ * disagree on screen.
  */
 describe('position entries list the individual copy buys', () => {
   const MINT = 'EntryMint1111111111111111111111111111111111';
@@ -452,14 +454,23 @@ describe('position entries list the individual copy buys', () => {
     expect(sum.toString()).toBe(p.unrealizedPnlUsdMicro);
   });
 
-  it('consumes sold base FIFO, so a sold buy drops out of the list', () => {
-    const { positionId } = seedAggregated('1000'); // half sold: the first buy is gone
+  it('splits a partially sold position across its buys, so they still reconcile', () => {
+    const { positionId } = seedAggregated('1000'); // half of the tokens sold
     const b = builder();
     b.setMark(positionId, 24_000_000n, Date.now());
     const p = b.build().positions.find((x) => x.positionId === positionId)!;
-    expect(p.entries).toHaveLength(1);
-    expect(p.entries[0]!.usdMicro).toBe('10000000');
-    expect(p.entries[0]!.unrealizedPnlUsdMicro).toBe('14000000'); // the surviving buy, re-marked
+    expect(p.entries).toHaveLength(2);
+    for (const e of p.entries) {
+      expect(e.tokenBase).toBe('500'); // each buy keeps its open half
+      expect(e.usdMicro).toBe('5000000'); // half of each $10 buy is still open
+      expect(e.inputUsdMicro).toBe('10000000'); // the buy itself was $10
+      expect(e.unrealizedPnlUsdMicro).toBe('7000000'); // $12.00 mark − $5.00 basis
+    }
+    // The position marks $24 against the $10 still open (not the original $20),
+    // and the individual buys add up to exactly that.
+    expect(p.unrealizedPnlUsdMicro).toBe('14000000');
+    const sum = p.entries.reduce((acc, e) => acc + BigInt(e.unrealizedPnlUsdMicro ?? '0'), 0n);
+    expect(sum.toString()).toBe(p.unrealizedPnlUsdMicro);
   });
 
   it('lists a buy that filled no tokens for its money, and never a buy with no fill', () => {

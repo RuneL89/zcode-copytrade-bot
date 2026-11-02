@@ -9,7 +9,7 @@ import { openDatabase, type AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type AppConfig } from '@zcode-bot/config';
 import type { PriceProvider } from '@zcode-bot/providers';
-import { CopyEngine } from '../src/services/engine.js';
+import { CopyEngine, remainingAfterForSale } from '../src/services/engine.js';
 import { ControlService } from '../src/services/control.js';
 import type { ExecOutcome, Executor, IntentSpec, QuoteCheck } from '../src/services/executors.js';
 
@@ -228,6 +228,85 @@ describe('exit safety: sell what the wallet holds', () => {
     const failedIntents = repo.intentsInStates(handle.db, ['failed']);
     expect(failedIntents[0]!.reason).toContain('on-chain balance is 0');
     expect(repo.getPosition(handle.db, positionId)!.status).toBe('open');
+  });
+});
+
+describe('remainingAfterForSale', () => {
+  it('subtracts only this position’s sale, not the wallet’s other holdings', () => {
+    // 25% of a 1,000-token position sold while the shared wallet holds 3,000.
+    expect(remainingAfterForSale(1000n, 250n, false)).toBe(750n);
+  });
+
+  it('ends at zero on a full close even when the chain delivered less', () => {
+    expect(remainingAfterForSale(1000n, 990n, true)).toBe(0n);
+  });
+
+  it('never goes negative', () => {
+    expect(remainingAfterForSale(1000n, 1200n, false)).toBe(0n);
+  });
+});
+
+describe('exit safety: a partial exit stays inside its own position', () => {
+  it('does not absorb another chair’s tokens of the same mint', async () => {
+    const { activationId, positionId } = seedPosition('1000');
+    // The wallet also holds 2,000 tokens for a different chair's position.
+    const executor = new ScriptedExecutor(
+      [
+        {
+          kind: 'filled',
+          signature: 'sig',
+          inputAmountBase: '250',
+          outputAmountBase: '1000000',
+          feeUsdMicro: '0',
+          evidence: {},
+          commitment: 'confirmed',
+        },
+      ],
+      3000n,
+    );
+    const engine = engineWith(executor);
+    const summary = {
+      chain: 'solana',
+      leaderAddress: 'LeaderAddr',
+      signature: 'lsig',
+      slot: 1,
+      transactionIndex: 0,
+      blockTime: 1,
+      err: false,
+      nativeDeltaBase: 0n,
+      tokenDeltas: [{ mint: 'MintGTA6', decimals: 6, preBase: 1000n, postBase: 750n, deltaBase: -250n }],
+      programs: [],
+    };
+    const event = {
+      kind: 'swap_sell' as const,
+      signature: 'lsig',
+      slot: 1,
+      transactionIndex: 0,
+      blockTime: 1,
+      legIndex: 0,
+      mint: 'MintGTA6',
+      mintDecimals: 6,
+      tokenDeltaBase: -250n,
+      fundingMint: USDC,
+      fundingDecimals: 6,
+      fundingDeltaBase: 900000n,
+      parserVersion: 'leader-parser/1',
+    };
+    await (
+      engine as unknown as {
+        handleLeaderSell: (
+          activationId: string,
+          candidateId: string,
+          summary: unknown,
+          event: unknown,
+        ) => Promise<void>;
+      }
+    ).handleLeaderSell(activationId, 'cand_test', summary, event);
+
+    expect(executor.specs[0]!.inputAmountBase).toBe('250');
+    const position = repo.getPosition(handle.db, positionId)!;
+    expect(position.remainingTokenBase).toBe('750');
+    expect(position.status).toBe('partially_closed');
   });
 });
 
