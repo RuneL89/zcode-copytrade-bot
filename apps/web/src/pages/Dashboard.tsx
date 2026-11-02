@@ -4,7 +4,6 @@ import { EquityHero } from '../components/EquityHero';
 import { PipelineFlow } from '../components/pipeline/PipelineFlow';
 import { FiredLane } from '../components/FiredLane';
 import { RosterPanel } from '../components/RosterPanel';
-import { PositionsPanel } from '../components/PositionsPanel';
 import { WatchRail } from '../components/WatchRail';
 import { ClosesChart } from '../components/ClosesChart';
 import { CandidatesPanel } from '../components/CandidatesPanel';
@@ -54,7 +53,6 @@ export function Dashboard({
 
       <div className="min-[900px]:grid min-[900px]:grid-cols-3 min-[900px]:gap-3.5 min-[900px]:items-start">
         <div className="min-[900px]:col-span-2">
-          <PositionsPanel state={state} />
           <ClosesChart state={state} />
         </div>
         <div>

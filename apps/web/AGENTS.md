@@ -4,10 +4,10 @@
 
 The mobile-first operator dashboard in **dark + light parity**: context row,
 equity hero, the **pipeline spine** (Discovery → Pool → Watch → Roster →
-Exits with the Fired → Watch return lane), a five-seat roster grid, the
-positions/watch working area with the watch rail (watch list / activity /
-audit tabs), secondary detail (closes chart, candidates), status drawer,
-tabbed Operations and Settings consoles, and auth screens.
+Exits with the Fired → Watch return lane), the five-seat roster grid where each
+seat expands to its open positions, the working area with the watch rail (watch
+list / activity / audit tabs), secondary detail (closes chart, candidates),
+status drawer, tabbed Operations and Settings consoles, and auth screens.
 
 ## Ownership
 
@@ -86,6 +86,13 @@ tabbed Operations and Settings consoles, and auth screens.
   A filled seat is itself a button whose accessible name carries its figures
   (`@handle, STATUS, realized …`), with the visual layer `aria-hidden` and the
   FIRE action a sibling button, so both stay keyboard-reachable.
+- A seat expands (collapsed by default, its own chevron) to its open positions
+  as individual transactions: coin, status, USDC in, unrealized PnL and the
+  time-exit countdown (`SeatPositionRow`, helpers in `position-view.ts`). The
+  standalone positions card is gone: the roster is the one place positions live,
+  its header carries the totals (`N open · $X deployed`), and positions whose
+  chair is no longer on the roster appear in an Unassigned group under the grid.
+  Expanding one seat does not close another.
 - The pipeline components live in `src/components/pipeline/`
   (`PipelineFlow` + `StageNode` / `FlowEdge` / `CandidateChip`, with pure layout
   math in `layout.ts` covered by `tests/pipeline-layout.test.ts`). Transitions

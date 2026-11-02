@@ -1,14 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { usd } from '../types';
 import type { DashboardState } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
-import { RosterSeat } from './RosterSeat';
+import { RosterSeat, SeatPositionRow } from './RosterSeat';
 
 /**
  * The roster grid (D4/plan 05; five seats per plan 07): ROSTER_SIZE chairs
  * sharing one budget pool. Each seat is one chair — its own cursor, positions
  * and fire rule; an empty seat keeps the dashed state, which is acceptable.
+ * A seat expands (collapsed by default) to its open positions, so the roster is
+ * the one place positions live. Positions whose chair is gone (fired, close
+ * stuck in reconciliation) appear in the unassigned group below the grid.
  * Firing names the chair (the API refuses an ambiguous call when several are
  * active).
  */
@@ -17,6 +20,11 @@ export function RosterPanel({ state }: { state: DashboardState }) {
   const [error, setError] = useState<string | null>(null);
   const [fireTarget, setFireTarget] = useState<{ activationId: string; handle: string } | null>(null);
   const [selectedSeat, setSelectedSeat] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
   const seats = state.pipeline.roster;
   const size = Math.max(state.counters.rosterSize ?? 0, seats.length);
   const chairs: Array<(typeof seats)[number] | null> = Array.from(
@@ -26,6 +34,21 @@ export function RosterPanel({ state }: { state: DashboardState }) {
   const board = (activationId: string) =>
     state.roster.find((row) => row.activationId === activationId) ?? null;
   const selected = selectedSeat ? (seats.find((s) => s.activationId === selectedSeat) ?? null) : null;
+
+  // Positions grouped by the leader handle the builder stamped on them.
+  const byHandle = new Map<string, DashboardState['positions']>();
+  for (const p of state.positions) {
+    const key = p.leaderHandle ?? '';
+    const list = byHandle.get(key);
+    if (list) list.push(p);
+    else byHandle.set(key, [p]);
+  }
+  const seatHandles = new Set(seats.map((s) => s.handle));
+  const unassigned = state.positions.filter(
+    (p) => p.leaderHandle === null || !seatHandles.has(p.leaderHandle),
+  );
+  const maxAgeHours = state.counters.maxPositionAgeHours;
+  const graceHours = state.counters.positionGraceHours;
 
   if (size === 0) {
     return (
@@ -40,10 +63,11 @@ export function RosterPanel({ state }: { state: DashboardState }) {
 
   return (
     <section className="card p-4 mb-3.5" aria-label="roster" data-testid="roster-panel">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <p className="label">Roster</p>
         <p className="label !text-[10px] !text-faint" data-testid="roster-counts">
-          {seats.length}/{size} chair(s) · shared pool
+          {seats.length}/{size} chair(s) · shared pool · {state.counters.openPositions} open · $
+          {usd(state.counters.deployedUsdMicro)} deployed
         </p>
       </div>
       <ul className="mt-3 grid gap-2.5 grid-cols-1 min-[600px]:grid-cols-2 min-[900px]:grid-cols-3 min-[1100px]:grid-cols-5 list-none m-0 p-0">
@@ -54,6 +78,10 @@ export function RosterPanel({ state }: { state: DashboardState }) {
             board={seat ? board(seat.activationId) : null}
             busy={busy !== null}
             selected={selectedSeat !== null && seat?.activationId === selectedSeat}
+            positions={seat ? (byHandle.get(seat.handle) ?? []) : []}
+            maxAgeHours={maxAgeHours}
+            graceHours={graceHours}
+            now={now}
             onSelect={(activationId) =>
               setSelectedSeat((cur) => (cur === activationId ? null : activationId))
             }
@@ -61,6 +89,25 @@ export function RosterPanel({ state }: { state: DashboardState }) {
           />
         ))}
       </ul>
+      {unassigned.length > 0 && (
+        <div className="mt-3" data-testid="unassigned-positions">
+          <p className="label !text-[10px]">
+            Unassigned positions <span className="!text-faint">({unassigned.length})</span>
+          </p>
+          <ul className="mt-1.5 space-y-1.5">
+            {unassigned.map((p) => (
+              <SeatPositionRow
+                key={p.positionId}
+                p={p}
+                maxAgeHours={maxAgeHours}
+                graceHours={graceHours}
+                now={now}
+                leaderLabel={p.leaderHandle ?? 'unknown'}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
       {selected && (
         <div
           className="panel p-3 mt-2.5"

@@ -460,6 +460,72 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       return c.json({ ok: true, candidateId });
     });
 
+    app.post('/api/test/seed-seat', async (c) => {
+      // A filled chair with one open position, so the browser suite can expand a
+      // seat without waiting for the replay or a real hire.
+      const body = (await c.req.json().catch(() => ({}))) as {
+        handle?: string;
+        usd?: number;
+        minutesAgo?: number;
+      };
+      const handle = (body.handle ?? 'seeded_seat').trim();
+      const usd = Number.isFinite(body.usd) ? body.usd! : 10;
+      const minutesAgo = Number.isFinite(body.minutesAgo) ? body.minutesAgo! : 30;
+      const candidateId = repo.candidateIdForHandle(handle);
+      const address = `SeedWallet${handle}`;
+      // Idempotent per handle: a re-seed replaces the chair's positions and
+      // activations instead of piling new ones onto the old run.
+      rt.db.sqlite.prepare('DELETE FROM copied_positions WHERE candidate_id = ?').run(candidateId);
+      rt.db.sqlite.prepare('DELETE FROM trader_activations WHERE candidate_id = ?').run(candidateId);
+      repo.upsertCandidate(db, {
+        candidateId,
+        handle,
+        weeklyRank: null,
+        displayedWeeklyPnlUsdMicro: null,
+        profileUrl: null,
+        avatarUrl: null,
+        enabled: true,
+        source: 'test-seed',
+        observedAt: new Date().toISOString(),
+      });
+      repo.upsertCandidateAddress(db, candidateId, { chain: 'solana', address, verification: 'reported' });
+      repo.upsertWatchWallet(db, { candidateId, address, status: 'promoted', reason: 'test seed' });
+      const activationId = `act_seed_seat_${Date.now()}_${candidateId}`;
+      repo.createActivation(db, {
+        activationId,
+        candidateId,
+        state: 'ACTIVE',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        endReason: null,
+        lossStreak: 0,
+        firedReason: null,
+        source: 'test',
+      });
+      const positionId = `pos_seed_${Date.now()}`;
+      repo.insertPosition(db, {
+        positionId,
+        activationId,
+        candidateId,
+        mint: 'SeedMint111111111111111111111111111111111111',
+        mintSymbol: 'SEED',
+        status: 'open',
+        entryIntentId: null,
+        inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inputUsdMicro: String(Math.trunc(usd * 1e6)),
+        copiedTokenBase: '1000',
+        remainingTokenBase: '1000',
+        leaderTokenBase: null,
+        realizedPnlUsdMicro: '0',
+        feesUsdMicro: '1000',
+        openedAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+        closedAt: null,
+        closeReason: null,
+      });
+      rt.rebuildState();
+      return c.json({ ok: true, candidateId, activationId, positionId });
+    });
+
     app.post('/api/test/seed-firing', async (c) => {
       // The fired lane renders the last five firings. Seed one with a
       // realistically long legacy reason so the browser suite can prove the

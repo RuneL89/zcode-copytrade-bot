@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countdown } from '../src/components/PositionsPanel';
+import { countdown } from '../src/components/position-view';
 import type { DashboardState } from '../src/types';
 
 const NOW = Date.parse('2026-11-02T18:00:00.000Z');

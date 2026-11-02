@@ -125,6 +125,60 @@ test.describe('pipeline spine (plan 07)', () => {
     expect(equityY).toBeLessThan(pipelineY);
   });
 
+  test('a roster seat expands to its open positions, collapsed by default', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await completeSetup(page);
+    // The demo replay owns the store while it runs, and a rebuild during it is
+    // discarded. Wait for it to stop publishing (generatedAt freezes), then seed.
+    await expect
+      .poll(
+        async () => {
+          const read = () =>
+            page.evaluate(async () => {
+              const state = await fetch('/api/state', { credentials: 'same-origin' }).then((r) => r.json());
+              return state.generatedAt as string;
+            });
+          const first = await read();
+          await page.waitForTimeout(1_500);
+          return (await read()) === first;
+        },
+        { timeout: 60_000, intervals: [500] },
+      )
+      .toBe(true);
+    // A seeded chair with one open position: independent of the replay timing.
+    const seeded = await page.request.post('/api/test/seed-seat', {
+      data: { handle: 'e2e_seat', usd: 10, minutesAgo: 30 },
+    });
+    expect(seeded.ok()).toBe(true);
+    const { candidateId } = (await seeded.json()) as { candidateId: string };
+    const payload = async () =>
+      page.evaluate(async () => fetch('/api/state', { credentials: 'same-origin' }).then((r) => r.json()));
+    // The demo replay owns the store until it ends; wait for the builder state
+    // that carries the seeded seat.
+    await expect
+      .poll(
+        async () =>
+          ((await payload()).pipeline?.roster ?? []).some(
+            (seat: { candidateId: string }) => seat.candidateId === candidateId,
+          ),
+        { timeout: 60_000, intervals: [500] },
+      )
+      .toBe(true);
+    await page.reload();
+
+    const seat = page.locator('[data-testid^="roster-seat-"]').filter({ hasText: '@e2e_seat' }).first();
+    const toggle = seat.locator('[data-testid^="seat-positions-toggle-"]');
+    await expect(toggle).toContainText('Positions (1)');
+    // Collapsed by default, then one row with the coin, USDC and PnL.
+    await expect(seat.locator('[data-testid^="seat-position-"]')).toHaveCount(0);
+    await toggle.click();
+    const rows = seat.locator('[data-testid^="seat-position-"]');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('SEED');
+    await expect(rows.first()).toContainText('$10.00');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
   test('a long firing reason wraps inside the lane instead of widening the page', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await completeSetup(page);

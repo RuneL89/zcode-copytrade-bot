@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import type { DashboardState } from '../types';
-import { timeAgo, usd } from '../types';
+import { signedUsd, timeAgo, usd } from '../types';
+import { countdown, posChip } from './position-view';
 
 type PipelineSeat = DashboardState['pipeline']['roster'][number];
 type BoardSeat = DashboardState['roster'][number];
+type Position = DashboardState['positions'][number];
 
 const STATUS_STYLE: Record<PipelineSeat['status'], string> = {
   BUYING: 'bg-posdim text-pos border-posborder',
@@ -27,10 +30,58 @@ const lastSixClass = (mark: 'W' | 'L' | 'B') =>
   mark === 'W' ? 'text-pos' : mark === 'L' ? 'text-neg' : 'text-faint';
 
 /**
+ * One open position as an individual transaction: coin, status, the USDC we put
+ * in, the unrealized P/L at the live mark, and the time-exit countdown. Used
+ * inside an expanded roster seat, and in the unassigned group when a position's
+ * chair is no longer on the roster.
+ */
+export function SeatPositionRow({
+  p,
+  maxAgeHours,
+  graceHours,
+  now,
+  leaderLabel,
+}: {
+  p: Position;
+  maxAgeHours: number;
+  graceHours: number;
+  now: number;
+  leaderLabel?: string;
+}) {
+  const chip = posChip(p.status);
+  const pnl = p.unrealizedPnlUsdMicro;
+  const pnlCls = pnl === null ? 'text-faint' : BigInt(pnl) >= 0n ? 'text-pos' : 'text-neg';
+  const cd = countdown(p, maxAgeHours, graceHours, now);
+  const cdCls =
+    cd.phase === 'grace' ? '!text-warn' : cd.phase === 'now' ? '!text-neg font-semibold' : '!text-faint';
+  return (
+    <li
+      data-testid={`seat-position-${p.positionId}`}
+      className="panel px-2.5 py-2"
+      aria-label={`${leaderLabel ? `@${leaderLabel}, ` : ''}${p.symbol ?? p.mintShort}, ${
+        chip.label
+      }, $${usd(p.copyUsdMicro)} in, ${pnl === null ? 'no mark yet' : `unrealized ${signedUsd(pnl)}`}, ${cd.text}`}
+    >
+      <div className="flex items-center gap-2 text-[11px]">
+        {leaderLabel && <span className="label !text-[10px] !text-faint">@{leaderLabel}</span>}
+        <span className="font-semibold">${p.symbol ?? p.mintShort}</span>
+        <span className={`tag chip ${chip.cls}`}>{chip.label}</span>
+        <span className="ml-auto money">${usd(p.copyUsdMicro)}</span>
+        <span className={`money w-[62px] text-right font-semibold ${pnlCls}`}>
+          {pnl === null ? '—' : signedUsd(pnl)}
+        </span>
+      </div>
+      <p className={`label !text-[10px] mt-0.5 ${cdCls}`}>{cd.text}</p>
+    </li>
+  );
+}
+
+/**
  * One roster chair (plan 07, AC4/AC9). The whole seat is a button whose
  * accessible name carries the seat's figures; the visual layer is
- * `aria-hidden` and the FIRE action is a sibling button, so both are reachable
- * by keyboard. An empty seat keeps the dashed "open seat" state — an accepted
+ * `aria-hidden` and the FIRE action and the positions expander are sibling
+ * buttons, so all three are reachable by keyboard. The expander starts
+ * collapsed. An empty seat keeps the dashed "open seat" state — an accepted
  * outcome (D4).
  */
 export function RosterSeat({
@@ -38,6 +89,10 @@ export function RosterSeat({
   board,
   busy,
   selected,
+  positions,
+  maxAgeHours,
+  graceHours,
+  now,
   onSelect,
   onFire,
 }: {
@@ -45,9 +100,15 @@ export function RosterSeat({
   board: BoardSeat | null;
   busy: boolean;
   selected: boolean;
+  positions: Position[];
+  maxAgeHours: number;
+  graceHours: number;
+  now: number;
   onSelect: (activationId: string) => void;
   onFire: (activationId: string, handle: string) => void;
 }) {
+  const [showPositions, setShowPositions] = useState(false);
+
   if (!seat) {
     return (
       <li
@@ -77,6 +138,7 @@ export function RosterSeat({
     `@${seat.handle}, ${seat.status}, realized ${usd(realized)}, ` +
     `unrealized ${usd(unrealized)}, ${seat.openPositions} open position(s), ${signal}` +
     (idle ? `, ${idle}` : '');
+  const listId = `seat-positions-${seat.activationId}`;
 
   return (
     <li
@@ -150,6 +212,47 @@ export function RosterSeat({
             <p className="money">{seat.openPositions}</p>
           </div>
         </div>
+      </div>
+
+      <div className="relative">
+        <button
+          type="button"
+          aria-expanded={showPositions}
+          aria-controls={listId}
+          onClick={() => setShowPositions((v) => !v)}
+          data-testid={`seat-positions-toggle-${seat.activationId}`}
+          className="label !text-[10px] flex items-center gap-1.5 cursor-pointer min-h-[28px] text-muted hover:text-ink"
+        >
+          <span
+            aria-hidden="true"
+            className={`inline-block transition-transform ${showPositions ? 'rotate-90' : ''}`}
+          >
+            ▸
+          </span>
+          Positions ({positions.length})
+        </button>
+        {showPositions && (
+          <ul
+            id={listId}
+            aria-label={`open positions for @${seat.handle}`}
+            className="mt-1 space-y-1.5"
+            data-testid={`seat-positions-${seat.activationId}`}
+          >
+            {positions.length === 0 ? (
+              <li className="text-[11px] text-faint">No open positions.</li>
+            ) : (
+              positions.map((p) => (
+                <SeatPositionRow
+                  key={p.positionId}
+                  p={p}
+                  maxAgeHours={maxAgeHours}
+                  graceHours={graceHours}
+                  now={now}
+                />
+              ))
+            )}
+          </ul>
+        )}
       </div>
 
       <div className="relative flex items-center gap-2 mt-auto">
