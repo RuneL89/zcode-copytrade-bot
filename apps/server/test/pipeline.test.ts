@@ -235,7 +235,9 @@ describe('pipeline stages are DB-derived (AC2)', () => {
       firedAt,
     });
     const replacement = seedCandidate('replacement_now');
-    seedActivation(replacement, 'watch_promotion');
+    // The fire refills its chair within one watch tick; two minutes later is
+    // squarely inside the attribution window.
+    seedActivation(replacement, 'watch_promotion', iso(HOUR - 2 * 60_000));
     const oldHire = seedCandidate('replacement_old');
     seedActivation(oldHire, 'watch_promotion', iso(40 * HOUR));
 
@@ -255,6 +257,28 @@ describe('pipeline stages are DB-derived (AC2)', () => {
     const edge = (from: string, to: string) => p.edges.find((e) => e.from === from && e.to === to)?.count24h;
     expect(edge('watch', 'roster')).toBe(1);
     expect(edge('roster', 'exits')).toBe(1);
+  });
+
+  it('does not attribute a hire made long after the firing to that chair', () => {
+    // A firing from this morning, and the only promotion hire happened hours
+    // later: it filled some chair, but not this one. The lane must say so.
+    const fired = seedCandidate('fired_unpaired');
+    const act = seedActivation(fired, 'manual');
+    repo.insertFiringEvent(handle.db, {
+      activationId: act,
+      candidateId: fired,
+      reason: 'stale last buy',
+      lossStreak: 0,
+      positionPolicy: 'close_all_before_switch',
+      handoffStatus: 'none',
+      firedAt: iso(5 * HOUR),
+    });
+    const later = seedCandidate('hire_much_later');
+    seedActivation(later, 'watch_promotion', iso(3 * HOUR));
+
+    const lane = builder().build().pipeline.exits.recent;
+    expect(lane[0]?.handle).toBe('fired_unpaired');
+    expect(lane[0]?.replacedBy).toBeNull();
   });
 });
 

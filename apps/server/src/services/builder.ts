@@ -17,6 +17,12 @@ const ACTIVITY_LIMIT = 50;
 export const ACTIVITY_WINDOW_HOURS = 18;
 /** Observed-event window scanned to compose the tape (noise collapses into a counter). */
 const OBSERVED_WINDOW = 300;
+/**
+ * How soon after a firing a promotion hire still counts as that chair's
+ * replacement. D4 refills within one watch tick (5 minutes); the window allows
+ * a slow pass, and stops a much later hire from being attributed to it.
+ */
+const REPLACEMENT_WINDOW_MS = 10 * 60_000;
 
 /** True when `tIso` falls inside the dashboard's activity window ending at `nowMs`. */
 export function withinActivityWindow(tIso: string, nowMs: number): boolean {
@@ -596,11 +602,27 @@ export class StateBuilder {
     ).length;
     const firings24h = repo.listFiringEventsSince(this.db, cutoff24h).length;
     // The fired lane: the newest firings, each with the chair's replacement
-    // status — the first promotion-hire that started after the firing took it.
+    // status. A fire refills its chair from the promotion queue within one watch
+    // tick (D4, 5 minutes), so the pairing is bounded: a hire from hours later
+    // (another chair, another day) must not be reported as this firing's
+    // replacement. The window allows one slow pass or a quick reconciliation
+    // retry without stretching into a different story.
     const firedLane = repo.listRecentFirings(this.db, 5).map((f) => {
-      const hire = activations.find(
-        (a) => a.startedAt > f.firedAt && a.candidateId !== f.candidateId && a.source === 'watch_promotion',
-      );
+      const firedMs = Date.parse(f.firedAt);
+      const hire = Number.isFinite(firedMs)
+        ? activations
+            .filter((a) => {
+              const started = Date.parse(a.startedAt);
+              return (
+                Number.isFinite(started) &&
+                started > firedMs &&
+                started - firedMs <= REPLACEMENT_WINDOW_MS &&
+                a.candidateId !== f.candidateId &&
+                a.source === 'watch_promotion'
+              );
+            })
+            .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))[0]
+        : undefined;
       return {
         candidateId: f.candidateId,
         handle: repo.getCandidate(this.db, f.candidateId)?.handle ?? f.candidateId,
