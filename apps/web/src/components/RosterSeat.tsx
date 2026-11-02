@@ -15,6 +15,14 @@ function initials(handle: string): string {
   return handle.slice(0, 2).toUpperCase();
 }
 
+/** Hours (one decimal) to a compact "6h 12m" label. */
+function idleLabel(hours: number): string {
+  const total = Math.max(0, Math.round(hours * 60));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 const lastSixClass = (mark: 'W' | 'L' | 'B') =>
   mark === 'W' ? 'text-pos' : mark === 'L' ? 'text-neg' : 'text-faint';
 
@@ -55,9 +63,20 @@ export function RosterSeat({
   const unrealized = board?.unrealizedPnlUsdMicro ?? seat.unrealizedPnlUsdMicro;
   const active = board?.status === 'ACTIVE';
   const signal = seat.lastSignalAt ? `last signal ${timeAgo(seat.lastSignalAt)}` : 'no signal yet';
+  // The idle clock only runs while the seat is flat: holding a position pauses
+  // it, and the label says so instead of hiding the mechanic.
+  const idle =
+    seat.openPositions > 0
+      ? `idle clock paused · ${seat.openPositions} open`
+      : seat.idleFireHoursLeft === null
+        ? null
+        : seat.idleFireHoursLeft <= 0
+          ? 'idle fire now'
+          : `idle fire in ${idleLabel(seat.idleFireHoursLeft)}`;
   const aria =
     `@${seat.handle}, ${seat.status}, realized ${usd(realized)}, ` +
-    `unrealized ${usd(unrealized)}, ${seat.openPositions} open position(s), ${signal}`;
+    `unrealized ${usd(unrealized)}, ${seat.openPositions} open position(s), ${signal}` +
+    (idle ? `, ${idle}` : '');
 
   return (
     <li
@@ -103,6 +122,19 @@ export function RosterSeat({
             {seat.lastSignalAt ? `signal ${timeAgo(seat.lastSignalAt)}` : 'signal —'}
           </span>
         </div>
+
+        {idle && (
+          <p
+            className={`label !text-[10px] mt-1.5 ${
+              seat.openPositions === 0 && (seat.idleFireHoursLeft ?? 99) <= 2
+                ? '!text-warn font-semibold'
+                : '!text-faint'
+            }`}
+            data-testid={`idle-fire-${seat.activationId}`}
+          >
+            {idle}
+          </p>
+        )}
 
         <div className="grid grid-cols-3 gap-2 mt-2 text-[10.5px]">
           <div>

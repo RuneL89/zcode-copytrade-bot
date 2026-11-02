@@ -272,6 +272,27 @@ describe('roster seats carry the last observed signal (AC4)', () => {
     const idle = seedCandidate('seat_idle');
     seedActivation(idle, 'watch_promotion');
 
+    // A seat that holds a position pauses the idle clock; a flat seat counts.
+    repo.insertPosition(handle.db, {
+      positionId: 'pos_pipe_holding',
+      activationId: aBuy,
+      candidateId: buying,
+      mint: 'PipeMint1111111111111111111111111111111111111',
+      mintSymbol: 'PIPE',
+      status: 'open',
+      entryIntentId: null,
+      inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      inputUsdMicro: '1000000',
+      copiedTokenBase: '1000',
+      remainingTokenBase: '1000',
+      leaderTokenBase: null,
+      realizedPnlUsdMicro: '0',
+      feesUsdMicro: '1000',
+      openedAt: iso(0),
+      closedAt: null,
+      closeReason: null,
+    });
+
     const reconciling = seedCandidate('seat_recon');
     const aRecon = seedActivation(reconciling, 'watch_promotion');
     repo.updateActivation(handle.db, aRecon, { state: 'REQUIRES_RECONCILIATION' });
@@ -284,6 +305,11 @@ describe('roster seats carry the last observed signal (AC4)', () => {
     expect(seat('seat_idle')?.status).toBe('IDLE');
     expect(seat('seat_idle')?.lastSignalAt).toBeNull();
     expect(seat('seat_recon')?.status).toBe('RECONCILING');
+    // The idle clock only runs while a seat is flat.
+    expect(seat('seat_buying')?.openPositions).toBe(1);
+    expect(seat('seat_buying')?.idleFireHoursLeft).toBeNull();
+    expect(seat('seat_idle')?.idleFireHoursLeft).not.toBeNull();
+    expect(seat('seat_idle')?.idleFireHoursLeft ?? 0).toBeGreaterThan(risk.IDLE_FIRE_HOURS - 0.2);
     // The grid renders five chairs: the seat count comes from the payload.
     expect(s.counters.rosterSize).toBe(risk.ROSTER_SIZE);
   });

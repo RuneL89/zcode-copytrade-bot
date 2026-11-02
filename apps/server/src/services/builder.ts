@@ -290,19 +290,11 @@ export class StateBuilder {
       bank.capitalUsdMicro > 0n
         ? Math.round(Number((bank.deployedUsdMicro * 10_000n) / bank.capitalUsdMicro)) / 100
         : 0;
-    // Idle-fire countdown: only counting while the hire holds zero positions.
-    let idleFireHoursLeft: number | null = null;
-    if (activation && openPositionRows.length === 0) {
-      const lastOpenAt = repo.kvGet(this.db, `monitor.lastOpenAt:${activation.activationId}`);
-      const baselineMs = Math.max(Date.parse(activation.startedAt), lastOpenAt ? Date.parse(lastOpenAt) : 0);
-      if (Number.isFinite(baselineMs) && baselineMs > 0) {
-        idleFireHoursLeft = Math.max(
-          0,
-          Math.round(((this.config.risk.IDLE_FIRE_HOURS * 3_600_000 - (now - baselineMs)) / 3_600_000) * 10) /
-            10,
-        );
-      }
-    }
+    // Idle-fire countdown for the first chair (the legacy counters field); the
+    // per-seat value below is what the roster shows.
+    const idleFireHoursLeft = activation
+      ? this.idleFireHoursLeftFor(activation.activationId, activation.startedAt, openPositionRows.length, now)
+      : null;
     // Chain-priced SOL spend. Every figure below is read from transaction
     // evidence; nothing here is a guess. Null until the first ledger scan so
     // the dashboard can say "pending" instead of printing a fake zero.
@@ -548,6 +540,26 @@ export class StateBuilder {
   }
 
   /**
+   * Hours left before the idle fire, or null when the seat holds a position
+   * (the clock only runs while flat). The baseline is the later of the hire and
+   * the last moment the seat held something, read from the monitor's own record
+   * so the dashboard and the fire rule agree.
+   */
+  private idleFireHoursLeftFor(
+    activationId: string,
+    startedAt: string,
+    seatPositions: number,
+    now: number,
+  ): number | null {
+    if (seatPositions > 0) return null;
+    const lastOpenAt = repo.kvGet(this.db, `monitor.lastOpenAt:${activationId}`);
+    const baselineMs = Math.max(Date.parse(startedAt), lastOpenAt ? Date.parse(lastOpenAt) : 0);
+    if (!Number.isFinite(baselineMs) || baselineMs <= 0) return null;
+    const hours = (this.config.risk.IDLE_FIRE_HOURS * 3_600_000 - (now - baselineMs)) / 3_600_000;
+    return Math.max(0, Math.round(hours * 10) / 10);
+  }
+
+  /**
    * The pipeline spine (plan 07). Every count is a read of persisted rows or
    * the discovery service's own record of its last run — nothing is estimated.
    */
@@ -633,6 +645,7 @@ export class StateBuilder {
         unrealizedPnlUsdMicro: unrealized.toString(),
         openPositions: seatPositions.length,
         lastSignalAt: signal?.processedAt ?? null,
+        idleFireHoursLeft: this.idleFireHoursLeftFor(a.activationId, a.startedAt, seatPositions.length, now),
       };
     });
 

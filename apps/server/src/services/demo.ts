@@ -368,6 +368,7 @@ export class DemoEngine {
               .toString(),
             openPositions: openMirrors.size,
             lastSignalAt: new Date().toISOString(),
+            idleFireHoursLeft: openMirrors.size === 0 ? 6 : null,
           },
         ],
         exits: {

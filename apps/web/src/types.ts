@@ -166,6 +166,8 @@ export interface DashboardState {
       unrealizedPnlUsdMicro: string;
       openPositions: number;
       lastSignalAt: string | null;
+      /** Hours until the idle fire; null while the seat holds a position. */
+      idleFireHoursLeft: number | null;
     }>;
     exits: {
       fired24h: number;

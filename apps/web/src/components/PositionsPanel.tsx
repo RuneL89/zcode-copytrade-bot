@@ -34,20 +34,23 @@ interface Countdown {
   phase: 'hold' | 'grace' | 'now';
 }
 
-/** Live time-exit countdown for a position: phase 1 decision at maxAge, force-close at maxAge+grace. */
-function countdown(
+/**
+ * Live time-exit countdown for a position: phase 1 decision at maxAge, force-close
+ * at maxAge+grace. Everything here is in seconds, which is what `hhmm` formats.
+ */
+export function countdown(
   p: DashboardState['positions'][number],
   maxAgeHours: number,
   graceHours: number,
   now: number,
 ): Countdown {
   const opened = Date.parse(p.openedIso);
-  const ageMs = Number.isFinite(opened) ? now - opened : 0;
-  const endMs = (maxAgeHours + graceHours) * 3_600_000;
-  if (ageMs >= endMs) return { text: 'SELLS NOW', phase: 'now' };
-  if (ageMs >= maxAgeHours * 3_600_000)
-    return { text: `GRACE · SELLS IN ${hhmm(endMs - ageMs)}`, phase: 'grace' };
-  return { text: `TIME EXIT IN ${hhmm(maxAgeHours * 3_600_000 - ageMs)}`, phase: 'hold' };
+  const ageSec = Number.isFinite(opened) ? Math.max(0, Math.round((now - opened) / 1000)) : 0;
+  const endSec = (maxAgeHours + graceHours) * 3_600;
+  if (ageSec >= endSec) return { text: 'SELLS NOW', phase: 'now' };
+  if (ageSec >= maxAgeHours * 3_600)
+    return { text: `GRACE · SELLS IN ${hhmm(endSec - ageSec)}`, phase: 'grace' };
+  return { text: `TIME EXIT IN ${hhmm(maxAgeHours * 3_600 - ageSec)}`, phase: 'hold' };
 }
 
 const TICK_MS = 10_000;

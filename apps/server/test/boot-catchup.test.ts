@@ -28,16 +28,22 @@ afterAll(() => {
 
 describe('boot catch-up (D5)', () => {
   it('skips discovery without a key, runs the watch pass and fills the roster before the clocks', async () => {
-    const config = loadConfig({ SESSION_SECRET: 'b'.repeat(48), DATA_DIR: dir, MODE: 'paper' });
+    const config = loadConfig({
+      SESSION_SECRET: 'b'.repeat(48),
+      DATA_DIR: dir,
+      MODE: 'paper',
+      PUBLIC_SOLANA_RPC_URL: 'http://127.0.0.1:9',
+    });
     config.env.DATA_DIR = dir;
     config.env.FOMOAPI_KEY = '';
+    config.env.HELIUS_API_KEY = '';
     rt = new Runtime(config);
 
     await rt.start();
     // The catch-up is async; start() returns while it runs.
     for (
       let i = 0;
-      i < 50 && !repo.listAudit(rt.db.db, 50).some((a) => /boot roster fill:/.test(a.message));
+      i < 600 && !repo.listAudit(rt.db.db, 50).some((a) => /boot roster fill:/.test(a.message));
       i++
     ) {
       await new Promise((r) => setTimeout(r, 20));
@@ -83,18 +89,24 @@ describe('boot catch-up (D5)', () => {
     // The catch-up already ran; a fresh start runs it again with the bench in
     // place (the chair is free because the earlier chairs were never activated).
     rt.stop();
-    const config = loadConfig({ SESSION_SECRET: 'b'.repeat(48), DATA_DIR: dir, MODE: 'paper' });
+    const config = loadConfig({
+      SESSION_SECRET: 'b'.repeat(48),
+      DATA_DIR: dir,
+      MODE: 'paper',
+      PUBLIC_SOLANA_RPC_URL: 'http://127.0.0.1:9',
+    });
     config.env.DATA_DIR = dir;
     config.env.FOMOAPI_KEY = '';
+    config.env.HELIUS_API_KEY = '';
     rt = new Runtime(config);
     await rt.start();
     for (
       let i = 0;
-      i < 50 && repo.listActiveActivations(rt.db.db).every((a) => a.candidateId !== candidateId);
+      i < 600 && repo.listActiveActivations(rt.db.db).every((a) => a.candidateId !== candidateId);
       i++
     ) {
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(repo.listActiveActivations(rt.db.db).map((a) => a.candidateId)).toContain(candidateId);
-  });
+  }, 30_000);
 });

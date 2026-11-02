@@ -242,6 +242,11 @@ export interface DashboardState {
       openPositions: number;
       /** Newest observed leader signal (ISO), or null when none was seen. */
       lastSignalAt: string | null;
+      /**
+       * Hours until the idle fire. Null while the seat holds a position (the
+       * clock only runs while flat) or when the chair has just been filled.
+       */
+      idleFireHoursLeft: number | null;
     }>;
     exits: {
       fired24h: number;
