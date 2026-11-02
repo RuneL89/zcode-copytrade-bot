@@ -3,6 +3,7 @@ import { Keypair, SystemProgram, Transaction, VersionedTransaction } from '@sola
 import {
   LiveExecutor,
   isPreflightRejection,
+  receivedOutputBase,
   type LiveConnection,
   type IntentSpec,
 } from '../src/services/executors.js';
@@ -170,5 +171,26 @@ describe('isPreflightRejection', () => {
     expect(isPreflightRejection(new Error('Transaction simulation failed: Error processing'))).toBe(true);
     expect(isPreflightRejection(new Error('fetch failed'))).toBe(false);
     expect(isPreflightRejection(new Error('confirmed transaction timed out'))).toBe(false);
+  });
+});
+
+/**
+ * A post-balance read that has not caught up with the confirmation equals the
+ * pre read. Booking that as zero tokens stranded two real buys outside the book
+ * (LOAD: 4,419.57 tokens, MAMESUKE: 6,092.47 tokens, both bought for real).
+ */
+describe('receivedOutputBase', () => {
+  it('uses the balance delta when the balance actually moved', () => {
+    expect(receivedOutputBase(1000n, 9000n, '5000')).toBe('8000');
+  });
+
+  it('falls back to the quote when the read is stale rather than booking zero', () => {
+    expect(receivedOutputBase(0n, 0n, '4419569662')).toBe('4419569662');
+    expect(receivedOutputBase(39026655054n, 39026655054n, '6092472269')).toBe('6092472269');
+  });
+
+  it('falls back to the quote when either read failed', () => {
+    expect(receivedOutputBase(null, 9000n, '5000')).toBe('5000');
+    expect(receivedOutputBase(1000n, null, '5000')).toBe('5000');
   });
 });

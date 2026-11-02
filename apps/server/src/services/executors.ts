@@ -71,6 +71,17 @@ export function isPreflightRejection(error: unknown): boolean {
   return /simulation failed|transaction simulation failed|preflight failure/i.test(msg);
 }
 
+/**
+ * Base units a live fill actually received. The balance delta is the truth when
+ * both reads succeeded and the balance moved; an unchanged read is a stale read
+ * (a fresh token account is not always visible the instant the transaction
+ * confirms), so it falls back to the quote rather than booking zero tokens.
+ */
+export function receivedOutputBase(pre: bigint | null, post: bigint | null, quotedBase: string): string {
+  if (pre === null || post === null || post <= pre) return quotedBase;
+  return (post - pre).toString();
+}
+
 /** Documented paper-mode simulation assumptions (displayed in the UI). */
 export const PAPER_ASSUMPTIONS = {
   slippageBps: 30,
@@ -311,12 +322,16 @@ export class LiveExecutor implements Executor {
       if (result.value.err) {
         return { kind: 'failed', error: `transaction failed on-chain: ${JSON.stringify(result.value.err)}` };
       }
-      // Actual received = post - pre when both reads succeeded; else the quote.
-      let outputAmountBase = quoteResponse.outAmount;
-      const post = await this.availableBalance(spec.outputMint);
-      if (preOutput !== null && post !== null && post >= preOutput) {
-        outputAmountBase = (post - preOutput).toString();
-      }
+      // Actual received = post - pre when both reads succeeded AND the balance
+      // actually moved; otherwise the quote. A post read that equals the pre
+      // read is a stale read (a fresh token account is not always visible the
+      // instant a transaction confirms), never "received nothing" — booking a
+      // zero here strands real tokens outside the book.
+      const outputAmountBase = receivedOutputBase(
+        preOutput,
+        await this.availableBalance(spec.outputMint),
+        quoteResponse.outAmount,
+      );
       return {
         kind: 'filled',
         signature,
