@@ -1,0 +1,14 @@
+%% Render: ~/.zcode/tools/mermaid-render/render.sh -i chair-lifecycle.mmd -o ../images/chair-lifecycle.png -b white -s 2 -w 1600
+flowchart TD
+    A["On the roster<br/>copying buys, mirroring sells"] --> B{"Why is the chair lost?"}
+    B -->|two losing closes in a row| C
+    B -->|the leader wallet is quiet for 8 hours| C
+    B -->|the leader's last buy is older than 20 hours| C
+    B -->|8 hours idle with nothing open| C
+    C["Close out in one transaction<br/>cancel unsigned orders, apply the position policy"] --> D["The chair is free"]
+    D --> E{"Is a bench wallet promotable?"}
+    E -->|yes| F["Hire the best shadow record<br/>the trader just fired is not eligible"]
+    E -->|no| G["The chair stays empty<br/>discovery refills the bench"]
+    F --> A
+    G --> A
+    G -.->|"a funded buy after the firing"| H["The fired trader moves back<br/>into the watch list"]

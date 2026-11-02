@@ -1,0 +1,12 @@
+%% Render: ~/.zcode/tools/mermaid-render/render.sh -i pipeline-overview.mmd -o ../images/pipeline-overview.png -b white -s 2 -w 1600
+flowchart TD
+    D["Discovery<br/>fomoapi leaderboard<br/>24h, 7d, 30d boards plus alerts"] --> P["Pool<br/>candidates with a verified wallet,<br/>one identity per wallet"]
+    P --> W["Watch list<br/>20 wallets, qualified by funded buys:<br/>3 or more in 24 hours, the last one fresh"]
+    W --> S["Shadow ledger<br/>a pretend position on every funded buy,<br/>closed by the leader's sell or the age ceiling"]
+    S --> G{"Promotion gate<br/>8 closed shadow trades, net over 3 dollars,<br/>a funded buy within 4 hours, a free chair"}
+    G -->|passes| R["Roster<br/>5 chairs sharing one budget pool"]
+    R --> C["Copies at a quarter size<br/>floored, capped, risk-gated"]
+    C --> X["Exits<br/>mirrored sells and the age ceiling"]
+    X --> F["Fired lane<br/>the cause, and whether the chair was refilled"]
+    S -.->|"a full sample that lost money"| A["Archived<br/>never promoted"]
+    F -.->|"the bench refills"| W

@@ -3,14 +3,15 @@ sequenceDiagram
     autonumber
     participant L as Leader wallet
     participant W as Worker
-    participant H as Helius
+    participant R as Solana RPC
     participant J as Jupiter
     participant D as Dashboard
 
-    L-->>H: a buy lands on chain
-    W->>H: poll getTransactionsForAddress
-    H-->>W: the transaction
-    Note over W: classify and dedupe, drop events older than 90s<br/>size at 0.25x with caps<br/>risk gates on exposure, daily loss, price age
+    L-->>R: a buy lands on chain
+    W->>R: poll the roster wallet, every 45 seconds
+    R-->>W: the transaction
+    Note over W: classify and dedupe, drop events older than 90 seconds,<br/>coalesce same-mint buys inside 60 seconds,<br/>size at a quarter of the measured input, floored and capped
+    W->>W: risk gates: deployed share, daily loss, price age,<br/>slippage, price impact
     W->>J: request a quote
     J-->>W: price and route
     alt paper mode
@@ -20,10 +21,10 @@ sequenceDiagram
     end
     W->>D: position, fill, equity
 
-    L-->>H: a sell lands on chain
-    W->>H: poll
-    H-->>W: the sell
-    Note over W: sell the same fraction
+    L-->>R: a sell lands on chain
+    W->>R: poll
+    R-->>W: the sell
+    Note over W: mirror the same fraction
     W->>D: close, PnL, loss streak
 
-    Note over W,D: a position still open at 16h exits on its own<br/>3h grace applies while it is losing
+    Note over W,D: a position still open at 8 hours exits on its own<br/>3 hours of grace apply while the mark is not positive
