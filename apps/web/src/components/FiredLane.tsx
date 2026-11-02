@@ -30,9 +30,13 @@ export function FiredLane({ state }: { state: DashboardState }) {
               className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]"
             >
               <span className="font-semibold text-neg min-w-0 truncate">@{row.handle}</span>
-              <span className="chip tag border border-negborder bg-negdim text-neg">{row.reason}</span>
-              <span className="label !text-[10px] !text-faint">{timeAgo(row.firedAt)}</span>
-              <span className="ml-auto label !text-[10px] !text-muted">
+              {/* A reason can be a full sentence (the legacy rank fires were):
+                  it wraps inside the card instead of pushing the page sideways. */}
+              <span className="chip tag border border-negborder bg-negdim text-neg max-w-full !whitespace-normal break-words">
+                {row.reason}
+              </span>
+              <span className="label !text-[10px] !text-faint whitespace-nowrap">{timeAgo(row.firedAt)}</span>
+              <span className="ml-auto label !text-[10px] !text-muted whitespace-nowrap">
                 {row.replacedBy ? `replaced by @${row.replacedBy}` : 'chair empty'}
               </span>
             </li>

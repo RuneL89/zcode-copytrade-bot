@@ -459,6 +459,56 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       rt.rebuildState();
       return c.json({ ok: true, candidateId });
     });
+
+    app.post('/api/test/seed-firing', async (c) => {
+      // The fired lane renders the last five firings. Seed one with a
+      // realistically long legacy reason so the browser suite can prove the
+      // row wraps inside its card instead of pushing the page sideways.
+      const body = (await c.req.json().catch(() => ({}))) as {
+        handle?: string;
+        reason?: string;
+        minutesAgo?: number;
+      };
+      const handle = (body.handle ?? 'seeded_fired').trim();
+      const reason = (body.reason ?? 'RANK: LEFT THE BOARD').trim();
+      const minutesAgo = Number.isFinite(body.minutesAgo) ? body.minutesAgo! : 30;
+      const candidateId = repo.candidateIdForHandle(handle);
+      repo.upsertCandidate(db, {
+        candidateId,
+        handle,
+        weeklyRank: null,
+        displayedWeeklyPnlUsdMicro: null,
+        profileUrl: null,
+        avatarUrl: null,
+        enabled: true,
+        source: 'test-seed',
+        observedAt: new Date().toISOString(),
+      });
+      const firedAt = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+      const activationId = `act_seed_${Date.now()}_${candidateId}`;
+      repo.createActivation(db, {
+        activationId,
+        candidateId,
+        state: 'FIRED',
+        startedAt: new Date(Date.now() - minutesAgo * 60_000 - 3_600_000).toISOString(),
+        endedAt: firedAt,
+        endReason: 'test seed',
+        lossStreak: 2,
+        firedReason: reason,
+        source: 'test',
+      });
+      repo.insertFiringEvent(db, {
+        activationId,
+        candidateId,
+        reason,
+        lossStreak: 2,
+        positionPolicy: 'close_all_before_switch',
+        handoffStatus: 'none',
+        firedAt,
+      });
+      rt.rebuildState();
+      return c.json({ ok: true, candidateId, activationId });
+    });
   }
 
   // ---- operations console (no-terminal command runner) --------------------------------

@@ -125,6 +125,50 @@ test.describe('pipeline spine (plan 07)', () => {
     expect(equityY).toBeLessThan(pipelineY);
   });
 
+  test('a long firing reason wraps inside the lane instead of widening the page', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await completeSetup(page);
+    // The demo replay owns the store while it runs, and only a rebuild replaces
+    // it. Wait for it to stop publishing (generatedAt freezes), then seed: the
+    // seed route rebuilds, so the builder state (with the seeded row) takes over.
+    await expect
+      .poll(
+        async () => {
+          const read = () =>
+            page.evaluate(async () => {
+              const state = await fetch('/api/state', { credentials: 'same-origin' }).then((r) => r.json());
+              return state.generatedAt as string;
+            });
+          const first = await read();
+          await page.waitForTimeout(1_500);
+          return (await read()) === first;
+        },
+        { timeout: 60_000, intervals: [500] },
+      )
+      .toBe(true);
+    const seeded = await page.request.post('/api/test/seed-firing', {
+      data: {
+        handle: 'e2e_long_firing',
+        reason:
+          'RANK: OUTSIDE TOP-3 IN 2 CONSECUTIVE SCANS (RANK 5 AT 2026-10-31T14:47:11.313Z, RANK 5 AT 2026-10-31T14:16:52.107Z BEFORE)',
+        minutesAgo: 5,
+      },
+    });
+    expect(seeded.ok()).toBe(true);
+    const { candidateId } = (await seeded.json()) as { candidateId: string };
+    await page.reload();
+
+    const row = page.getByTestId(`fired-row-${candidateId}`).first();
+    await expect(row).toBeVisible();
+    // The page must not widen, and the reason must stay inside the card.
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+    ).toBeLessThanOrEqual(0);
+    const card = await page.getByTestId('fired-lane').boundingBox();
+    const chip = await row.locator('span.chip').first().boundingBox();
+    expect(chip!.x + chip!.width).toBeLessThanOrEqual(card!.x + card!.width + 1);
+  });
+
   test('320px width and 200% zoom stack without clipping or page overflow (AC11)', async ({ page }) => {
     // 320px width (the WCAG reflow width): no horizontal page overflow, and the
     // layout stacks to a single column.
