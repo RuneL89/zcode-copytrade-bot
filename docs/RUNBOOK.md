@@ -20,6 +20,25 @@ Demo and paper results are **never** real returns.
 and opens the dashboard. Everything else (build, migrate, tests, backups,
 restart, shutdown, wallet creation) lives in the dashboard's **OPS** tab.
 
+**Self-healing (installed by `install-watchdog.bat`).** Two hooks keep the bot
+up without anyone watching:
+
+- a **Startup-folder shortcut** starts the server when you log on, so a laptop
+  reboot brings it back on its own;
+- a **scheduled task** ("Copydesk watchdog") runs `watchdog.bat` every
+  5 minutes: it asks the dashboard's health endpoint and, when nothing answers
+  (the process is gone), starts the server again. Transitions are logged in
+  `data/watchdog.log`; the server's own output — including any crash — is in
+  `data/server.log`.
+
+Both run as this Windows user and **only while you are logged on**; no password
+is stored. The watchdog deliberately does **not** restart a server that
+listens but stops answering (a hung loop cannot be mid-swap, and killing it
+blind could strand an in-flight trade as an unknown outcome) — that case is
+logged for a human. Remove the hooks with
+`schtasks /Delete /TN "Copydesk watchdog" /F` and by deleting
+`Copydesk.lnk` from the Startup folder.
+
 With a terminal:
 
 ```powershell
@@ -201,8 +220,9 @@ best record takes a freed chair.
   and can be fired. Resolve the case (section 6) to unfreeze it.
 - **Entry shaping.** One position per mint per leader; same-mint buys inside
   60 s are coalesced into the existing position (`COALESCED_SAME_MINT_BURST`
-  in **Audit**). `PER_MINT_CAP_USD > 0` caps the roster-wide exposure to one
-  mint (`PER_MINT_CAP`); `0` disables the cap.
+  in **Audit**). `PER_MINT_CAP_PCT > 0` caps the roster-wide exposure to one
+  mint at that percent of the deployment budget (`MAX_DEPLOYED_PCT`% of
+  capital, D7; rule `PER_MINT_CAP`); `0` disables the cap.
 - **Poll cadence.** Every hired wallet is polled every `ROSTER_POLL_MS`
   (default 45 s); the watch list keeps its own 5-minute clock.
 
