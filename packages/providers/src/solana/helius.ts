@@ -9,6 +9,9 @@ import { scanForRecentBuy, type LeaderTxSummary, type TokenDelta } from '@zcode-
  * streaming is required. A webhook adapter can feed the same interface.
  */
 
+/** Hard per-request cap; a stalled fetch once froze a watch pass for minutes. */
+const HELIUS_TIMEOUT_MS = 15_000;
+
 export interface LeaderCursor {
   lastSignature: string;
   lastSlot: number;
@@ -63,11 +66,19 @@ export class HeliusProvider {
 
   private async rpc<T>(method: string, params: unknown): Promise<T> {
     if (!this.configured) throw new Error('helius: API key not configured');
-    const res = await fetch(this.url(), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: ++this.rpcId, method, params }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(this.url(), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++this.rpcId, method, params }),
+        signal: AbortSignal.timeout(HELIUS_TIMEOUT_MS),
+      });
+    } catch (e) {
+      // A stalled connection must never block a whole watch pass (or a boot
+      // catch-up) forever: time out and let the caller fail this one request.
+      throw new Error(`helius: request failed: ${(e as Error).message}`);
+    }
     if (res.status === 429) throw new Error('helius: rate limited (429); backing off');
     if (!res.ok) throw new Error(`helius: HTTP ${res.status}`);
     const json = (await res.json()) as { result?: T; error?: { message: string } };

@@ -223,6 +223,30 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
     expect(repo.activeActivationCount(handle.db)).toBe(1);
     expect(repo.getActivation(handle.db, attempt.activationId!)?.state).toBe('ACTIVE');
   });
+
+  it('never activates the same leader twice while his watch record stays on the bench', async () => {
+    const candidateId = seedBench('bench_dup');
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));
+    expect((await lifecycle.hireFromWatch(candidateId)).ok).toBe(true);
+    const second = await lifecycle.hireFromWatch(candidateId);
+    expect(second.ok).toBe(false);
+    expect(second.reason).toMatch(/ALREADY_ACTIVE/);
+    expect(repo.activeActivationCount(handle.db)).toBe(1);
+  });
+
+  it('fillRoster skips a seated bench wallet and hires the next candidate', async () => {
+    // The best net on the bench already holds a chair: the free one must go to
+    // the next wallet, not to a duplicate activation of the leader we have.
+    const seated = seedBench('bench_seated', 9_000_000n);
+    const next = seedBench('bench_next', 2_000_000n);
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));
+    expect((await lifecycle.hireFromWatch(seated)).ok).toBe(true);
+
+    const filled = await lifecycle.fillRoster();
+    expect(filled.hired).toEqual([next]);
+    expect(repo.activeActivationCount(handle.db)).toBe(2);
+    expect(repo.listActiveActivations(handle.db).filter((a) => a.candidateId === seated)).toHaveLength(1);
+  });
 });
 
 describe('fire frees exactly one chair (AC3)', () => {

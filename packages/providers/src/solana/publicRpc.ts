@@ -120,8 +120,10 @@ export class PublicSolanaProvider {
         continue; // timeout/network: retryable
       }
       if (res.status === 429 || res.status === 503) {
-        lastError = new Error(`public-solana: rate limited (HTTP ${res.status}); backing off`);
-        continue;
+        // A rate limit is not transient for this caller: the free node shares
+        // an IP and throttles the whole process. Retrying here burned minutes
+        // per wallet and stalled a watch pass; fall back to Helius instead.
+        throw new Error(`public-solana: rate limited (HTTP ${res.status})`);
       }
       if (!res.ok) throw new Error(`public-solana: HTTP ${res.status}`);
       let json: { result?: T; error?: { message: string } };

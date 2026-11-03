@@ -509,8 +509,10 @@ export class Runtime {
 
     // BOOT CATCH-UP (D5) — strictly before the two clocks below:
     //   1. demand-gated discovery (a fresh start must not wait for a tick);
-    //   2. one watch pass, so the shadow record is current;
-    //   3. the promotion queue fills whatever chairs are free.
+    //   2. the persisted bench fills whatever chairs are free (promptly — the
+    //      watch pass below can be slow, and a free chair must not wait on it);
+    //   3. one watch pass, so the shadow record is current;
+    //   4. the promotion queue fills any chair that opened during the pass.
     // The HTTP server is already serving while this runs; only the clocks wait.
     const bootCatchUp = (async () => {
       const bootDiscovery = discoveryDecision(this.discovery.demand());
@@ -521,6 +523,20 @@ export class Runtime {
       } else {
         repo.audit(this.db.db, 'discovery', `boot discovery skipped: ${bootDiscovery.reason}`, {});
       }
+      // Seat the persisted bench BEFORE the watch pass: the pass polls every
+      // watched wallet and a slow provider once held an open chair for many
+      // minutes. Promotion is already recorded on the bench, so filling first
+      // changes only how promptly the chair is taken.
+      const seatedEarly = await this.lifecycle.fillRoster().catch((e: Error) => {
+        repo.audit(this.db.db, 'roster', `boot roster fill (bench) failed: ${e.message}`, {});
+        return { hired: [] as string[], reason: 'error' };
+      });
+      repo.audit(
+        this.db.db,
+        'roster',
+        `boot roster fill (bench): ${seatedEarly.hired.length} hired (${seatedEarly.reason})`,
+        { hired: seatedEarly.hired },
+      );
       await this.watch.tick().catch((e: Error) => {
         repo.audit(this.db.db, 'watch', `boot watch pass failed (fail closed): ${e.message}`, {});
       });

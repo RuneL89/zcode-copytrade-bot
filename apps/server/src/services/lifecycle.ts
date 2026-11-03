@@ -133,6 +133,12 @@ export class TraderLifecycle {
     candidateId: string,
     source: 'manual' | 'watch_promotion',
   ): Promise<{ ok: boolean; reason?: string; activationId?: string }> {
+    // One chair per leader. The watch record keeps a hired wallet on the bench
+    // (its shadow record stays useful), so every hire path must refuse a
+    // candidate that already owns a chair rather than activating it twice.
+    if (repo.listActiveActivations(this.db).some((a) => a.candidateId === candidateId)) {
+      return { ok: false, reason: 'ALREADY_ACTIVE: the leader already holds a chair' };
+    }
     // D4: a ROSTER of ROSTER_SIZE leaders sharing one budget pool. A hire needs
     // a free chair; a REQUIRES_RECONCILIATION activation keeps its own chair
     // (and only its own) occupied.
@@ -238,8 +244,12 @@ export class TraderLifecycle {
    */
   async fillRoster(): Promise<{ hired: string[]; reason: string }> {
     const hired: string[] = [];
+    // The bench keeps hired leaders (their shadow record continues), so only
+    // wallets without a chair are candidates for a free one.
+    const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
       .listWatchWallets(this.db, 'promoted')
+      .filter((wallet) => !seated.has(wallet.candidateId))
       .map((wallet) => ({ wallet, aggregates: repo.shadowAggregates(this.db, wallet.candidateId) }))
       .sort(
         (a, b) =>
