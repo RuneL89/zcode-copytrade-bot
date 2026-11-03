@@ -5,6 +5,7 @@ import {
   formatSignedMicroUsd,
   isWeeklyDay,
   msUntilNextLocalTime,
+  positionsText,
   reportText,
   selectAnomalies,
   shortReason,
@@ -253,5 +254,77 @@ describe('daily schedule', () => {
     expect(isWeeklyDay(new Date('2026-11-02T09:00:00'))).toBe(true); // Monday
     expect(isWeeklyDay(new Date('2026-11-03T09:00:00'))).toBe(false);
     expect(isWeeklyDay(new Date('2026-11-08T09:00:00'))).toBe(false); // Sunday
+  });
+});
+
+/**
+ * /positions — the on-demand view the compact report leaves out: one line per
+ * open position, soonest time exit first, and never a PnL for an unpriced one.
+ */
+describe('positions text', () => {
+  type State = Parameters<typeof positionsText>[0];
+  const position = (over: Record<string, unknown> = {}) => ({
+    positionId: 'pos_x',
+    leaderHandle: 'leader',
+    mintShort: 'Mint1111',
+    symbol: 'COIN',
+    status: 'open',
+    copyUsdMicro: '10000000',
+    feesUsdMicro: '0',
+    entryFeeLamports: null,
+    entryRentLamports: null,
+    realizedPnlUsdMicro: '0',
+    markUsdMicro: '10500000',
+    unrealizedPnlUsdMicro: '500000',
+    markAgeSeconds: 5,
+    openedIso: '2026-11-03T00:00:00.000Z',
+    entries: [],
+    ...over,
+  });
+  const state = (positions: unknown[], over: Record<string, unknown> = {}): State =>
+    ({
+      positions,
+      counters: { maxPositionAgeHours: 8, positionGraceHours: 3 },
+      ...over,
+    }) as unknown as State;
+
+  const now = new Date('2026-11-03T06:00:00.000Z');
+
+  it('lists the soonest deadline first, with size, PnL and the countdown', () => {
+    const text = positionsText(
+      state([
+        position({ positionId: 'pos_late', symbol: 'LATE', openedIso: '2026-11-03T02:00:00.000Z' }),
+        position({ positionId: 'pos_soon', symbol: 'SOON', openedIso: '2026-11-02T23:30:00.000Z' }),
+      ]),
+      now,
+    );
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('Copydesk · open positions (2)');
+    expect(lines[1]).toContain('SOON');
+    expect(lines[1]).toContain('exit in 1h 30m');
+    expect(lines[2]).toContain('LATE');
+    expect(lines[2]).toContain('exit in 4h 0m');
+    expect(lines[3]).toBe('Total $20.00 · unrealized +$1.00');
+  });
+
+  it('marks a position that is riding its grace window', () => {
+    const text = positionsText(state([position({ openedIso: '2026-11-02T20:00:00.000Z' })]), now);
+    expect(text).toContain('· in grace');
+  });
+
+  it('never invents a PnL for an unpriced position', () => {
+    const text = positionsText(
+      state([
+        position({ positionId: 'pos_a', unrealizedPnlUsdMicro: null, markUsdMicro: null }),
+        position({ positionId: 'pos_b', unrealizedPnlUsdMicro: '500000' }),
+      ]),
+      now,
+    );
+    expect(text).toContain('—');
+    expect(text).toContain('unrealized +$0.50 (1 unpriced)');
+  });
+
+  it('says so plainly when nothing is open', () => {
+    expect(positionsText(state([]), now)).toBe('Copydesk · no open positions');
   });
 });

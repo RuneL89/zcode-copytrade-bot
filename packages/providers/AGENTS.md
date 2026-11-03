@@ -18,7 +18,9 @@ notifications. This is the only package allowed to talk to the outside world.
   the candidate activity refresh). The trading monitor never uses it.
 - `src/solana/jupiter.ts` — quote/swap.
 - `src/price.ts` — price marks and freshness.
-- `src/notify.ts` — Telegram push reports.
+- `src/notify.ts` — Telegram push reports, plus the read-only command poll
+  (`getUpdates`) and threaded replies. Normalizes Telegram payloads so no other
+  layer parses them; the loop that drives it lives in the server.
 
 ## Local Contracts
 

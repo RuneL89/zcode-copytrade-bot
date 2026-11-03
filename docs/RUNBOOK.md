@@ -147,6 +147,23 @@ and a balance the chain read could not supply is left out. A failed send is
 recorded in the audit trail (`reports report send failed`) and the day is still
 marked sent, so an outage cannot become a message storm.
 
+**Commands (read-only).** With the same two env vars set, the bot also answers
+four commands from the operator chat, using the same figures as the summary:
+
+| Command      | Reply                                                 |
+| ------------ | ----------------------------------------------------- |
+| `/status`    | the 24h desk summary (identical to the 09:00 message) |
+| `/weekly`    | the 7-day summary with each chair's record            |
+| `/positions` | one line per open position, soonest time exit first   |
+| `/help`      | the command list                                      |
+
+Nothing typed in Telegram can change trading state — no pause, arm, fire or
+close. Only `TELEGRAM_CHAT_ID` may command the bot; another chat is ignored and
+recorded once in the audit trail. The bot polls Telegram (`getUpdates`) instead
+of using a webhook, because the dashboard is LAN-only by policy. Clear
+`TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` to turn both the messages and the
+commands off.
+
 ### Wallet resolution (fallback only)
 
 The fomoapi leaderboard rows carry verified wallets, so wallet resolution is no

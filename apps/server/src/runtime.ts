@@ -16,6 +16,7 @@ import {
   JupiterProvider,
   JupiterPriceProvider,
   PublicSolanaProvider,
+  isTelegramNotifier,
   notifierFromEnv,
   StaticPriceProvider,
   type DawnLookupConfig,
@@ -38,7 +39,8 @@ import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { DiscoveryService, discoveryDecision } from './services/discovery.js';
 import { WatchService } from './services/watch.js';
-import { ReportsService } from './services/reports.js';
+import { ReportsService, positionsText, reportText } from './services/reports.js';
+import { TelegramCommandService } from './services/telegram-commands.js';
 import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
 import { PaperExecutor, LiveExecutor } from './services/executors.js';
@@ -82,8 +84,10 @@ export class Runtime {
   withdraw: WithdrawalService;
   demo: DemoEngine | null = null;
   ops: OpsRunner;
-  /** Telegram push reports: anomalies + daily PnL (no-op until TELEGRAM_* is set). */
+  /** Telegram push reports: anomalies + daily/weekly summary (no-op until TELEGRAM_* is set). */
   reports: ReportsService;
+  /** Read-only Telegram commands (/status, /weekly, /positions, /help); null when unconfigured. */
+  telegramCommands: TelegramCommandService | null = null;
   private priceProvider: import('@zcode-bot/providers').PriceProvider;
   /** Read-only FOMO leaderboard adapter; null until FOMO_LEADERBOARD_URL is set. */
   fomoWeb: FomoWebLeaderboardProvider | null = null;
@@ -318,6 +322,18 @@ export class Runtime {
     // The reports describe the built dashboard state; the marks are refreshed
     // first so unrealized PnL in a report is never silently stale.
     this.reports = new ReportsService(this.db, this.notifier, config.mode, () => this.snapshotForReport());
+    // Read-only Telegram commands. Same state snapshot as the reports, and only
+    // the configured chat may ask: nothing typed in Telegram can change state.
+    if (isTelegramNotifier(this.notifier)) {
+      const bot = this.notifier;
+      const factsText = async (window: 'daily' | 'weekly'): Promise<string> =>
+        reportText(this.reports.collectFacts(await this.snapshotForReport(), window), window);
+      this.telegramCommands = new TelegramCommandService(this.db, bot, config.env.TELEGRAM_CHAT_ID, {
+        status: () => factsText('daily'),
+        weekly: () => factsText('weekly'),
+        positions: async () => positionsText(await this.snapshotForReport()),
+      });
+    }
 
     // Discovery inlet (D3): the fomoapi leaderboard. No key → the service never
     // calls the API and audits the skip instead.
@@ -516,6 +532,10 @@ export class Runtime {
 
     // Operator push reports (Telegram): anomalies every 10 min, daily PnL 09:00.
     this.reports.start();
+    if (this.telegramCommands) {
+      this.telegramCommands.start();
+      repo.audit(this.db.db, 'telegram', 'commands enabled (/status, /weekly, /positions, /help)', {});
+    }
 
     // BOOT CATCH-UP (D5) — strictly before the two clocks below:
     //   1. demand-gated discovery (a fresh start must not wait for a tick);
@@ -611,6 +631,7 @@ export class Runtime {
     if (this.activityTimer) clearInterval(this.activityTimer);
     if (this.activityBootTimer) clearTimeout(this.activityBootTimer);
     this.reports.stop();
+    this.telegramCommands?.stop();
     this.lock?.release();
     this.db.close();
   }

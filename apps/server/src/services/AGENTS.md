@@ -5,29 +5,31 @@
 The worker's service layer. Each file owns one slice of runtime behavior and
 the whole set is constructed and scheduled by `runtime.ts`.
 
-| File                | Owns                                                                                                                                                                 |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine.ts`         | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
-| `lifecycle.ts`      | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the `canReenter` rule (no timed cooldowns).                              |
-| `monitor.ts`        | Roster polling (one pass per activation), cursor persistence per hire, dedupe, restart reconciliation.                                                               |
-| `discovery.ts`      | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                     |
-| `watch.ts`          | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling rotation.                                          |
-| `dawn-targets.ts`   | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
-| `activity-check.ts` | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                       |
-| `executors.ts`      | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
-| `builder.ts`        | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                              |
-| `state.ts`          | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                               |
-| `control.ts`        | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                  |
-| `readiness.ts`      | The live-readiness checklist.                                                                                                                                        |
-| `demo.ts`           | The in-memory 28-second fictional replay.                                                                                                                            |
-| `reports.ts`        | Server-side Telegram notifications (anomalies + daily PnL); no-op when unconfigured.                                                                                 |
-| `withdraw.ts`       | Wallet withdrawal flow and its guards.                                                                                                                               |
-| `ops.ts`            | The fixed whitelisted operations runner.                                                                                                                             |
+| File                   | Owns                                                                                                                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                                                                |
+| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the `canReenter` rule (no timed cooldowns).                                                                    |
+| `monitor.ts`           | Roster polling (one pass per activation), cursor persistence per hire, dedupe, restart reconciliation.                                                                                                     |
+| `discovery.ts`         | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                                                           |
+| `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling rotation.                                                                                |
+| `dawn-targets.ts`      | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                                                          |
+| `activity-check.ts`    | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                                                             |
+| `executors.ts`         | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`.                                       |
+| `builder.ts`           | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                                                                    |
+| `state.ts`             | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                                                                     |
+| `control.ts`           | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                                                        |
+| `readiness.ts`         | The live-readiness checklist.                                                                                                                                                                              |
+| `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                  |
+| `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                  |
+| `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`. |
+| `withdraw.ts`          | Wallet withdrawal flow and its guards.                                                                                                                                                                     |
+| `ops.ts`               | The fixed whitelisted operations runner.                                                                                                                                                                   |
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
-(health, fee ledger, activity refresh, reports). Discovery is demand-driven, not
-scheduled. Dawn and the native board capture are manual fallbacks only.
+(health, fee ledger, activity refresh, reports, the Telegram command poll).
+Discovery is demand-driven, not scheduled. Dawn and the native board capture are
+manual fallbacks only.
 `engine.ts` is called, it does not schedule itself.
 
 ## Ownership

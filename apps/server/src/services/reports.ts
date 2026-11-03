@@ -274,6 +274,42 @@ export function msUntilNextLocalTime(hour: number, minute: number, now = new Dat
   return target.getTime() - now.getTime();
 }
 
+/**
+ * One line per open position, soonest time exit first — the on-demand view the
+ * compact report deliberately leaves out. Unpriced positions read "—" (their
+ * money is counted, their PnL is not invented).
+ */
+export function positionsText(state: DashboardState, now = new Date()): string {
+  const positions = state.positions.slice().sort((a, b) => Date.parse(a.openedIso) - Date.parse(b.openedIso));
+  if (positions.length === 0) return 'Copydesk · no open positions';
+  const maxAgeMs = state.counters.maxPositionAgeHours * 3_600_000;
+  const graceMs = state.counters.positionGraceHours * 3_600_000;
+  const lines = [`Copydesk · open positions (${positions.length})`];
+  let totalUsd = 0n;
+  let totalPnl = 0n;
+  let unpriced = 0;
+  for (const p of positions) {
+    totalUsd += BigInt(p.copyUsdMicro);
+    const pnl = p.unrealizedPnlUsdMicro === null ? null : BigInt(p.unrealizedPnlUsdMicro);
+    if (pnl === null) unpriced++;
+    else totalPnl += pnl;
+    const deadline = Date.parse(p.openedIso) + maxAgeMs;
+    const left = deadline > now.getTime() ? deadline - now.getTime() : deadline + graceMs - now.getTime();
+    const exit =
+      left <= 0 ? 'exit now' : deadline <= now.getTime() ? 'in grace' : `exit in ${formatDuration(left)}`;
+    lines.push(
+      `• ${(p.symbol ?? p.mintShort).padEnd(9)} ${formatMicroUsd(BigInt(p.copyUsdMicro)).padStart(8)}  ` +
+        `${(pnl === null ? '—' : formatSignedMicroUsd(pnl)).padStart(7)}  · ${exit}`,
+    );
+  }
+  lines.push(
+    `Total ${formatMicroUsd(totalUsd)} · unrealized ${
+      unpriced === positions.length ? 'pending' : formatSignedMicroUsd(totalPnl)
+    }${unpriced > 0 && unpriced < positions.length ? ` (${unpriced} unpriced)` : ''}`,
+  );
+  return lines.join('\n');
+}
+
 /** Local weekday check, 0 = Sunday: Mondays send the weekly summary. */
 export function isWeeklyDay(now = new Date()): boolean {
   return now.getDay() === 1;
