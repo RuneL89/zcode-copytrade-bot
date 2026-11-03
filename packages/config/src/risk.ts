@@ -100,8 +100,6 @@ export const riskConfigSchema = z
     COOLING_SCAN_MS: positiveInt('COOLING_SCAN_MS'),
     /** Evict wallets that fail the funded-buy screen for this many days. */
     WATCH_EVICTION_DAYS: positiveInt('WATCH_EVICTION_DAYS'),
-    /** A shared-pool hire must leave at least this much headroom behind it. */
-    MIN_HIRE_HEADROOM_USD: positiveInt('MIN_HIRE_HEADROOM_USD'),
     /** Seed the shadow record from the admission scan (observed trades only). */
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().default(true),
     /** Demand-driven discovery rate limit (D5: at most one run per 30–60 min). */
@@ -185,7 +183,6 @@ export const DEFAULT_RISK: RiskConfig = {
   ROSTER_POLL_MS: 45000,
   COOLING_SCAN_MS: 7200000,
   WATCH_EVICTION_DAYS: 14,
-  MIN_HIRE_HEADROOM_USD: 20,
   SHADOW_BACKFILL_ON_ADMIT: true,
   DISCOVERY_MIN_INTERVAL_MS: 1800000,
 };
@@ -226,7 +223,6 @@ const settingsPatchObjectSchema = z
     ROSTER_POLL_MS: z.number().int().min(15_000).optional(),
     COOLING_SCAN_MS: z.number().int().positive().optional(),
     WATCH_EVICTION_DAYS: z.number().int().positive().optional(),
-    MIN_HIRE_HEADROOM_USD: z.number().int().positive().optional(),
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().optional(),
     DISCOVERY_MIN_INTERVAL_MS: z.number().int().min(600_000).optional(),
   })

@@ -1,8 +1,15 @@
 # Plan 05 — Roster and copying (T4 / D4 capital rules)
 
-Status: COMPLIANT
+Status: COMPLIANT (AC5 amended 2026-11-03)
 Implements: **D4** capital rules and **T4**
 Depends on: 04
+
+> **Amendment 2026-11-03 (operator).** A hire is no longer gated on capital:
+> AC5's headroom refusal is withdrawn. A wallet that passes the record gates
+> takes a free chair even when the pool is fully deployed and copies when room
+> frees; capital is enforced per entry instead (`MAX_DEPLOYED_PCT`, which
+> downsizes or skips a copy). The "no per-leader budget" part of AC5 stands.
+> See DECISIONS.md D4.
 
 ## /goal
 

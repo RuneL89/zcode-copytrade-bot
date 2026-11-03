@@ -54,7 +54,6 @@ function riskConfig(over: Partial<RiskConfig> = {}): RiskConfig {
     ADMISSION_MIN_BUYS_24H: 3,
     ADMISSION_MAX_LAST_BUY_HOURS: 24,
     ROSTER_SIZE: 5,
-    MIN_HIRE_HEADROOM_USD: 20,
     MAX_POSITION_AGE_HOURS: 8,
     POSITION_GRACE_HOURS: 3,
     WATCH_EVICTION_DAYS: 14,
@@ -106,7 +105,6 @@ interface Harness {
   >;
   prices: Map<string, bigint>;
   hired: string[];
-  setHeadroom: (v: bigint) => void;
 }
 
 function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
@@ -119,7 +117,6 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
   >();
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
   const hired: string[] = [];
-  let headroom = 1_000_000_000n;
 
   const deps: WatchServiceDeps = {
     db: handle.db,
@@ -150,7 +147,6 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
         return { ok: true, activationId: 'act_' + candidateId };
       },
     } as unknown as WatchServiceDeps['lifecycle'],
-    headroomUsdMicro: () => headroom,
     onStateChanged: () => {},
   };
 
@@ -161,9 +157,6 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
     perAddress,
     prices,
     hired,
-    setHeadroom: (v: bigint) => {
-      headroom = v;
-    },
   };
 }
 
@@ -536,7 +529,8 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     });
     expect(h.svc.promotionDecision('cand_blocked').reason).toBe('LAST_BUY_TOO_OLD');
 
-    // Fresh buy → the only thing left is capital.
+    // Fresh buy → the wallet is promotable. Capital is not part of the gate
+    // (operator decision, 2026-11-03): no headroom figure is even consulted.
     repo.insertWatchEvent(handle.db, {
       candidateId: 'cand_blocked',
       address: 'WalletBlocked',
@@ -551,8 +545,6 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
       source: 'test',
     });
     expect(h.svc.promotionDecision('cand_blocked')).toEqual({ ok: true, reason: null });
-    h.setHeadroom(19_000_000n); // below MIN_HIRE_HEADROOM_USD = $20
-    expect(h.svc.promotionDecision('cand_blocked').reason).toBe('NO_HEADROOM');
   });
 
   it('re-entry: an old record cannot return a fired trader; a post-fire buy can (AC7)', async () => {

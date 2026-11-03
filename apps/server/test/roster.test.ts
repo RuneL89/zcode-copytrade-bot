@@ -213,19 +213,15 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
     expect(repo.activeActivationCount(handle.db)).toBe(0);
   });
 
-  it('the shared pool refuses a hire below MIN_HIRE_HEADROOM_USD (AC5)', async () => {
+  it('hires on record alone: zero capital headroom is not a reason to refuse (operator decision)', async () => {
     const candidateId = seedBench('bench_headroom');
-    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3, MIN_HIRE_HEADROOM_USD: 20 }), 19_000_000n);
+    // The deployed cap is already reached; the chair must still be filled so the
+    // leader copies as soon as room frees (entries stay capped meanwhile).
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }), 0n);
     const attempt = await lifecycle.hireFromWatch(candidateId);
-    expect(attempt.ok).toBe(false);
-    expect(attempt.reason).toMatch(/NO_HEADROOM/);
-    expect(repo.activeActivationCount(handle.db)).toBe(0);
-
-    // With room, the same hire goes through.
-    const funded = lifecycleFor(riskConfig({ ROSTER_SIZE: 3, MIN_HIRE_HEADROOM_USD: 20 }), 25_000_000n);
-    const ok = await funded.hireFromWatch(candidateId);
-    expect(ok.ok).toBe(true);
+    expect(attempt.ok).toBe(true);
     expect(repo.activeActivationCount(handle.db)).toBe(1);
+    expect(repo.getActivation(handle.db, attempt.activationId!)?.state).toBe('ACTIVE');
   });
 });
 

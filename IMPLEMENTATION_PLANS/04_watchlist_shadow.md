@@ -87,9 +87,11 @@ price provider (Jupiter), the lifecycle (for promotion), and an audit callback.
 
 ### 3. Pure rules — `packages/core/src/watch.ts` (new)
 
-- `canPromote({ aggregates, lastFundedBuyAt, lastFiredAt, now, config, slotsFree, headroomUsdMicro })`
+- `canPromote({ aggregates, lastFundedBuyAt, lastFiredAt, now, config, slotsFree })`
   → `{ ok, reason }`. Reasons: `FEWER_THAN_K_CLOSED`, `NET_BELOW_THRESHOLD`,
-  `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`, `NO_SLOT`, `NO_HEADROOM`.
+  `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`, `NO_SLOT`. (Amended 2026-11-03: the
+  capital `headroomUsdMicro` input and `NO_HEADROOM` promotion reason were
+  withdrawn by operator decision — see DECISIONS.md D4.)
 - `canReenter({ lastFiredAt, lastFundedBuyAt })` → true when there is no fire or
   a funded buy observed after it. Clock source: `observed_at` (local), no skew.
 - `ceilingAction({ openedAt, now, maxAgeHours, graceHours, markUsdMicro, entryUsdMicro })`

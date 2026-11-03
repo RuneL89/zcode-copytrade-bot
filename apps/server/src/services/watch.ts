@@ -90,8 +90,6 @@ export interface WatchServiceDeps {
   helius: HeliusProvider;
   prices: PriceProvider;
   lifecycle: TraderLifecycle;
-  /** Remaining room under MAX_DEPLOYED_PCT (the promotion gate's capital check). */
-  headroomUsdMicro: () => bigint;
   onStateChanged: () => void;
 }
 
@@ -654,7 +652,7 @@ export class WatchService {
     return { admitted, promoted, hired, demoted, archived };
   }
 
-  /** The D4 gate, with this app's live inputs (slot count and capital headroom). */
+  /** The D4 gate: the wallet's shadow record and a free chair. Capital is not a gate. */
   promotionDecision(candidateId: string): { ok: boolean; reason: PromotionBlockReason | null } {
     return canPromote({
       aggregates: repo.shadowAggregates(this.db, candidateId),
@@ -665,10 +663,8 @@ export class WatchService {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
         promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
-        minHireHeadroomUsdMicro: usdToMicro(this.risk.MIN_HIRE_HEADROOM_USD),
       },
       slotsFree: Math.max(0, this.risk.ROSTER_SIZE - repo.activeActivationCount(this.db)),
-      headroomUsdMicro: this.deps.headroomUsdMicro(),
     });
   }
 

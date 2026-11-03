@@ -235,6 +235,14 @@ whether the shadow record is backfilled from the admission scan, whether the
 shadow continues for hired traders (recommended), and a minimum-headroom rule
 for a shared-pool hire.
 
+**Decided 2026-11-03 (operator).** A hire is **not** gated on capital. A wallet
+that passes the record gates takes a free chair even when the pool is fully
+deployed; it copies when room frees. The only capital gate left is per entry
+(`MAX_DEPLOYED_PCT`, which downsizes a copy or skips it when the remainder is
+below `MIN_PER_BUY_USD`). Rationale: sitting flat in a chair costs nothing,
+while a proved leader who cannot be hired is a missed opportunity the moment an
+existing position exits.
+
 ---
 
 ## D5 — Runtime and cadence: deterministic server services, demand-driven

@@ -468,7 +468,7 @@ export class StateBuilder {
         sessionTotalSeconds: 24 * 3600,
         entries: candidateEntries,
       },
-      watchlist: this.buildWatchlist(bank.headroomUsdMicro, now),
+      watchlist: this.buildWatchlist(now),
       health: {
         workerRunning: Boolean(this.monitor?.running),
         helius: mode === 'demo' ? 'OK' : health.helius,
@@ -490,7 +490,7 @@ export class StateBuilder {
    * promotion is blocked. Numbers come from the shadow ledger only — the fomo
    * PnL mark is not an input (D4).
    */
-  private buildWatchlist(headroomUsdMicro: bigint, now: number): DashboardState['watchlist'] {
+  private buildWatchlist(now: number): DashboardState['watchlist'] {
     const risk = this.config.risk;
     const wallets = repo.listWatchWallets(this.db);
     const openLots = repo.listOpenShadowTrades(this.db);
@@ -518,10 +518,8 @@ export class StateBuilder {
           promotionMinClosed: risk.PROMOTION_MIN_CLOSED,
           promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
           promotionMaxLastBuyHours: risk.PROMOTION_MAX_LAST_BUY_HOURS,
-          minHireHeadroomUsdMicro: usdToMicro(risk.MIN_HIRE_HEADROOM_USD),
         },
         slotsFree,
-        headroomUsdMicro,
       });
       const status = (wallet.status as DashboardState['watchlist']['rows'][number]['status']) ?? 'watching';
       return {

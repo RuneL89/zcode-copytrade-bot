@@ -10,7 +10,6 @@ const config: PromotionConfig = {
   promotionMinClosed: 8,
   promotionMinNetUsdMicro: 3_000_000n,
   promotionMaxLastBuyHours: 4,
-  minHireHeadroomUsdMicro: 20_000_000n,
 };
 
 const passing = {
@@ -20,7 +19,6 @@ const passing = {
   nowMs: NOW,
   config,
   slotsFree: 1,
-  headroomUsdMicro: 50_000_000n,
 };
 
 describe('canPromote — the D4 promotion gate (AC6)', () => {
@@ -43,13 +41,19 @@ describe('canPromote — the D4 promotion gate (AC6)', () => {
       canPromote({ ...passing, lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 2 * HOUR) }).reason,
     ).toBe('REENTRY_BANNED');
     expect(canPromote({ ...passing, slotsFree: 0 }).reason).toBe('NO_SLOT');
-    expect(canPromote({ ...passing, headroomUsdMicro: 19_999_999n }).reason).toBe('NO_HEADROOM');
   });
 
-  it('the newest close does not matter: the gates are K, net, recency, re-entry, slot, headroom', () => {
+  it('the newest close does not matter: the gates are K, net, recency, re-entry, slot', () => {
     expect(canPromote({ ...passing, aggregates: { ...passing.aggregates, lastClosedAt: null } }).ok).toBe(
       true,
     );
+  });
+
+  it('capital headroom is not a gate: a proved wallet is hired, then trades when room frees', () => {
+    // Operator decision (2026-11-03): the hire gate judges the wallet, not the
+    // bankroll. Zero deployed room must still admit a proved leader.
+    expect(canPromote(passing).ok).toBe(true);
+    expect(Object.keys(passing)).not.toContain('headroomUsdMicro');
   });
 
   it('the fomo PnL mark is not an input at all (D4: context only)', () => {

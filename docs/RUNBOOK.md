@@ -140,9 +140,11 @@ pool** — there is no per-leader slice, and promotions are first-come.
   from the bench (best shadow record first, then oldest). No bench wallet → the
   chair stays **empty**; that is acceptable, and discovery refills the bench
   when it drops below `BENCH_TARGET`.
-- **Shared pool.** A hire is refused when the pool headroom is below
-  `MIN_HIRE_HEADROOM_USD` (`NO_HEADROOM`). Deployed % is computed across all
-  seats at once (`MAX_DEPLOYED_PCT`).
+- **Shared pool.** A hire is not gated on capital: a proved leader takes a
+  free chair even when the pool is fully deployed, and starts copying as soon
+  as room frees. Each entry is still capped by the deployed-% limit
+  (`MAX_DEPLOYED_PCT`); a copy that no longer fits the per-buy minimum is
+  skipped and appears on the tape as a `MAX_DEPLOYED_PCT: bankroll cap`.
 - **Reconciliation isolation.** A seat stuck in `REQUIRES_RECONCILIATION`
   freezes only itself: it keeps its chair, the other seats keep being polled
   and can be fired. Resolve the case (section 6) to unfreeze it.

@@ -341,7 +341,6 @@ export class Runtime {
       helius: this.helius,
       prices,
       lifecycle: this.lifecycle,
-      headroomUsdMicro: () => this.engine.headroomUsdMicro(),
       onStateChanged: () => this.rebuildState(),
     });
   }

@@ -3,7 +3,6 @@ import type Database from 'better-sqlite3';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
-import { usdToMicro } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 
@@ -223,14 +222,11 @@ export class TraderLifecycle {
   /**
    * D4 promotion hand-off: hire a wallet the watch record proved (the promotion
    * gate replaced the research/eligibility path, so no snapshot check runs).
-   * The roster shares ONE budget pool, so a hire must leave
-   * MIN_HIRE_HEADROOM_USD of room behind it (plan 05).
+   * Capital headroom is NOT a hire gate (operator decision, 2026-11-03): a
+   * proved leader takes a chair and copies once room frees. Individual entries
+   * are still capped by the deployed-% limit, so nothing overspends meanwhile.
    */
   async hireFromWatch(candidateId: string): Promise<{ ok: boolean; reason?: string; activationId?: string }> {
-    const headroom = this.engine?.headroomUsdMicro?.() ?? null;
-    if (headroom !== null && headroom < usdToMicro(this.risk.MIN_HIRE_HEADROOM_USD)) {
-      return { ok: false, reason: 'NO_HEADROOM: shared-pool room below MIN_HIRE_HEADROOM_USD' };
-    }
     return this.activate(candidateId, 'watch_promotion');
   }
 

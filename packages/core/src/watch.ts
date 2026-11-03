@@ -11,12 +11,7 @@ export interface ShadowAggregates {
 }
 
 export type PromotionBlockReason =
-  | 'FEWER_THAN_K_CLOSED'
-  | 'NET_BELOW_THRESHOLD'
-  | 'LAST_BUY_TOO_OLD'
-  | 'REENTRY_BANNED'
-  | 'NO_SLOT'
-  | 'NO_HEADROOM';
+  'FEWER_THAN_K_CLOSED' | 'NET_BELOW_THRESHOLD' | 'LAST_BUY_TOO_OLD' | 'REENTRY_BANNED' | 'NO_SLOT';
 
 export interface PromotionConfig {
   /** Closed shadow trades required (K). */
@@ -25,8 +20,6 @@ export interface PromotionConfig {
   promotionMinNetUsdMicro: bigint;
   /** The operator's tighter recency rule: the last funded buy must be within this. */
   promotionMaxLastBuyHours: number;
-  /** A hire must leave at least this much headroom behind it. */
-  minHireHeadroomUsdMicro: bigint;
 }
 
 export interface PromotionInput {
@@ -37,8 +30,6 @@ export interface PromotionInput {
   config: PromotionConfig;
   /** Free roster chairs. */
   slotsFree: number;
-  /** Remaining room under the deployed-% cap. */
-  headroomUsdMicro: bigint;
 }
 
 export interface PromotionDecision {
@@ -67,9 +58,6 @@ export function canPromote(input: PromotionInput): PromotionDecision {
   }
   if (input.slotsFree <= 0) {
     return { ok: false, reason: 'NO_SLOT' };
-  }
-  if (input.headroomUsdMicro < input.config.minHireHeadroomUsdMicro) {
-    return { ok: false, reason: 'NO_HEADROOM' };
   }
   return { ok: true, reason: null };
 }
