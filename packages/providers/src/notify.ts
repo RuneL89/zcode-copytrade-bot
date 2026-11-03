@@ -46,19 +46,12 @@ export class TelegramNotifier implements Notifier {
   /** Post to the configured chat, optionally threaded under a message. */
   async send(text: string, replyToMessageId?: number): Promise<void> {
     if (!this.botToken || !this.chatId) return;
-    const res = await this.fetchImpl(this.api('sendMessage'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: this.chatId,
-        text,
-        ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }),
-        link_preview_options: { is_disabled: true },
-      }),
-      // A send is small and immediate; a stalled connection must not hang a loop.
-      signal: AbortSignal.timeout(20_000),
+    await this.post('sendMessage', {
+      chat_id: this.chatId,
+      text,
+      ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }),
+      link_preview_options: { is_disabled: true },
     });
-    if (!res.ok) throw new Error(`telegram: HTTP ${res.status}`);
   }
 
   /**
@@ -97,6 +90,49 @@ export class TelegramNotifier implements Notifier {
       };
     });
   }
+
+  /**
+   * Publish the command list so Telegram's clients show a "/" menu with
+   * descriptions (the operator never has to remember the names). Scoped to the
+   * operator's chat, so the bot does not advertise commands anywhere else.
+   * Idempotent: safe to call on every start.
+   */
+  async setCommands(
+    commands: ReadonlyArray<{ command: string; description: string }>,
+    scopeChatId?: string,
+  ): Promise<void> {
+    if (!this.botToken) return;
+    await this.post('setMyCommands', {
+      commands,
+      ...(scopeChatId ? { scope: chatScope(scopeChatId) } : {}),
+    });
+  }
+
+  /** Point the chat's menu button at the command list. */
+  async setMenuButton(chatId?: string): Promise<void> {
+    if (!this.botToken) return;
+    await this.post('setChatMenuButton', {
+      ...(chatId && /^-?\d+$/.test(chatId) ? { chat_id: Number(chatId) } : {}),
+      menu_button: { type: 'commands' },
+    });
+  }
+
+  private async post(method: string, payload: Record<string, unknown>): Promise<void> {
+    const res = await this.fetchImpl(this.api(method), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`telegram: HTTP ${res.status}`);
+    const body = (await res.json().catch(() => ({ ok: true }))) as { ok?: boolean; description?: string };
+    if (body.ok === false) throw new Error(`telegram: ${method} refused: ${body.description ?? 'unknown'}`);
+  }
+}
+
+/** Telegram wants a numeric chat id for chat scope; handles may pass through. */
+function chatScope(chatId: string): Record<string, unknown> {
+  return { type: 'chat', chat_id: /^-?\d+$/.test(chatId) ? Number(chatId) : chatId };
 }
 
 export function notifierFromEnv(botToken: string, chatId: string, fetchImpl?: FetchLike): Notifier {

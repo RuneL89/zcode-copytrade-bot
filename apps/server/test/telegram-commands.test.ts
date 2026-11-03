@@ -224,3 +224,58 @@ describe('TelegramCommandService', () => {
     ).toBe(true);
   });
 });
+
+/** The "/" menu: registered once per start, and a failure never blocks polling. */
+describe('command menu registration', () => {
+  it('publishes the menu for the operator chat and audits it', async () => {
+    const stub = botStub([[]]);
+    const menus: Array<Array<{ command: string; description: string }>> = [];
+    const bot = {
+      ...(stub.bot as unknown as Record<string, unknown>),
+      setCommands: async (commands: Array<{ command: string; description: string }>) => {
+        menus.push(commands);
+      },
+      setMenuButton: async () => {},
+    } as unknown as TelegramNotifier;
+    const svc = new TelegramCommandService(
+      handle,
+      bot,
+      OPERATOR,
+      { status: async () => '', weekly: async () => '', positions: async () => '' },
+      yieldToTimers,
+    );
+    svc.start();
+    await new Promise((r) => setTimeout(r, 20));
+    svc.stop();
+    expect(menus[0]!.map((c) => c.command)).toEqual(['status', 'weekly', 'positions', 'help']);
+    expect(
+      repo.listAudit(handle.db, 10).some((a) => /command menu registered \(4 commands\)/.test(a.message)),
+    ).toBe(true);
+  });
+
+  it('audits a refused menu and keeps polling', async () => {
+    const stub = botStub([[], []]);
+    const bot = {
+      ...(stub.bot as unknown as Record<string, unknown>),
+      setCommands: async () => {
+        throw new Error('telegram: setMyCommands refused: bad scope');
+      },
+      setMenuButton: async () => {},
+    } as unknown as TelegramNotifier;
+    const svc = new TelegramCommandService(
+      handle,
+      bot,
+      OPERATOR,
+      { status: async () => '', weekly: async () => '', positions: async () => '' },
+      yieldToTimers,
+    );
+    svc.start();
+    await new Promise((r) => setTimeout(r, 30));
+    const running = (svc as unknown as { running: boolean }).running;
+    svc.stop();
+    expect(running).toBe(true); // the poll loop is unaffected by the menu failure
+    expect(
+      repo.listAudit(handle.db, 10).some((a) => /command menu registration failed/.test(a.message)),
+    ).toBe(true);
+  });
+});

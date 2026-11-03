@@ -89,3 +89,43 @@ describe('TelegramNotifier', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('TelegramNotifier command menu', () => {
+  it('publishes the command list scoped to the operator chat', async () => {
+    const { calls, impl } = fakeFetch({ ok: true });
+    const bot = new TelegramNotifier('TOKEN', 'CHAT', impl);
+    await bot.setCommands(
+      [
+        { command: 'status', description: '24h desk summary' },
+        { command: 'help', description: 'Command list' },
+      ],
+      '555',
+    );
+    expect(calls[0]!.url).toBe('https://api.telegram.org/botTOKEN/setMyCommands');
+    expect(body(calls[0]!.init)).toEqual({
+      commands: [
+        { command: 'status', description: '24h desk summary' },
+        { command: 'help', description: 'Command list' },
+      ],
+      scope: { type: 'chat', chat_id: 555 },
+    });
+  });
+
+  it('keeps a non-numeric chat id as a handle and points the menu button at the commands', async () => {
+    const { calls, impl } = fakeFetch({ ok: true });
+    const bot = new TelegramNotifier('TOKEN', '@operator', impl);
+    await bot.setCommands([{ command: 'help', description: 'Command list' }], '@operator');
+    await bot.setMenuButton('@operator');
+    expect(body(calls[0]!.init)).toMatchObject({ scope: { type: 'chat', chat_id: '@operator' } });
+    expect(calls[1]!.url).toBe('https://api.telegram.org/botTOKEN/setChatMenuButton');
+    expect(body(calls[1]!.init)).toEqual({ menu_button: { type: 'commands' } });
+  });
+
+  it('surfaces a refusal instead of pretending the menu was set', async () => {
+    const { impl } = fakeFetch({ ok: false, description: 'Bad Request: command name invalid' });
+    const bot = new TelegramNotifier('TOKEN', 'CHAT', impl);
+    await expect(bot.setCommands([{ command: 'BAD NAME', description: 'x' }], '555')).rejects.toThrow(
+      /setMyCommands refused: Bad Request: command name invalid/,
+    );
+  });
+});

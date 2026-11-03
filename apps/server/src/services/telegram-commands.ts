@@ -25,13 +25,27 @@ const COMMAND_COOLDOWN_MS = 5_000;
 /** Poll failures are audited at most once per window (never once per retry). */
 const FAILURE_AUDIT_INTERVAL_MS = 300_000;
 
-export const HELP_TEXT = [
-  'Copydesk commands (read-only):',
-  '/status — 24h desk summary',
-  '/weekly — 7-day summary with each chair',
-  '/positions — every open position and its time exit',
-  '/help — this list',
-].join('\n');
+/**
+ * The command list is published to Telegram on start, so typing "/" in the chat
+ * pops up a menu with descriptions. One source of truth: the help text is built
+ * from the same rows, so the menu and the reply cannot drift apart.
+ */
+export const BOT_COMMANDS = [
+  { command: 'status', description: '24h desk summary', help: '/status — 24h desk summary' },
+  {
+    command: 'weekly',
+    description: '7-day summary with each chair',
+    help: '/weekly — 7-day summary with each chair',
+  },
+  {
+    command: 'positions',
+    description: 'Open positions and their time exits',
+    help: '/positions — every open position and its time exit',
+  },
+  { command: 'help', description: 'Command list', help: '/help — this list' },
+] as const;
+
+export const HELP_TEXT = ['Copydesk commands (read-only):', ...BOT_COMMANDS.map((c) => c.help)].join('\n');
 
 /**
  * Parse one message into a command. Tolerates `/Status`, `/status@CopydeskBot`
@@ -91,9 +105,27 @@ export class TelegramCommandService {
     if (this.running) return;
     this.stopped = false;
     this.running = true;
+    void this.registerCommands();
     void this.loop().finally(() => {
       this.running = false;
     });
+  }
+
+  /**
+   * Publish the "/" menu (idempotent, once per start). A failure is audited and
+   * never blocks the loop: the commands still work when typed by hand.
+   */
+  async registerCommands(): Promise<void> {
+    try {
+      await this.bot.setCommands(
+        BOT_COMMANDS.map((c) => ({ command: c.command, description: c.description })),
+        this.operatorChatId,
+      );
+      await this.bot.setMenuButton(this.operatorChatId);
+      repo.audit(this.db.db, 'telegram', `command menu registered (${BOT_COMMANDS.length} commands)`, {});
+    } catch (e) {
+      repo.audit(this.db.db, 'telegram', `command menu registration failed: ${(e as Error).message}`, {});
+    }
   }
 
   /** Ends the loop; an in-flight poll resolves within its own request timeout. */
