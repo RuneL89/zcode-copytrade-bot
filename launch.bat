@@ -32,7 +32,9 @@ if not errorlevel 1 (
 )
 
 echo Starting ZCode Bot (the minimized "ZCode Bot server" window keeps it alive)...
-start "ZCode Bot server" /min cmd /c "pnpm start & echo. & echo SERVER STOPPED - this window can be closed. & pause"
+rem The server's output is captured in data\server.log (run-server.bat), so a
+rem crash or a closed window always leaves evidence of why it stopped.
+start "ZCode Bot server" /min cmd /c "%~dp0run-server.bat"
 
 rem Wait for the port, then open the dashboard.
 set /a TRIES=0

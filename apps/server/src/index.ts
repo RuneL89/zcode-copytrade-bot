@@ -60,14 +60,46 @@ async function main() {
     console.log(`Data:      ${config.env.DATA_DIR}`);
   });
 
-  const shutdown = () => {
-    console.log('\nshutting down…');
+  const shutdown = (signal: string) => {
+    // Why the server stopped must never be a mystery: a console-window close
+    // (SIGHUP on Windows), a Ctrl+C and a service stop all land here.
+    console.log(`\n${signal} received — shutting down…`);
+    try {
+      repo.audit(rt.db.db, 'system', `runtime stopping (${signal})`, {});
+    } catch {
+      // The audit is best effort; the shutdown itself must proceed.
+    }
     server.close();
     rt.stop();
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGHUP', () => shutdown('SIGHUP'));
+
+  // Node's default for an unhandled rejection is to crash the process. A live
+  // trading bot dying silently between ticks is the worst outcome, so the
+  // rejection is recorded (audit + console) and the process keeps running; a
+  // genuine uncaught exception still exits, but leaves the reason behind.
+  process.on('unhandledRejection', (reason) => {
+    const detail = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+    console.error(`[copydesk] unhandled rejection: ${detail}`);
+    try {
+      repo.audit(rt.db.db, 'system', `unhandled rejection (continuing): ${detail.slice(0, 300)}`, {});
+    } catch {
+      // The database may be the cause; console already carries it.
+    }
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[copydesk] uncaught exception:', err);
+    try {
+      repo.audit(rt.db.db, 'system', `uncaught exception — exiting: ${String(err).slice(0, 300)}`, {});
+    } catch {
+      // best effort
+    }
+    rt.stop();
+    process.exit(1);
+  });
 }
 
 main().catch((e) => {
