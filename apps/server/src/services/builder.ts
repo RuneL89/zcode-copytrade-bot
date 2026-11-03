@@ -33,15 +33,14 @@ export function withinActivityWindow(tIso: string, nowMs: number): boolean {
 type WatchRow = DashboardState['watchlist']['rows'][number];
 
 /**
- * How soon a watch row would be hired, lowest first. The bench is the actual
- * queue fillRoster drains; a watching wallet that already passes every gate is
- * promoted on the next watch tick and joins that queue; blocked watchers need
- * their record to change first; cooling needs a funded buy after the fire;
- * hired leaders hold a chair and are not candidates at all; archived wallets
- * are out of the running.
+ * How soon a watch row would be hired, lowest first. The bench is the ordered
+ * queue fillRoster drains (best shadow net first); a watching wallet with no
+ * block is benched on the next watch tick; blocked watchers need their record
+ * to change; cooling needs a funded buy after the fire; hired leaders hold a
+ * chair and are not candidates; archived wallets are out of the running.
  */
 export function watchHireRank(r: Pick<WatchRow, 'status' | 'blockedReason'>): number {
-  if (r.status === 'promoted') return 0;
+  if (r.status === 'bench') return 0;
   if (r.status === 'watching') return r.blockedReason === null ? 1 : 2;
   if (r.status === 'cooling') return 3;
   if (r.status === 'hired') return 4;
@@ -527,7 +526,6 @@ export class StateBuilder {
     const wallets = repo.listWatchWallets(this.db);
     const openLots = repo.listOpenShadowTrades(this.db);
     const ceilingMs = risk.MAX_POSITION_AGE_HOURS * 3_600_000;
-    const slotsFree = Math.max(0, risk.ROSTER_SIZE - repo.activeActivationCount(this.db));
 
     const rows: DashboardState['watchlist']['rows'] = wallets.map((wallet) => {
       const candidate = repo.getCandidate(this.db, wallet.candidateId);
@@ -551,7 +549,6 @@ export class StateBuilder {
           promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
           promotionMaxLastBuyHours: risk.PROMOTION_MAX_LAST_BUY_HOURS,
         },
-        slotsFree,
       });
       const status = (wallet.status as DashboardState['watchlist']['rows'][number]['status']) ?? 'watching';
       return {
@@ -566,7 +563,7 @@ export class StateBuilder {
         netShadowPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
         openNotionalUsdMicro: openNotional.toString(),
         ceilingExposureUsdMicro: ceilingExposure.toString(),
-        // A promoted/cooling/archived row is not "blocked" — the reason only
+        // A benched/hired/cooling/archived row is not "blocked" — the reason only
         // explains why a watching row cannot move.
         blockedReason: status === 'watching' ? decision.reason : null,
         source: 'SHADOW_LEDGER',
@@ -577,7 +574,7 @@ export class StateBuilder {
     rows.sort(compareWatchRows);
 
     const decision = discoveryDecision({
-      promotableWatchWallets: rows.filter((r) => r.status === 'promoted').length,
+      promotableWatchWallets: rows.filter((r) => r.status === 'bench').length,
       watchListWallets: rows.filter((r) => r.status === 'watching').length,
       rosterInUse: repo.activeActivationCount(this.db),
       rosterSize: risk.ROSTER_SIZE,
@@ -590,7 +587,7 @@ export class StateBuilder {
     return {
       size: rows.filter((r) => r.status === 'watching').length,
       cap: risk.WATCH_LIST_SIZE,
-      bench: rows.filter((r) => r.status === 'promoted').length,
+      bench: rows.filter((r) => r.status === 'bench').length,
       benchTarget: risk.BENCH_TARGET,
       nextDiscoveryReason: decision.reason,
       rows,
@@ -814,7 +811,7 @@ export class StateBuilder {
       watch: {
         watching: watchWallets.filter((w) => w.status === 'watching').length,
         cooling: watchWallets.filter((w) => w.status === 'cooling').length,
-        promotable: watchWallets.filter((w) => w.status === 'promoted').length,
+        promotable: watchWallets.filter((w) => w.status === 'bench').length,
         benchTarget: risk.BENCH_TARGET,
       },
       roster: seats,

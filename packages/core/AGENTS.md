@@ -23,8 +23,8 @@ functions that the server wires to real providers and persistence.
 - **Copy sizing is 0.25x measured input notional**, bounded by the configured
   per-buy, per-position, exposure, and daily limits. Exit quantities are
   proportional to the copied share.
-- **Watch/promotion gates return exact, stable reason codes** (`FEWER_THAN_K_CLOSED`,
-  `NET_BELOW_THRESHOLD`, `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`, `NO_SLOT`).
+- **Watch/bench gates return exact, stable reason codes** (`FEWER_THAN_K_CLOSED`,
+  `NET_BELOW_THRESHOLD`, `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`).
   The dashboard shows them verbatim; rename only with a coordinated change.
   A hire is not gated on capital (operator decision, 2026-11-03); entries that do
   not fit the deployed-% cap are still skipped by `MAX_DEPLOYED_PCT`.

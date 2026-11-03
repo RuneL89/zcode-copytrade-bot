@@ -64,7 +64,7 @@ function seedBench(handleName: string, netPerTrade = 2_000_000n, closed = 8): st
   repo.upsertWatchWallet(handle.db, {
     candidateId,
     address: `Wallet${handleName}`,
-    status: 'promoted',
+    status: 'bench',
     reason: 'test bench',
   });
   // A bench wallet is only hirable while its last funded buy is fresh (4h).
@@ -108,7 +108,7 @@ function reset(): void {
       endReason: 'test reset',
     });
   }
-  for (const w of repo.listWatchWallets(handle.db, 'promoted')) {
+  for (const w of repo.listWatchWallets(handle.db, 'bench')) {
     repo.setWatchStatus(handle.db, w.candidateId, 'archived', 'test reset');
   }
 }
@@ -217,7 +217,7 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
 
   it('an empty queue leaves the chair empty, without an error', async () => {
     // Take every bench wallet out of the queue.
-    for (const wallet of repo.listWatchWallets(handle.db, 'promoted')) {
+    for (const wallet of repo.listWatchWallets(handle.db, 'bench')) {
       repo.setWatchStatus(handle.db, wallet.candidateId, 'archived', 'test cleanup');
     }
     const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));

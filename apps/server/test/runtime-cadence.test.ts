@@ -90,7 +90,7 @@ describe('runtime cadence (D5)', () => {
       repo.upsertWatchWallet(rt.db.db, {
         candidateId: `cadence_bench_${i}`,
         address: `BenchWallet${i}`,
-        status: 'promoted',
+        status: 'bench',
         reason: 'test',
       });
     }
@@ -107,7 +107,7 @@ describe('runtime cadence (D5)', () => {
 
   it('a thin bench asks for discovery', () => {
     // Empty the bench: nothing promotable is waiting.
-    for (const wallet of repo.listWatchWallets(rt.db.db, 'promoted')) {
+    for (const wallet of repo.listWatchWallets(rt.db.db, 'bench')) {
       repo.setWatchStatus(rt.db.db, wallet.candidateId, 'archived', 'test reset');
     }
     const counter = countSyncs();

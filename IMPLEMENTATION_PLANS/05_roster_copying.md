@@ -10,6 +10,12 @@ Depends on: 04
 > frees; capital is enforced per entry instead (`MAX_DEPLOYED_PCT`, which
 > downsizes or skips a copy). The "no per-leader budget" part of AC5 stands.
 > See DECISIONS.md D4.
+>
+> **Amendment 2026-11-03 (operator) — the bench.** Promotion now means joining
+> the bench: every wallet whose shadow record qualifies is benched (no chair
+> required, no cap), and the bench is ordered by shadow net so the top wallet
+> is the one a freed chair takes. A bench wallet whose record lapses returns to
+> the watch list. `MIN_HIRE_HEADROOM_USD` stays deleted. See DECISIONS.md D4.
 
 ## /goal
 
@@ -23,8 +29,8 @@ per-mint cap is configurable (off by default).
 
 - Roster size **5** (configurable 1–10); **shared budget pool**, no per-leader
   slice; first-come.
-- A promotion needs a free slot and free capital in the pool (minimum headroom
-  configured, working $20).
+- A promotion means joining the bench; it needs a qualifying shadow record, not
+  a free chair or capital. The bench is ordered by shadow net (best first).
 - One position per mint per leader; same-mint buys within **60 s** are coalesced.
 - Per-mint cap across the roster: **configurable, disabled by default**.
 - Replacements come from the promotion queue; an empty slot is acceptable.

@@ -82,7 +82,7 @@ describe('boot catch-up (D5)', () => {
     repo.upsertWatchWallet(rt.db.db, {
       candidateId,
       address: 'WalletBootBench',
-      status: 'promoted',
+      status: 'bench',
       reason: 'test bench',
     });
     // A hire re-checks the record: 8 closed shadow trades in profit plus a

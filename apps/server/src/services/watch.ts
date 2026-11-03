@@ -7,7 +7,6 @@ import {
   ceilingAction,
   classifyFundedSwap,
   computeCopyNotional,
-  promotionRecordDecision,
   usdToMicro,
   type FundedSwap,
   type PromotionBlockReason,
@@ -22,10 +21,10 @@ import type { TraderLifecycle } from './lifecycle.js';
  * in `core/swap.ts`): every funded buy opens a pretend position at our notional
  * (the D1 clamp), every funded sell closes lots FIFO at the leader's price, and
  * a position that reaches the age ceiling closes at a live quote. That record is
- * the promotion evidence — the fomo PnL mark is never an input.
+ * the bench evidence — the fomo PnL mark is never an input.
  *
  * Everything is fail-closed: an unreadable transaction, an unpriceable mint or
- * a missing quote never invents a fill, a price, a notional or a promotion.
+ * a missing quote never invents a fill, a price, a notional or a bench seat.
  */
 
 /** Sizing helper: the D1 clamp on the leader's input notional (shared with the copier). */
@@ -77,7 +76,7 @@ export interface WatchTickResult {
   newEvents: number;
   ceilingsClosed: number;
   admitted: number;
-  promoted: number;
+  benched: number;
   hired: string | null;
   demoted: number;
   archived: number;
@@ -458,7 +457,7 @@ export class WatchService {
       newEvents: 0,
       ceilingsClosed: 0,
       admitted: 0,
-      promoted: 0,
+      benched: 0,
       hired: null,
       demoted: 0,
       archived: 0,
@@ -467,12 +466,12 @@ export class WatchService {
 
     result.ceilingsClosed = await this.closeDueCeilings();
 
-    // Watching, promoted AND hired: D4 keeps the shadow record running after
-    // promotion (and while the leader holds a chair) as the would-have-copied
+    // Watching, benched AND hired: D4 keeps the shadow record running on the
+    // bench (and while the leader holds a chair) as the would-have-copied
     // baseline.
     for (const wallet of [
       ...repo.listWatchWallets(this.db, 'watching'),
-      ...repo.listWatchWallets(this.db, 'promoted'),
+      ...repo.listWatchWallets(this.db, 'bench'),
       ...repo.listWatchWallets(this.db, 'hired'),
     ]) {
       try {
@@ -485,7 +484,7 @@ export class WatchService {
 
     const evaluation = await this.evaluate();
     result.admitted = evaluation.admitted;
-    result.promoted = evaluation.promoted;
+    result.benched = evaluation.benched;
     result.hired = evaluation.hired;
     result.demoted = evaluation.demoted;
     result.archived = evaluation.archived;
@@ -522,13 +521,13 @@ export class WatchService {
    */
   async evaluate(): Promise<{
     admitted: number;
-    promoted: number;
+    benched: number;
     hired: string | null;
     demoted: number;
     archived: number;
   }> {
     let admitted = 0;
-    let promoted = 0;
+    let benched = 0;
     let hired: string | null = null;
     let demoted = 0;
     let archived = 0;
@@ -601,12 +600,12 @@ export class WatchService {
     }
 
     // --- bench hygiene -------------------------------------------------------
-    // Promotion is not a permanent pass. A wallet waiting for a chair whose
-    // record no longer qualifies (net fell, last buy went stale, or it was
-    // fired and has not bought since) leaves the bench: to the watch list, or
-    // archived when the sample is full and negative. Without this a stale bench
-    // row could be hired the moment a chair frees.
-    for (const wallet of repo.listWatchWallets(this.db, 'promoted')) {
+    // The bench is not a permanent seat. A wallet whose record no longer
+    // qualifies (net fell, last buy went stale, or it was fired and has not
+    // bought since) leaves the bench: back to the watch list, or archived when
+    // the sample is full and negative. Without this a stale bench row could be
+    // hired the moment a chair frees.
+    for (const wallet of repo.listWatchWallets(this.db, 'bench')) {
       const aggregates = repo.shadowAggregates(this.db, wallet.candidateId);
       if (aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED && aggregates.netPnlUsdMicro <= 0n) {
         repo.setWatchStatus(
@@ -623,7 +622,7 @@ export class WatchService {
         demoted++;
         continue;
       }
-      const record = promotionRecordDecision(this.recordInput(wallet.candidateId));
+      const record = this.promotionDecision(wallet.candidateId);
       if (!record.ok) {
         repo.setWatchStatus(this.db, wallet.candidateId, 'watching', `bench demoted: ${record.reason}`);
         repo.audit(this.db, 'watch', `bench demoted: ${record.reason}`, {
@@ -633,7 +632,11 @@ export class WatchService {
       }
     }
 
-    // --- promotion ----------------------------------------------------------
+    // --- bench ---------------------------------------------------------------
+    // Every wallet whose record qualifies joins the bench; no chair is needed.
+    // The bench pre-builds while the roster is full — it is the ordered queue
+    // (best shadow net first, the order fillRoster hires in) that a freed chair
+    // is filled from.
     const promotable: string[] = [];
     for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
       const decision = this.promotionDecision(wallet.candidateId);
@@ -646,46 +649,27 @@ export class WatchService {
     }
     for (const candidateId of promotable) {
       const block = this.promotionDecision(candidateId);
-      if (!block.ok) continue; // the live slot/headroom moved between checks
-      repo.setWatchStatus(this.db, candidateId, 'promoted', 'promotion gate passed');
-      repo.audit(this.db, 'watch', 'watch promoted: promotion gate passed', { candidateId });
-      promoted++;
-      if (hired === null) {
-        // Plan 04 wires the hand-off to the existing single-chair activate();
-        // plan 05 makes the roster multi-chair aware.
-        const attempt = await this.deps.lifecycle.hireFromWatch(candidateId);
-        repo.audit(
-          this.db,
-          'watch',
-          attempt.ok ? 'watch hired into the roster' : `hire deferred: ${attempt.reason ?? 'unknown'}`,
-          { candidateId, activationId: attempt.activationId ?? null },
-        );
-        if (attempt.ok) hired = candidateId;
-      }
+      if (!block.ok) continue; // the record moved between checks
+      repo.setWatchStatus(this.db, candidateId, 'bench', 'bench: record passes');
+      repo.audit(this.db, 'watch', 'benched: record passes', { candidateId });
+      benched++;
     }
 
-    // A bench that missed its hire must not strand (D4: replacements within one
-    // watch tick). While no chair is occupied at all, one promoted wallet is
-    // retried each tick; plan 05 replaces this with roster-aware slot logic.
-    if (hired === null && repo.activeActivationCount(this.db) === 0) {
-      const bench = repo.listWatchWallets(this.db, 'promoted');
-      const next = bench.find((w) => w.address.length > 0);
-      if (next) {
-        const attempt = await this.deps.lifecycle.hireFromWatch(next.candidateId);
-        repo.audit(
-          this.db,
-          'watch',
-          attempt.ok
-            ? 'watch hired into the roster (bench retry)'
-            : `bench retry deferred: ${attempt.reason ?? 'unknown'}`,
-          { candidateId: next.candidateId, activationId: attempt.activationId ?? null },
-        );
-        if (attempt.ok) hired = next.candidateId;
+    // Any free chair is filled from the bench now (best shadow net first), so
+    // a seat that opened since the last sweep does not wait for one.
+    if (repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE) {
+      const filled = await this.deps.lifecycle.fillRoster().catch((e: Error) => {
+        repo.audit(this.db, 'watch', `bench fill failed (fail closed): ${e.message}`, {});
+        return { hired: [] as string[], reason: 'error' };
+      });
+      for (const candidateId of filled.hired) {
+        repo.audit(this.db, 'watch', 'watch hired into the roster', { candidateId });
       }
+      if (filled.hired.length > 0) hired = filled.hired[0]!;
     }
 
-    if (admitted + promoted + demoted + archived > 0) this.deps.onStateChanged();
-    return { admitted, promoted, hired, demoted, archived };
+    if (admitted + benched + demoted + archived > 0) this.deps.onStateChanged();
+    return { admitted, benched, hired, demoted, archived };
   }
 
   /** The live inputs of a wallet's own promotion gates (no chair count). */
@@ -703,12 +687,9 @@ export class WatchService {
     };
   }
 
-  /** The D4 gate: the wallet's shadow record and a free chair. Capital is not a gate. */
+  /** The bench gate: the wallet's shadow record. A chair is the hire's concern. */
   promotionDecision(candidateId: string): { ok: boolean; reason: PromotionBlockReason | null } {
-    return canPromote({
-      ...this.recordInput(candidateId),
-      slotsFree: Math.max(0, this.risk.ROSTER_SIZE - repo.activeActivationCount(this.db)),
-    });
+    return canPromote(this.recordInput(candidateId));
   }
 
   /**
@@ -749,8 +730,10 @@ export class WatchService {
   async promoteNow(candidateId: string): Promise<{ ok: boolean; reason: string }> {
     const decision = this.promotionDecision(candidateId);
     if (!decision.ok) return { ok: false, reason: decision.reason ?? 'BLOCKED' };
-    repo.setWatchStatus(this.db, candidateId, 'promoted', 'promoted from the dashboard');
-    repo.audit(this.db, 'watch', 'watch promoted from the dashboard', { candidateId });
+    repo.setWatchStatus(this.db, candidateId, 'bench', 'added to the bench from the dashboard');
+    repo.audit(this.db, 'watch', 'benched from the dashboard', { candidateId });
+    // A free chair seats him right away; otherwise he waits on the bench in
+    // net order like every other bench wallet.
     const attempt = await this.deps.lifecycle.hireFromWatch(candidateId);
     repo.audit(
       this.db,
@@ -759,6 +742,6 @@ export class WatchService {
       { candidateId, activationId: attempt.activationId ?? null },
     );
     this.deps.onStateChanged();
-    return { ok: true, reason: attempt.ok ? 'HIRED' : 'PROMOTED' };
+    return { ok: true, reason: attempt.ok ? 'HIRED' : 'BENCHED' };
   }
 }

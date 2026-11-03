@@ -243,6 +243,17 @@ below `MIN_PER_BUY_USD`). Rationale: sitting flat in a chair costs nothing,
 while a proved leader who cannot be hired is a missed opportunity the moment an
 existing position exits.
 
+**Decided 2026-11-03 (operator) — the bench.** `promoted` is renamed **bench**
+and is a real queue, like a basketball bench: every wallet whose shadow record
+qualifies sits on it (no cap, no free chair needed), ordered by shadow net so
+the top wallet is exactly the one a freed chair takes. A hire is the only step
+that checks for a chair. A bench wallet whose record lapses (net falls, last buy
+ages past the recency window, not yet re-admitted after a fire) returns to the
+watch list — archived only when its full sample is negative. Hired leaders get
+their own `hired` status (shadow record keeps running) so they never count as
+bench candidates. The panel shows BENCH above the WATCH LIST; `BENCH_TARGET`
+stays a discovery trigger (a floor), not a cap.
+
 ---
 
 ## D5 — Runtime and cadence: deterministic server services, demand-driven

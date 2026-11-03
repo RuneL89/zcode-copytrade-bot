@@ -136,7 +136,7 @@ describe('DiscoveryService.syncDiscovery', () => {
       repo.upsertWatchWallet(handle.db, {
         candidateId: `cand_bench_${i}`,
         address: `BenchWallet${i}`,
-        status: 'promoted',
+        status: 'bench',
       });
     }
     const { api, calls } = stubApi({});

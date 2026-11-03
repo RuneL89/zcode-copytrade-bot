@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  canPromote,
-  canReenter,
-  ceilingAction,
-  promotionRecordDecision,
-  type PromotionConfig,
-} from '../src/watch.js';
+import { canPromote, canReenter, ceilingAction, type PromotionConfig } from '../src/watch.js';
 import { isIdleOver } from '../src/positionAge.js';
 
 const HOUR = 3_600_000;
@@ -24,11 +18,10 @@ const passing = {
   lastFiredAt: null,
   nowMs: NOW,
   config,
-  slotsFree: 1,
 };
 
-describe('canPromote — the D4 promotion gate (AC6)', () => {
-  it('promotes when every condition holds', () => {
+describe('canPromote — the bench gate (AC6)', () => {
+  it('benches a wallet when every record condition holds', () => {
     expect(canPromote(passing)).toEqual({ ok: true, reason: null });
   });
 
@@ -46,17 +39,24 @@ describe('canPromote — the D4 promotion gate (AC6)', () => {
     expect(
       canPromote({ ...passing, lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 2 * HOUR) }).reason,
     ).toBe('REENTRY_BANNED');
-    expect(canPromote({ ...passing, slotsFree: 0 }).reason).toBe('NO_SLOT');
   });
 
-  it('the newest close does not matter: the gates are K, net, recency, re-entry, slot', () => {
+  it('the newest close does not matter: the gates are K, net, recency, re-entry', () => {
     expect(canPromote({ ...passing, aggregates: { ...passing.aggregates, lastClosedAt: null } }).ok).toBe(
       true,
     );
   });
 
-  it('capital headroom is not a gate: a proved wallet is hired, then trades when room frees', () => {
-    // Operator decision (2026-11-03): the hire gate judges the wallet, not the
+  it('a chair is not part of the gate: the bench pre-builds while the roster is full', () => {
+    // Operator decision (2026-11-03): the bench is the ordered list of wallets
+    // that would take a chair when one frees — like a basketball bench. Only
+    // the hire checks for a free seat.
+    expect(canPromote(passing).ok).toBe(true);
+    expect(Object.keys(passing)).not.toContain('slotsFree');
+  });
+
+  it('capital headroom is not a gate: a proved wallet is benched, then hired', () => {
+    // Operator decision (2026-11-03): the gate judges the wallet, not the
     // bankroll. Zero deployed room must still admit a proved leader.
     expect(canPromote(passing).ok).toBe(true);
     expect(Object.keys(passing)).not.toContain('headroomUsdMicro');
@@ -64,34 +64,6 @@ describe('canPromote — the D4 promotion gate (AC6)', () => {
 
   it('the fomo PnL mark is not an input at all (D4: context only)', () => {
     expect(Object.keys(passing)).not.toContain('pnl24hUsd');
-  });
-});
-
-describe('promotionRecordDecision — the record gates without a chair', () => {
-  const record = {
-    aggregates: passing.aggregates,
-    lastFundedBuyAt: passing.lastFundedBuyAt,
-    lastFiredAt: passing.lastFiredAt,
-    nowMs: passing.nowMs,
-    config: passing.config,
-  };
-
-  it('passes a qualifying record even when no chair is free', () => {
-    // A bench wallet is judged while it waits; the chair count is not its
-    // concern (callers add NO_SLOT only when actually hiring).
-    expect(promotionRecordDecision(record)).toEqual({ ok: true, reason: null });
-  });
-
-  it('still blocks on the record itself', () => {
-    expect(
-      promotionRecordDecision({
-        ...record,
-        aggregates: { ...record.aggregates, netPnlUsdMicro: 3_000_000n },
-      }).reason,
-    ).toBe('NET_BELOW_THRESHOLD');
-    expect(promotionRecordDecision({ ...record, lastFundedBuyAt: iso(NOW - 4 * HOUR - 1) }).reason).toBe(
-      'LAST_BUY_TOO_OLD',
-    );
   });
 });
 

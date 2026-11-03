@@ -489,7 +489,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         observedAt: new Date().toISOString(),
       });
       repo.upsertCandidateAddress(db, candidateId, { chain: 'solana', address, verification: 'reported' });
-      repo.upsertWatchWallet(db, { candidateId, address, status: 'promoted', reason: 'test seed' });
+      repo.upsertWatchWallet(db, { candidateId, address, status: 'bench', reason: 'test seed' });
       const activationId = `act_seed_seat_${Date.now()}_${candidateId}`;
       repo.createActivation(db, {
         activationId,

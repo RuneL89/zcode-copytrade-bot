@@ -300,9 +300,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   ))}
                 </div>
                 <p className="label !text-[9.5px] !text-faint mt-3">
-                  These are the D4 watch-list / promotion / roster thresholds: who enters the watch list, when
-                  a wallet is promoted to a roster chair, and how often each side is polled. Milliseconds are
-                  milliseconds; 0 in PER_MINT_CAP_USD disables the cap.
+                  These are the D4 watch-list / bench / roster thresholds: who enters the watch list, when a
+                  wallet joins the bench (the ordered queue a freed chair is filled from), and how often each
+                  side is polled. Milliseconds are milliseconds; 0 in PER_MINT_CAP_USD disables the cap.
                 </p>
                 <div className="grid grid-cols-2 gap-3 mt-2">
                   {PIPELINE_NUMBER_FIELDS.map((f) => (

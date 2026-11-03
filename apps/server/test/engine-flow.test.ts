@@ -244,7 +244,7 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     repo.upsertWatchWallet(handle.db, {
       candidateId,
       address: 'WalletBenchFill',
-      status: 'promoted',
+      status: 'bench',
       reason: 'test bench',
     });
     // A hire re-checks the bench record: 8 closed shadow trades in profit and a

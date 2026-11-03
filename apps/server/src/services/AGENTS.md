@@ -8,10 +8,10 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File                | Owns                                                                                                                                                                 |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`         | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                          |
-| `lifecycle.ts`      | Activation (roster chairs), atomic firing, roster refill from the promotion queue, the D4 promotion gate, the `canReenter` rule (no timed cooldowns).                |
+| `lifecycle.ts`      | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the `canReenter` rule (no timed cooldowns).                              |
 | `monitor.ts`        | Roster polling (one pass per activation), cursor persistence per hire, dedupe, restart reconciliation.                                                               |
 | `discovery.ts`      | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                     |
-| `watch.ts`          | The watch list and shadow ledger: admission, funded-swap application, ceilings, promotion/demotion, cooling rotation.                                                |
+| `watch.ts`          | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling rotation.                                          |
 | `dawn-targets.ts`   | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                    |
 | `activity-check.ts` | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                       |
 | `executors.ts`      | The execution boundary: paper simulation vs the armed live signer. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
@@ -33,7 +33,7 @@ scheduled. Dawn and the native board capture are manual fallbacks only.
 ## Ownership
 
 The worker owns all time-sensitive work, discovery included: the pipeline is
-deterministic (fomoapi → watch list → shadow ledger → promotion → roster) with
+deterministic (fomoapi → watch list → shadow ledger → bench → roster) with
 no LLM in the loop (D6).
 
 ## Local Contracts

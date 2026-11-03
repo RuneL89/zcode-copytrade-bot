@@ -5,12 +5,12 @@ export interface WatchlistRow {
   candidateId: string;
   handle: string;
   /**
-   * watching: under observation; promoted: on the bench, waiting for a chair;
-   * hired: holds a roster chair (shadow continues, never a hire candidate);
-   * cooling: fired, back only after a funded buy observed post-fire;
-   * archived: evicted from the watch list.
+   * watching: under observation; bench: on the bench, in hire order (best
+   * shadow net first), waiting for a chair; hired: holds a roster chair (shadow
+   * continues, never a hire candidate); cooling: fired, back only after a
+   * funded buy observed post-fire; archived: evicted from the watch list.
    */
-  status: 'watching' | 'cooling' | 'promoted' | 'hired' | 'archived';
+  status: 'watching' | 'cooling' | 'bench' | 'hired' | 'archived';
   profileUrl: string | null;
   /** Newest funded buy on the watch record (the promotion recency clock). */
   lastFundedBuyAt: string | null;
@@ -236,7 +236,7 @@ export interface DashboardState {
     size: number;
     /** Configured watch-list cap. */
     cap: number;
-    /** Wallets promoted and waiting for a chair. */
+    /** Wallets on the bench (qualifying, in hire order). */
     bench: number;
     /** Configured bench target (the D5 discovery trigger). */
     benchTarget: number;

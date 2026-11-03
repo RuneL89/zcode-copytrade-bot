@@ -3,14 +3,14 @@ import type Database from 'better-sqlite3';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
-import { promotionRecordDecision, usdToMicro } from '@zcode-bot/core';
+import { canPromote, usdToMicro } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 
 /**
  * Trader lifecycle (D4/plan 05): activation into the roster, atomic firing
  * (pending-intent cancellation + position policy), and the freed chair filled
- * from the promotion queue (`fillRoster`). Fail-closed: an empty bench leaves
+ * from the bench (`fillRoster`). Fail-closed: an empty bench leaves
  * the chair empty (`NO_REPLACEMENT`) — never an invented trader.
  */
 
@@ -153,8 +153,8 @@ export class TraderLifecycle {
     // stale reading is a refresh problem, not a quiet wallet, so it gets its
     // own rejection code — silence here used to leave the bot flat with no
     // visible cause. Single choke point: every activation path (manual from the
-    // dashboard, and the D4 promotion queue). A watch-promoted wallet already
-    // passed the promotion gate, which replaced these readings — its candidate
+    // dashboard, and the D4 bench). A benched wallet already passed the
+    // bench gate, which replaced these readings — its candidate
     // row normally carries no activity stamp at all, so the gate stands aside.
     const candForGate = repo.getWatchWallet(this.db, candidateId)
       ? null
@@ -233,8 +233,8 @@ export class TraderLifecycle {
   }
 
   /**
-   * D4 promotion hand-off: hire a wallet the watch record proved (the promotion
-   * gate replaced the research/eligibility path, so no snapshot check runs).
+   * D4 bench hand-off: hire a wallet the watch record proved (the bench gate
+   * replaced the research/eligibility path, so no snapshot check runs).
    * Capital headroom is NOT a hire gate (operator decision, 2026-11-03): a
    * proved leader takes a chair and copies once room frees. Individual entries
    * are still capped by the deployed-% limit, so nothing overspends meanwhile.
@@ -244,8 +244,8 @@ export class TraderLifecycle {
   }
 
   /**
-   * Fill every free roster chair from the promotion queue (plan 05): the
-   * promoted bench, best shadow record first. Stops when the chairs are full,
+   * Fill every free roster chair from the bench (plan 05): best shadow record
+   * first. Only this step checks for a chair — the bench itself pre-builds.
    * the queue is empty, or the shared pool has no room — an empty chair is an
    * acceptable outcome (D4), never a reason to hire something unproven.
    */
@@ -258,20 +258,20 @@ export class TraderLifecycle {
     };
     /** A bench row is only a candidate while its record still passes the gates. */
     const recordOk = (candidateId: string): boolean =>
-      promotionRecordDecision({
+      canPromote({
         aggregates: repo.shadowAggregates(this.db, candidateId),
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
         lastFiredAt: repo.lastFiredAt(this.db, candidateId),
         nowMs: Date.now(),
         config: promotionConfig,
       }).ok;
-    // The bench keeps hired leaders (their shadow record continues), so only
-    // wallets without a chair are candidates for a free one — and only while
-    // their record still qualifies (a fired wallet is re-entry banned until a
+    // The bench is the queue; hired leaders keep their shadow rows but are not
+    // candidates for a free chair, and a bench wallet is only hired while its
+    // record still qualifies (a fired wallet is re-entry banned until a
     // post-fire buy, a stale record is not a hire).
     const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
-      .listWatchWallets(this.db, 'promoted')
+      .listWatchWallets(this.db, 'bench')
       .filter((wallet) => !seated.has(wallet.candidateId) && recordOk(wallet.candidateId))
       .map((wallet) => ({ wallet, aggregates: repo.shadowAggregates(this.db, wallet.candidateId) }))
       .sort(
@@ -299,7 +299,7 @@ export class TraderLifecycle {
    * 2. apply FIRE_POSITION_POLICY
    * 3. finalize FIRED (no cooldown: re-entry needs a funded buy after the
    *    firing — the canReenter rule)
-   * 4. fill the freed chair from the promotion queue (fillRoster)
+   * 4. fill the freed chair from the bench (fillRoster)
    * Unknown close outcomes -> REQUIRES_RECONCILIATION (no retry, no handoff).
    */
   async fire(
@@ -408,8 +408,8 @@ export class TraderLifecycle {
       });
     }
 
-    // A fire frees exactly one chair; the promotion queue fills it immediately
-    // (plan 05). The research replacement path is retired with D6.
+    // A fire frees exactly one chair; the bench fills it immediately (plan 05).
+    // The research replacement path is retired with D6.
     const filled = await this.fillRoster();
     const outcome: HandoffOutcome =
       filled.hired.length > 0
@@ -440,7 +440,7 @@ export class TraderLifecycle {
    * Cases WITH a signature are never retried (ambiguous outcome).
    *
    * A successful close resolves its case and completes the fire it blocked:
-   * the activation becomes FIRED and the chair is filled from the promotion
+   * the activation becomes FIRED and the chair is filled from the bench
    * queue, so the bot can leave REQUIRES_RECONCILIATION without a hand edit.
    */
   async retrySignaturelessCloses(reason = 'reconciliation_retry'): Promise<{
@@ -518,7 +518,7 @@ export class TraderLifecycle {
   /**
    * Finish a fire that was blocked by reconciliation: only once the activation
    * holds nothing does it become FIRED and the chair is filled from the
-   * promotion queue. Refuses when any position or attributable case remains.
+   * bench. Refuses when any position or attributable case remains.
    */
   async completeBlockedFire(activationId: string): Promise<{ status: string }> {
     const activation = repo.getActivation(this.db, activationId);

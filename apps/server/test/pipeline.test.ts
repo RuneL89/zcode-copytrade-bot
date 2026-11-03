@@ -199,7 +199,7 @@ describe('pipeline stages are DB-derived (AC2)', () => {
     repo.upsertWatchWallet(handle.db, {
       candidateId: w3,
       address: 'WalletC',
-      status: 'promoted',
+      status: 'bench',
     });
     const w4 = seedCandidate('cooling_new');
     repo.upsertWatchWallet(handle.db, {
@@ -579,8 +579,8 @@ describe('watch list order: next hire first', () => {
         netShadowPnlUsdMicro: '500000000',
       }),
       row({ handle: 'ready1', status: 'watching', netShadowPnlUsdMicro: '1000000' }),
-      row({ handle: 'bench_low', status: 'promoted', netShadowPnlUsdMicro: '2000000' }),
-      row({ handle: 'bench_high', status: 'promoted', netShadowPnlUsdMicro: '9000000' }),
+      row({ handle: 'bench_low', status: 'bench', netShadowPnlUsdMicro: '2000000' }),
+      row({ handle: 'bench_high', status: 'bench', netShadowPnlUsdMicro: '9000000' }),
       row({ handle: 'cooling1', status: 'cooling', netShadowPnlUsdMicro: '800000000' }),
       row({ handle: 'hired1', status: 'hired', netShadowPnlUsdMicro: '700000000' }),
     ].sort(compareWatchRows);
@@ -596,10 +596,9 @@ describe('watch list order: next hire first', () => {
   });
 
   it('keeps equal-net rows in a stable handle order', () => {
-    const rows = [
-      row({ handle: 'zeta', status: 'promoted' }),
-      row({ handle: 'alpha', status: 'promoted' }),
-    ].sort(compareWatchRows);
+    const rows = [row({ handle: 'zeta', status: 'bench' }), row({ handle: 'alpha', status: 'bench' })].sort(
+      compareWatchRows,
+    );
     expect(rows.map((r) => r.handle)).toEqual(['alpha', 'zeta']);
   });
 });

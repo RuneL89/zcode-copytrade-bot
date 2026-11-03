@@ -22,16 +22,15 @@ const row = (over: Partial<Row> = {}): Row => ({
   ...over,
 });
 
-describe('watchlist Promote-now enablement (D4)', () => {
+describe('watchlist bench-action enablement (D4)', () => {
   it('enables only for an unblocked watching row', () => {
     expect(isPromotable(row())).toBe(true);
     expect(isPromotable(row({ blockedReason: 'FEWER_THAN_K_CLOSED' }))).toBe(false);
-    expect(isPromotable(row({ blockedReason: 'NO_SLOT' }))).toBe(false);
     expect(isPromotable(row({ blockedReason: 'REENTRY_BANNED' }))).toBe(false);
   });
 
-  it('never enables for promoted, cooling or archived rows', () => {
-    for (const status of ['promoted', 'cooling', 'archived'] as const) {
+  it('never enables for benched, hired, cooling or archived rows', () => {
+    for (const status of ['bench', 'hired', 'cooling', 'archived'] as const) {
       expect(isPromotable(row({ status }))).toBe(false);
     }
   });

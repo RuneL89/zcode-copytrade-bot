@@ -143,8 +143,19 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
     } as unknown as WatchServiceDeps['prices'],
     lifecycle: {
       hireFromWatch: async (candidateId: string) => {
-        hired.push(candidateId);
+        if (!hired.includes(candidateId)) hired.push(candidateId);
         return { ok: true, activationId: 'act_' + candidateId };
+      },
+      // The watch tick seats free chairs through fillRoster; the stub hires the
+      // bench in payload order (the real one ranks by shadow net — roster.test
+      // covers that).
+      fillRoster: async () => {
+        const ids = repo
+          .listWatchWallets(handle.db, 'bench')
+          .map((w) => w.candidateId)
+          .filter((id) => !hired.includes(id));
+        hired.push(...ids);
+        return { hired: ids, reason: ids.length > 0 ? 'roster filled' : 'no promotable wallet' };
       },
     } as unknown as WatchServiceDeps['lifecycle'],
     onStateChanged: () => {},
@@ -471,7 +482,7 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     }
   }
 
-  it('promotes when every gate passes and hands the wallet to the lifecycle', async () => {
+  it('benches a wallet when every gate passes and hands it to the lifecycle', async () => {
     seedCandidate('cand_promote', 'promotable', 'WalletPromote');
     const h = harness(riskConfig());
     await h.svc.admit('cand_promote', readingFrom([buy('p1', 60), buy('p2', 30), buy('p3', 5)]));
@@ -479,10 +490,23 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     seedRecord('cand_promote', 3, 2_000_000n); // 3 closed, +$2 each
 
     const evaluation = await h.svc.evaluate();
-    expect(evaluation.promoted).toBe(1);
+    expect(evaluation.benched).toBe(1);
     expect(h.hired).toEqual(['cand_promote']);
-    expect(repo.getWatchWallet(handle.db, 'cand_promote')?.status).toBe('promoted');
-    expect(repo.listAudit(handle.db, 10).some((a) => /watch promoted/.test(a.message))).toBe(true);
+    expect(repo.getWatchWallet(handle.db, 'cand_promote')?.status).toBe('bench');
+    expect(repo.listAudit(handle.db, 10).some((a) => /benched: record passes/.test(a.message))).toBe(true);
+  });
+
+  it('pre-builds the bench while the roster is full: no chair is required to qualify', async () => {
+    // The operator's bench rule: a qualifying wallet waits on the bench, so a
+    // sudden firing is filled instantly instead of waiting for a watch sweep.
+    seedCandidate('cand_bench_full', 'benchfull', 'WalletBenchFull');
+    const h = harness(riskConfig({ ROSTER_SIZE: 1 }));
+    await h.svc.admit('cand_bench_full', readingFrom([buy('f1', 60), buy('f2', 30), buy('f3', 5)]));
+    recordBuys('cand_bench_full', 'WalletBenchFull', 1, 5);
+    seedRecord('cand_bench_full', 3, 2_000_000n);
+
+    await h.svc.tick();
+    expect(repo.getWatchWallet(handle.db, 'cand_bench_full')?.status).toBe('bench');
   });
 
   it('blocks with the specific reason for each failing condition', async () => {
@@ -547,13 +571,13 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     expect(h.svc.promotionDecision('cand_blocked')).toEqual({ ok: true, reason: null });
   });
 
-  it('bench hygiene: a promoted wallet with a negative full record is archived', async () => {
+  it('bench hygiene: a benched wallet with a negative full record is archived', async () => {
     seedCandidate('cand_bench_neg', 'benchneg', 'WalletBenchNeg');
     const h = harness(riskConfig());
     repo.upsertWatchWallet(handle.db, {
       candidateId: 'cand_bench_neg',
       address: 'WalletBenchNeg',
-      status: 'promoted',
+      status: 'bench',
       reason: 'test',
     });
     recordBuys('cand_bench_neg', 'WalletBenchNeg', 1, 5); // a fresh buy: only the net blocks
@@ -563,13 +587,13 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     expect(repo.getWatchWallet(handle.db, 'cand_bench_neg')?.status).toBe('archived');
   });
 
-  it('bench hygiene: a promoted wallet whose last buy went stale returns to watching', async () => {
+  it('bench hygiene: a benched wallet whose last buy went stale returns to watching', async () => {
     seedCandidate('cand_bench_stale', 'benchstale', 'WalletBenchStale');
     const h = harness(riskConfig());
     repo.upsertWatchWallet(handle.db, {
       candidateId: 'cand_bench_stale',
       address: 'WalletBenchStale',
-      status: 'promoted',
+      status: 'bench',
       reason: 'test',
     });
     recordBuys('cand_bench_stale', 'WalletBenchStale', 1, 5 * 60); // 5 hours ago > 4h
@@ -634,7 +658,7 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     const evaluation = await h.svc.evaluate();
     expect(evaluation.archived).toBe(1);
     expect(repo.getWatchWallet(handle.db, 'cand_stale')?.status).toBe('archived');
-    expect(repo.listAudit(handle.db, 5).some((a) => /watch archived/.test(a.message))).toBe(true);
+    expect(repo.listAudit(handle.db, 30).some((a) => /watch archived/.test(a.message))).toBe(true);
   });
 
   it('demotes a negative record with a full sample', async () => {

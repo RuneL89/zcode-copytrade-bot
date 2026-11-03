@@ -71,7 +71,7 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 ## 2. Daily operation
 
 1. Start the server (`launch.bat`) and open http://127.0.0.1:8787. On boot the runtime catches up: discovery when the bench is thin, one watch pass, then the promotion queue fills the free chairs.
-2. Watch **Audit** for the pipeline: `discovery run` (rows, traders, credits), `watch admitted`, `shadow opened/closed`, `watch promoted`, `watch hired into the roster`.
+2. Watch **Audit** for the pipeline: `discovery run` (rows, traders, credits), `watch admitted`, `shadow opened/closed`, `benched: record passes`, `watch hired into the roster`.
 3. Use **Ops → Sync discovery now** when you want a board read immediately (it spends ~750 credits per run; the demand trigger otherwise runs it only when needed).
 4. Watch the dashboard: the ROSTER panel (chairs, streaks, per-seat FIRE), the WATCH LIST panel (status, last buy, closed/net, blocked reason) and the positions/closes panels grouped by leader.
 5. Manual fallbacks, if the API is unavailable: `docs/FOMO_DAWN_FETCHING.md` (desktop-Chrome capture, Dawn) or Settings → MANUAL IMPORT. Every import is audited and no fallback is scheduled.
@@ -91,14 +91,14 @@ Removed with the board-driven pipeline (D2/D3/D6). A leader is fired for the
 reasons in **2b**: losing close units, a silent wallet, a stale last buy, or an
 idle chair.
 
-### The fire → promotion → hire path
+### The fire → bench → hire path
 
 A fire closes the chair's positions under `FIRE_POSITION_POLICY`, marks the
 activation FIRED, moves the trader to `cooling` (he returns only after a funded
 buy observed after the firing) and immediately calls `fillRoster()`, which takes
-the best promoted bench wallet. Every firing path (idle, stall, manual, loss
+the best bench wallet (shadow net first). Every firing path (idle, stall, manual, loss
 streak) performs that hand-off, so a fired leader is never left on the bench —
-otherwise the very fill he triggered could re-hire him. Nothing is promotable →
+otherwise the very fill he triggered could re-hire him. The bench is empty →
 the chair stays empty and the demand trigger asks discovery for a fresh bench. A
 close-out that needs reconciliation freezes **only** that chair.
 
@@ -106,7 +106,7 @@ close-out that needs reconciliation freezes **only** that chair.
 
 The board-tier hire priority is gone with the ordering pipeline (D2/D3). A
 wallet's funded buys are what matter now, and they are judged by the D4
-admission and promotion gates.
+admission and bench gates.
 
 ### Stall watcher (wired 2026-10-29)
 
@@ -132,18 +132,22 @@ action), and the native board capture stays a manual fallback per
 ## 2b. Roster operations (D4/plan 05)
 
 The roster holds up to `ROSTER_SIZE` leaders (default 5) **sharing one budget
-pool** — there is no per-leader slice, and promotions are first-come.
+pool** — there is no per-leader slice. The bench is ordered by shadow net: the
+best record takes a freed chair.
 
 - **Fire one leader.** Dashboard → Roster → **FIRE** (per seat, asks for the
   word FIRE) or `POST /api/fire {activationId}`. The OTHER seats keep trading;
   only the fired leader's positions close. With several leaders active a bare
   `POST /api/fire` is refused — name the chair.
-- **A fire frees exactly one chair.** The promotion queue fills it immediately
-  from the bench (best shadow record first, then oldest). No bench wallet → the
-  chair stays **empty**; that is acceptable, and discovery refills the bench
-  when it drops below `BENCH_TARGET`. A hired leader's watch row reads
-  `hired` (his shadow record keeps running) — he is in the roster, not on the
-  bench, so the bench count lists only wallets actually waiting for a chair.
+- **The bench is a real queue.** Every wallet whose shadow record qualifies
+  sits on it, ordered by shadow net (best first) — no chair is needed, so the
+  bench pre-builds while the roster is full, like a basketball bench. A fire
+  seats the best bench wallet immediately; only a hire checks for a free chair.
+  No bench wallet → the chair stays **empty**; that is acceptable, and discovery
+  refills the bench when it drops below `BENCH_TARGET`. A bench wallet whose
+  record stops qualifying returns to the watch list (archived only when the full
+  sample is negative). A hired leader's watch row reads `hired` (his shadow
+  record keeps running) — he is in the roster, not on the bench.
 - **Shared pool.** A hire is not gated on capital: a proved leader takes a
   free chair even when the pool is fully deployed, and starts copying as soon
   as room frees. Each entry is still capped by the deployed-% limit
@@ -166,8 +170,8 @@ pool** — there is no per-leader slice, and promotions are first-come.
   all continue.
 - **Resume** re-enables entries.
 - **PAUSED_NO_TRADER** (automatic): no leader holds a chair. An empty chair is a
-  normal state (D4) — the promotion queue fills it as soon as a watched wallet
-  passes the D4 gate, and the demand trigger refills the bench in the meantime.
+  normal state (D4) — the bench fills the chair as soon as a wallet qualifies for
+  it, and the demand trigger refills the bench in the meantime.
   Do not "fix" it by hand-activating an unproven wallet unless you deliberately
   want a manual override.
 

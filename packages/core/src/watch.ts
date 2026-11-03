@@ -11,7 +11,7 @@ export interface ShadowAggregates {
 }
 
 export type PromotionBlockReason =
-  'FEWER_THAN_K_CLOSED' | 'NET_BELOW_THRESHOLD' | 'LAST_BUY_TOO_OLD' | 'REENTRY_BANNED' | 'NO_SLOT';
+  'FEWER_THAN_K_CLOSED' | 'NET_BELOW_THRESHOLD' | 'LAST_BUY_TOO_OLD' | 'REENTRY_BANNED';
 
 export interface PromotionConfig {
   /** Closed shadow trades required (K). */
@@ -28,12 +28,7 @@ export interface PromotionInput {
   lastFiredAt: string | null;
   nowMs: number;
   config: PromotionConfig;
-  /** Free roster chairs. */
-  slotsFree: number;
 }
-
-/** The record gates alone: everything a promotion needs except a free chair. */
-export type PromotionRecordInput = Omit<PromotionInput, 'slotsFree'>;
 
 export interface PromotionDecision {
   ok: boolean;
@@ -41,11 +36,13 @@ export interface PromotionDecision {
 }
 
 /**
- * The wallet's own gates (sample, net, recency, re-entry), ignoring chairs.
- * A bench wallet must keep passing these while it waits: a promoted record is
- * not a permanent pass.
+ * The bench gate. A wallet joins the bench — the ordered list of wallets that
+ * would take a chair the moment one frees — when its shadow record qualifies.
+ * A chair is NOT part of this decision: the bench pre-builds while the roster
+ * is full, exactly like a basketball bench. A bench wallet must keep passing
+ * these gates while it waits; the chair check lives in the hire path.
  */
-export function promotionRecordDecision(input: PromotionRecordInput): PromotionDecision {
+export function canPromote(input: PromotionInput): PromotionDecision {
   if (input.aggregates.closedCount < input.config.promotionMinClosed) {
     return { ok: false, reason: 'FEWER_THAN_K_CLOSED' };
   }
@@ -59,19 +56,6 @@ export function promotionRecordDecision(input: PromotionRecordInput): PromotionD
   }
   if (!canReenter({ lastFiredAt: input.lastFiredAt, lastFundedBuyAt: input.lastFundedBuyAt })) {
     return { ok: false, reason: 'REENTRY_BANNED' };
-  }
-  return { ok: true, reason: null };
-}
-
-/**
- * D4 promotion gate. Every condition is checked in the order the decision
- * lists them, so the reported reason is the first thing that blocks.
- */
-export function canPromote(input: PromotionInput): PromotionDecision {
-  const record = promotionRecordDecision(input);
-  if (!record.ok) return record;
-  if (input.slotsFree <= 0) {
-    return { ok: false, reason: 'NO_SLOT' };
   }
   return { ok: true, reason: null };
 }

@@ -149,7 +149,7 @@ export class DiscoveryService {
   /** Current demand inputs: watch/bench counts, roster occupancy, rate limit. */
   demand(nowMs = Date.now()): DiscoveryDemandInput {
     return {
-      promotableWatchWallets: repo.listWatchWallets(this.db, 'promoted').length,
+      promotableWatchWallets: repo.listWatchWallets(this.db, 'bench').length,
       watchListWallets: repo.listWatchWallets(this.db, 'watching').length,
       rosterInUse: repo.activeActivationCount(this.db),
       rosterSize: this.risk.ROSTER_SIZE,
