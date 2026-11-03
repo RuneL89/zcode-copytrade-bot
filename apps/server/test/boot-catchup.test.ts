@@ -85,6 +85,37 @@ describe('boot catch-up (D5)', () => {
       status: 'promoted',
       reason: 'test bench',
     });
+    // A hire re-checks the record: 8 closed shadow trades in profit plus a
+    // funded buy five minutes ago (the promotion recency window).
+    for (let i = 0; i < 8; i++) {
+      const openedAt = new Date(Date.now() - (i + 1) * 3_600_000).toISOString();
+      const id = repo.openShadowTrade(rt.db.db, {
+        candidateId,
+        mint: 'BootMint11111111111111111111111111111111111',
+        openedAt,
+        entryPriceUsdMicro: '1000000',
+        notionalUsdMicro: '5000000',
+      });
+      repo.closeShadowTrade(rt.db.db, id, {
+        closedAt: openedAt,
+        exitReason: 'leader_sell',
+        exitPriceUsdMicro: '1000000',
+        pnlUsdMicro: '2000000',
+      });
+    }
+    repo.insertWatchEvent(rt.db.db, {
+      candidateId,
+      address: 'WalletBootBench',
+      signature: 'boot-bench-buy',
+      side: 'buy',
+      mint: 'BootMint11111111111111111111111111111111111',
+      tokenAmountBase: '5000000',
+      decimals: 6,
+      usdMicro: '5000000',
+      blockTime: Math.floor(Date.now() / 1000) - 300,
+      observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      source: 'test',
+    });
 
     // The catch-up already ran; a fresh start runs it again with the bench in
     // place (the chair is free because the earlier chairs were never activated).

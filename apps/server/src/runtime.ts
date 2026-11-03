@@ -186,11 +186,10 @@ export class Runtime {
       this.control,
       this.notifier,
       {
-        onFired: (activationId, firedCandidateId, reason) => {
+        onFired: (activationId, _firedCandidateId, reason) => {
+          // lifecycle.fire moves the leader to cooling itself, so every firing
+          // path (idle, stall, manual, loss streak) takes the same hand-off.
           void this.lifecycle.fire(activationId, reason).then(() => {
-            // A fired trader moves to cooling (D4): the slow rotation watches for
-            // a funded buy after this firing before he may return.
-            this.watch?.markCooling(firedCandidateId, `fired: ${reason}`);
             // D5: a freed chair must not wait for the next watch tick — ask
             // discovery for a fresh bench right away (rate-limited inside).
             this.maybeDemandDiscovery();

@@ -96,9 +96,11 @@ idle chair.
 A fire closes the chair's positions under `FIRE_POSITION_POLICY`, marks the
 activation FIRED, moves the trader to `cooling` (he returns only after a funded
 buy observed after the firing) and immediately calls `fillRoster()`, which takes
-the best promoted bench wallet. Nothing is promotable → the chair stays empty and
-the demand trigger asks discovery for a fresh bench. A close-out that needs
-reconciliation freezes **only** that chair.
+the best promoted bench wallet. Every firing path (idle, stall, manual, loss
+streak) performs that hand-off, so a fired leader is never left on the bench —
+otherwise the very fill he triggered could re-hire him. Nothing is promotable →
+the chair stays empty and the demand trigger asks discovery for a fresh bench. A
+close-out that needs reconciliation freezes **only** that chair.
 
 ### (retired) Actively-trading tier
 

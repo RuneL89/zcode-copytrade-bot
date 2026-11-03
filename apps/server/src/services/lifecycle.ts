@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
+import { promotionRecordDecision, usdToMicro } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 
@@ -244,12 +245,28 @@ export class TraderLifecycle {
    */
   async fillRoster(): Promise<{ hired: string[]; reason: string }> {
     const hired: string[] = [];
+    const promotionConfig = {
+      promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
+      promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
+      promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+    };
+    /** A bench row is only a candidate while its record still passes the gates. */
+    const recordOk = (candidateId: string): boolean =>
+      promotionRecordDecision({
+        aggregates: repo.shadowAggregates(this.db, candidateId),
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
+        lastFiredAt: repo.lastFiredAt(this.db, candidateId),
+        nowMs: Date.now(),
+        config: promotionConfig,
+      }).ok;
     // The bench keeps hired leaders (their shadow record continues), so only
-    // wallets without a chair are candidates for a free one.
+    // wallets without a chair are candidates for a free one — and only while
+    // their record still qualifies (a fired wallet is re-entry banned until a
+    // post-fire buy, a stale record is not a hire).
     const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
       .listWatchWallets(this.db, 'promoted')
-      .filter((wallet) => !seated.has(wallet.candidateId))
+      .filter((wallet) => !seated.has(wallet.candidateId) && recordOk(wallet.candidateId))
       .map((wallet) => ({ wallet, aggregates: repo.shadowAggregates(this.db, wallet.candidateId) }))
       .sort(
         (a, b) =>
@@ -372,6 +389,17 @@ export class TraderLifecycle {
     if (handoffBlocked) {
       repo.audit(this.db, 'firing', 'firing paused: close-out requires reconciliation', { activationId });
       return { status: 'NO_REPLACEMENT', skipped: [] };
+    }
+
+    // Every firing path ends here (monitor idle/stall, dashboard, loss streak),
+    // so the cooling hand-off belongs here too: a fired leader leaves the bench
+    // and may only return after a funded buy observed after this firing (D4
+    // canReenter). Without this the very fill below could re-hire him.
+    if (repo.getWatchWallet(this.db, activation.candidateId)) {
+      repo.setWatchStatus(this.db, activation.candidateId, 'cooling', `fired: ${reason}`);
+      repo.audit(this.db, 'watch', `watch cooling: fired (${reason})`, {
+        candidateId: activation.candidateId,
+      });
     }
 
     // A fire frees exactly one chair; the promotion queue fills it immediately

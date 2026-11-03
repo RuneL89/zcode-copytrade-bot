@@ -67,6 +67,20 @@ function seedBench(handleName: string, netPerTrade = 2_000_000n, closed = 8): st
     status: 'promoted',
     reason: 'test bench',
   });
+  // A bench wallet is only hirable while its last funded buy is fresh (4h).
+  repo.insertWatchEvent(handle.db, {
+    candidateId,
+    address: `Wallet${handleName}`,
+    signature: `seed-buy-${handleName}`,
+    side: 'buy',
+    mint: TOKEN,
+    tokenAmountBase: '6000000',
+    decimals: 6,
+    usdMicro: '6000000',
+    blockTime: Math.floor(Date.now() / 1000) - 600,
+    observedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    source: 'test',
+  });
   for (let i = 0; i < closed; i++) {
     const id = repo.openShadowTrade(handle.db, {
       candidateId,
@@ -246,6 +260,23 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
     expect(filled.hired).toEqual([next]);
     expect(repo.activeActivationCount(handle.db)).toBe(2);
     expect(repo.listActiveActivations(handle.db).filter((a) => a.candidateId === seated)).toHaveLength(1);
+  });
+
+  it('a firing cools the leader and never re-hires him from the chair he just freed', async () => {
+    const fired = seedBench('bench_fired', 9_000_000n); // best record on the bench
+    const other = seedBench('bench_other', 2_000_000n);
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));
+    const hire = await lifecycle.hireFromWatch(fired);
+    expect(hire.ok).toBe(true);
+
+    await lifecycle.fire(hire.activationId!, 'idle: test');
+
+    // The fired leader is in the cooling rotation (a post-fire buy may bring
+    // him back), not still on the bench.
+    expect(repo.getWatchWallet(handle.db, fired)?.status).toBe('cooling');
+    const active = repo.listActiveActivations(handle.db).filter((a) => a.state === 'ACTIVE');
+    expect(active).toHaveLength(1);
+    expect(active[0]!.candidateId).toBe(other);
   });
 });
 

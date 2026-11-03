@@ -547,6 +547,41 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     expect(h.svc.promotionDecision('cand_blocked')).toEqual({ ok: true, reason: null });
   });
 
+  it('bench hygiene: a promoted wallet with a negative full record is archived', async () => {
+    seedCandidate('cand_bench_neg', 'benchneg', 'WalletBenchNeg');
+    const h = harness(riskConfig());
+    repo.upsertWatchWallet(handle.db, {
+      candidateId: 'cand_bench_neg',
+      address: 'WalletBenchNeg',
+      status: 'promoted',
+      reason: 'test',
+    });
+    recordBuys('cand_bench_neg', 'WalletBenchNeg', 1, 5); // a fresh buy: only the net blocks
+    seedRecord('cand_bench_neg', 3, -1_000_000n);
+
+    await h.svc.tick();
+    expect(repo.getWatchWallet(handle.db, 'cand_bench_neg')?.status).toBe('archived');
+  });
+
+  it('bench hygiene: a promoted wallet whose last buy went stale returns to watching', async () => {
+    seedCandidate('cand_bench_stale', 'benchstale', 'WalletBenchStale');
+    const h = harness(riskConfig());
+    repo.upsertWatchWallet(handle.db, {
+      candidateId: 'cand_bench_stale',
+      address: 'WalletBenchStale',
+      status: 'promoted',
+      reason: 'test',
+    });
+    recordBuys('cand_bench_stale', 'WalletBenchStale', 1, 5 * 60); // 5 hours ago > 4h
+    seedRecord('cand_bench_stale', 3, 2_000_000n);
+
+    await h.svc.tick();
+    expect(repo.getWatchWallet(handle.db, 'cand_bench_stale')?.status).toBe('watching');
+    expect(repo.listAudit(handle.db, 20).some((a) => /bench demoted: LAST_BUY_TOO_OLD/.test(a.message))).toBe(
+      true,
+    );
+  });
+
   it('re-entry: an old record cannot return a fired trader; a post-fire buy can (AC7)', async () => {
     seedCandidate('cand_reentry', 'reentry', 'WalletReentry');
     const h = harness(riskConfig());

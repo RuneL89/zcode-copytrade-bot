@@ -32,16 +32,20 @@ export interface PromotionInput {
   slotsFree: number;
 }
 
+/** The record gates alone: everything a promotion needs except a free chair. */
+export type PromotionRecordInput = Omit<PromotionInput, 'slotsFree'>;
+
 export interface PromotionDecision {
   ok: boolean;
   reason: PromotionBlockReason | null;
 }
 
 /**
- * D4 promotion gate. Every condition is checked in the order the decision
- * lists them, so the reported reason is the first thing that blocks.
+ * The wallet's own gates (sample, net, recency, re-entry), ignoring chairs.
+ * A bench wallet must keep passing these while it waits: a promoted record is
+ * not a permanent pass.
  */
-export function canPromote(input: PromotionInput): PromotionDecision {
+export function promotionRecordDecision(input: PromotionRecordInput): PromotionDecision {
   if (input.aggregates.closedCount < input.config.promotionMinClosed) {
     return { ok: false, reason: 'FEWER_THAN_K_CLOSED' };
   }
@@ -56,6 +60,16 @@ export function canPromote(input: PromotionInput): PromotionDecision {
   if (!canReenter({ lastFiredAt: input.lastFiredAt, lastFundedBuyAt: input.lastFundedBuyAt })) {
     return { ok: false, reason: 'REENTRY_BANNED' };
   }
+  return { ok: true, reason: null };
+}
+
+/**
+ * D4 promotion gate. Every condition is checked in the order the decision
+ * lists them, so the reported reason is the first thing that blocks.
+ */
+export function canPromote(input: PromotionInput): PromotionDecision {
+  const record = promotionRecordDecision(input);
+  if (!record.ok) return record;
   if (input.slotsFree <= 0) {
     return { ok: false, reason: 'NO_SLOT' };
   }

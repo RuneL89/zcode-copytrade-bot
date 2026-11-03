@@ -7,6 +7,7 @@ import {
   ceilingAction,
   classifyFundedSwap,
   computeCopyNotional,
+  promotionRecordDecision,
   usdToMicro,
   type FundedSwap,
   type PromotionBlockReason,
@@ -597,6 +598,39 @@ export class WatchService {
       }
     }
 
+    // --- bench hygiene -------------------------------------------------------
+    // Promotion is not a permanent pass. A wallet waiting for a chair whose
+    // record no longer qualifies (net fell, last buy went stale, or it was
+    // fired and has not bought since) leaves the bench: to the watch list, or
+    // archived when the sample is full and negative. Without this a stale bench
+    // row could be hired the moment a chair frees.
+    for (const wallet of repo.listWatchWallets(this.db, 'promoted')) {
+      const aggregates = repo.shadowAggregates(this.db, wallet.candidateId);
+      if (aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED && aggregates.netPnlUsdMicro <= 0n) {
+        repo.setWatchStatus(
+          this.db,
+          wallet.candidateId,
+          'archived',
+          'negative shadow record with a full sample',
+        );
+        repo.audit(this.db, 'watch', 'bench demoted: negative shadow record with a full sample', {
+          candidateId: wallet.candidateId,
+          closedCount: aggregates.closedCount,
+          netPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
+        });
+        demoted++;
+        continue;
+      }
+      const record = promotionRecordDecision(this.recordInput(wallet.candidateId));
+      if (!record.ok) {
+        repo.setWatchStatus(this.db, wallet.candidateId, 'watching', `bench demoted: ${record.reason}`);
+        repo.audit(this.db, 'watch', `bench demoted: ${record.reason}`, {
+          candidateId: wallet.candidateId,
+        });
+        demoted++;
+      }
+    }
+
     // --- promotion ----------------------------------------------------------
     const promotable: string[] = [];
     for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
@@ -652,9 +686,9 @@ export class WatchService {
     return { admitted, promoted, hired, demoted, archived };
   }
 
-  /** The D4 gate: the wallet's shadow record and a free chair. Capital is not a gate. */
-  promotionDecision(candidateId: string): { ok: boolean; reason: PromotionBlockReason | null } {
-    return canPromote({
+  /** The live inputs of a wallet's own promotion gates (no chair count). */
+  private recordInput(candidateId: string) {
+    return {
       aggregates: repo.shadowAggregates(this.db, candidateId),
       lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
       lastFiredAt: repo.lastFiredAt(this.db, candidateId),
@@ -664,6 +698,13 @@ export class WatchService {
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
         promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
       },
+    };
+  }
+
+  /** The D4 gate: the wallet's shadow record and a free chair. Capital is not a gate. */
+  promotionDecision(candidateId: string): { ok: boolean; reason: PromotionBlockReason | null } {
+    return canPromote({
+      ...this.recordInput(candidateId),
       slotsFree: Math.max(0, this.risk.ROSTER_SIZE - repo.activeActivationCount(this.db)),
     });
   }
@@ -717,12 +758,5 @@ export class WatchService {
     );
     this.deps.onStateChanged();
     return { ok: true, reason: attempt.ok ? 'HIRED' : 'PROMOTED' };
-  }
-
-  /** Move a fired trader to cooling so the rotation watches for a new buy. */
-  markCooling(candidateId: string, reason: string): void {
-    if (!repo.getWatchWallet(this.db, candidateId)) return;
-    repo.setWatchStatus(this.db, candidateId, 'cooling', reason);
-    repo.audit(this.db, 'watch', `watch cooling: ${reason}`, { candidateId });
   }
 }

@@ -247,6 +247,37 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
       status: 'promoted',
       reason: 'test bench',
     });
+    // A hire re-checks the bench record: 8 closed shadow trades in profit and a
+    // funded buy inside the recency window.
+    for (let i = 0; i < 8; i++) {
+      const openedAt = new Date(Date.now() - (i + 1) * 3_600_000).toISOString();
+      const id = repo.openShadowTrade(handle.db, {
+        candidateId,
+        mint: 'BenchMint11111111111111111111111111111111111',
+        openedAt,
+        entryPriceUsdMicro: '1000000',
+        notionalUsdMicro: '5000000',
+      });
+      repo.closeShadowTrade(handle.db, id, {
+        closedAt: openedAt,
+        exitReason: 'leader_sell',
+        exitPriceUsdMicro: '1000000',
+        pnlUsdMicro: '2000000',
+      });
+    }
+    repo.insertWatchEvent(handle.db, {
+      candidateId,
+      address: 'WalletBenchFill',
+      signature: 'bench-fill-buy',
+      side: 'buy',
+      mint: 'BenchMint11111111111111111111111111111111111',
+      tokenAmountBase: '5000000',
+      decimals: 6,
+      usdMicro: '5000000',
+      blockTime: Math.floor(Date.now() / 1000) - 120,
+      observedAt: new Date(Date.now() - 120_000).toISOString(),
+      source: 'test',
+    });
     const outcome = await lifecycle.fire('act_bench_fill', 'manual test fire');
     expect(outcome.status).toBe('ACTIVATED');
     expect(repo.listActiveActivations(handle.db).map((a) => a.candidateId)).toEqual([candidateId]);
