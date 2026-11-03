@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The two deployable units of ZCode Bot: the trading runtime and API
+The two deployable units of Copydesk: the trading runtime and API
 (`server`) and the operator dashboard (`web`). Each has its own process
 boundary and its own child contract.
 

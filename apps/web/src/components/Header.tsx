@@ -42,7 +42,7 @@ export function Header({ state, connected }: { state: DashboardState | null; con
       <div className="flex items-center gap-3">
         <Logo size={32} />
         <div>
-          <h1 className="text-[16px] font-bold leading-tight tracking-tight">ZCode Bot</h1>
+          <h1 className="text-[16px] font-bold leading-tight tracking-tight">Copydesk</h1>
           <p className="label !text-[10.5px] !text-faint">Copy trading · FOMO</p>
         </div>
       </div>

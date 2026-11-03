@@ -1,4 +1,4 @@
-# RUNBOOK — ZCode Bot operations
+# RUNBOOK — Copydesk operations
 
 Everyday startup, pause, recovery, reconciliation, and emergency procedures.
 Read §Security first. Nothing here ever requires pasting secrets into chat.
@@ -108,9 +108,17 @@ The board-tier hire priority is gone with the ordering pipeline (D2/D3). A
 wallet's funded buys are what matter now, and they are judged by the D4
 admission and bench gates.
 
+### The hourly discipline sweep
+
+Every seat gets its own hourly sweep (time exits first, then the stall watcher) —
+the cap is per chair, so one busy seat can never starve another's deadline. A
+position past `MAX_POSITION_AGE_HOURS` sells when it is in profit, otherwise it
+rides `POSITION_GRACE_HOURS` and is sold regardless; the audit line reads
+`time exit: <mint> held Nh (sell_positive|sell_expired) — closing`.
+
 ### Stall watcher (wired 2026-10-29)
 
-The hourly discipline sweep fires the hired leader when their wallet has shown no
+The same sweep fires the hired leader when their wallet has shown no
 on-chain activity for `LEADER_STALL_FIRE_HOURS` (default 8h, tunable in Settings)
 **while we hold**, and only when the Helius activity stamp itself is fresh (≤6h —
 staleness is never judged from stale evidence). The audit line reads
@@ -120,6 +128,24 @@ closes any open positions and the replacement takes the slot. This is what makes
 (`MAX_LEADER_STALL_HOURS`, 20h) is a separate decision about who may be hired.
 With the board-driven rank-fire rule retired (D6), the stall watcher is the
 silence exit.
+
+### Telegram reports
+
+Two streams only (opt-in via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`):
+
+- **Anomalies** — audit rows from the problem categories every 10 min, at most
+  five per message.
+- **One desk summary a day at local 09:00** — compact by design: PnL and its
+  win/loss split, equity/cash/deployed, open positions with the next time exit,
+  chairs and bench depth, anything needing attention, the last 24h of hires and
+  firings, and the fee wallet. Mondays send the **weekly** instead (the same 24h
+  block plus the 7-day totals and each chair's record), so a day never produces
+  two messages.
+
+The summary never invents a figure: unpriced positions read `unrealized pending`
+and a balance the chain read could not supply is left out. A failed send is
+recorded in the audit trail (`reports report send failed`) and the day is still
+marked sent, so an outage cannot become a message storm.
 
 ### Wallet resolution (fallback only)
 

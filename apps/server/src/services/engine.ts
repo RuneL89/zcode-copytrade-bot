@@ -521,9 +521,7 @@ export class CopyEngine {
     this.lastLowSolAlertAt = now;
     repo.audit(this.db, 'trade', `wallet SOL low: ${(lamports / 1e9).toFixed(4)} SOL`, { lamports });
     void this.notifier
-      .notify(
-        `⚠️ ZCode Bot: wallet SOL is ${(lamports / 1e9).toFixed(4)} — exits still work but top up soon.`,
-      )
+      .notify(`⚠️ Copydesk: wallet SOL is ${(lamports / 1e9).toFixed(4)} — exits still work but top up soon.`)
       .catch(() => {});
   }
 
@@ -857,7 +855,7 @@ export class CopyEngine {
       });
       void this.notifier
         .notify(
-          `⚠️ ZCode Bot: exit blocked for ${position.mint} — wallet locked, position left OPEN. Re-arm, then close it manually.`,
+          `⚠️ Copydesk: exit blocked for ${position.mint} — wallet locked, position left OPEN. Re-arm, then close it manually.`,
         )
         .catch(() => {});
       return { kind: 'unknown', detail };
@@ -874,7 +872,7 @@ export class CopyEngine {
         repo.audit(this.db, 'trade', `exit blocked — ${detail}`, { positionId });
         void this.notifier
           .notify(
-            `⚠️ ZCode Bot: wallet SOL is ${(solLamports / 1e9).toFixed(4)} — too low to pay fees. Top up before exits will work.`,
+            `⚠️ Copydesk: wallet SOL is ${(solLamports / 1e9).toFixed(4)} — too low to pay fees. Top up before exits will work.`,
           )
           .catch(() => {});
         return { kind: 'failed', error: detail };

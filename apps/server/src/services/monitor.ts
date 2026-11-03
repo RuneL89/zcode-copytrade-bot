@@ -30,7 +30,12 @@ import type { RiskConfig } from '@zcode-bot/config';
 export class LeaderMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
-  private lastSweepCheckAt = 0;
+  /**
+   * Last hourly-sweep check PER ACTIVATION. A single timestamp for the whole
+   * monitor let one seat consume the hour and starve the others, so a position
+   * past its deadline on, say, seat 3 sat open for hours (ANONCOIN: 14h).
+   */
+  private lastSweepCheckAt = new Map<string, number>();
   lastTickAt: string | null = null;
   lastError: string | null = null;
   running = false;
@@ -150,11 +155,14 @@ export class LeaderMonitor {
         });
       }
     }
-    // Day-trader discipline sweep, at most hourly: time exits + stall watcher.
-    // Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
+    // Day-trader discipline sweep, at most hourly PER SEAT: time exits + stall
+    // watcher. Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
     // are in progress and close their own positions).
-    if (activation.state === 'ACTIVE' && now.getTime() - this.lastSweepCheckAt >= 3600_000) {
-      this.lastSweepCheckAt = now.getTime();
+    if (
+      activation.state === 'ACTIVE' &&
+      now.getTime() - (this.lastSweepCheckAt.get(activation.activationId) ?? 0) >= 3600_000
+    ) {
+      this.lastSweepCheckAt.set(activation.activationId, now.getTime());
       await this.sweep(activation.activationId, now);
     }
   }

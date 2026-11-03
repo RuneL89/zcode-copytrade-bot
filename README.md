@@ -44,7 +44,7 @@ When it works you land on the TRADE page with a PAPER or LIVE badge, the pipelin
 
 ## The pipeline at a glance
 
-![The Copydesk pipeline at a glance: discovery pulls traders from the fomoapi leaderboard into a pool, the watch list admits wallets that show funded buys, the shadow ledger opens a pretend position on every funded buy, a promotion gate decides who has earned a chair, five roster chairs share one budget pool, copies are placed at a quarter size, exits mirror the leader's sells, and a fired lane carries the cause back to the watch list](docs/images/pipeline-overview.png)
+![The Copydesk pipeline at a glance: discovery pulls traders from the fomoapi leaderboard into a pool, the watch list admits wallets that show funded buys, the shadow ledger opens a pretend position on every funded buy, a bench gate decides who has earned a place in the hire queue, five roster chairs share one budget pool, copies are placed at a quarter size, exits mirror the leader's sells, and a fired lane carries the cause back to the watch list](docs/images/pipeline-overview.png)
 
 _The whole machine in one picture: five stages left to right, two dotted side paths for the ones who fail and the ones who come back._
 
@@ -58,7 +58,7 @@ Each stage is a place you can watch on the dashboard, and each one carries a num
 
 **Shadow ledger.** For every funded buy a watched wallet makes, the ledger opens a pretend position at the size Copydesk would have used, and closes it the way the real book would: when the leader sells, or when the position reaches its age ceiling and is closed at the live price at that moment. None of this spends money. It is the evidence.
 
-**Roster.** Five chairs, one shared budget pool. A wallet only gets one by clearing the promotion gate: at least eight closed shadow trades, more than three dollars net, a funded buy inside the last four hours, no re-entry ban, a free chair and spare capital behind it. A chair can sit empty, because the alternative is hiring something unproven.
+**Roster.** Five chairs, one shared budget pool. A wallet earns a place on the bench by clearing the bench gate: at least four closed shadow trades, more than five dollars net, a funded buy inside the last four hours and no re-entry ban since a firing; all of it tunable in Settings. The bench is a queue ordered by shadow net, so a freed chair takes the best record on it, and it pre-builds while every chair is full. A chair can sit empty, because the alternative is hiring something unproven.
 
 **Exits.** When the leader sells, the same fraction is sold. Anything still open when the position reaches eight hours is closed on its own, with three extra hours of grace while the mark is negative. A chair is lost for one of four reasons, all of them observable: two losing closes in a row, a leader whose wallet goes quiet for eight hours while you hold, a leader whose last buy is older than twenty hours, or eight hours of idle with nothing open.
 
@@ -134,7 +134,7 @@ zcode-bot/
   install.bat launch.bat enable-phone-access.bat
 ```
 
-Three decisions shape the code. The worker is the only authority: discovery nominates wallets, the promotion gate decides, and nothing outside the engine sizes, signs or exits. Everything fails closed: ambiguous swaps are skipped, unknown outcomes become reconciliation cases, a stale answer or an unreadable transaction never invents a fill, and an empty chair is an acceptable outcome. And money is integer micro-USD held in bigints, with token amounts as base-unit strings, never floats.
+Three decisions shape the code. The worker is the only authority: discovery nominates wallets, the bench gate decides who is ready, and nothing outside the engine sizes, signs or exits. Everything fails closed: ambiguous swaps are skipped, unknown outcomes become reconciliation cases, a stale answer or an unreadable transaction never invents a fill, and an empty chair is an acceptable outcome. And money is integer micro-USD held in bigints, with token amounts as base-unit strings, never floats.
 
 The project keeps its original name in a few places that predate the rename: the package scope is `@zcode-bot/*`, the database file is `data/zcode-bot.db`, and the session cookie is `zcode_session`. Renaming those is a breaking change that touches a live database and your browser session, so it is not done as part of a documentation pass.
 

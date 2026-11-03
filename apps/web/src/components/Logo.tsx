@@ -1,5 +1,5 @@
 /**
- * ZCode Bot mark: charcoal tile + cyan robot head, matches public/favicon.svg.
+ * Copydesk mark: charcoal tile + cyan robot head, matches public/favicon.svg.
  * All five colors are brand tokens (`--color-brand-*`, defined once in
  * index.css) so the mark keeps its identity in both themes and this component
  * hardcodes no hex.

@@ -27,7 +27,7 @@ function promptSecret(question: string): Promise<string> {
 
 async function main() {
   const config = loadAppConfig();
-  console.log('ZCode Bot — dedicated Solana hot wallet creation\n');
+  console.log('Copydesk — dedicated Solana hot wallet creation\n');
   console.log('The wallet is encrypted locally (AES-256-GCM, scrypt-derived key).');
   console.log('The encryption secret is ONLY in your head — losing it means losing the wallet.\n');
 
@@ -50,7 +50,7 @@ async function main() {
   console.log('\nBackup procedure:');
   console.log('  1. Copy the encrypted wallet file to TWO offline locations (USB, encrypted drive).');
   console.log('  2. Store the encryption secret separately from the file (password manager / paper).');
-  console.log('  3. To restore: install ZCode Bot anywhere, place the file under DATA_DIR/wallet/,');
+  console.log('  3. To restore: install Copydesk anywhere, place the file under DATA_DIR/wallet/,');
   console.log('     and provide the encryption secret when arming live mode.');
   console.log('\nFund this dedicated hot wallet with a LIMITED operating balance only.');
 }

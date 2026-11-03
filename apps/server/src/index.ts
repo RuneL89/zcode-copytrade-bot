@@ -55,7 +55,7 @@ async function main() {
   }
 
   const server = serve({ fetch: app.fetch, port: config.env.PORT, hostname: config.env.HOST }, (info) => {
-    console.log(`ZCode Bot listening on http://${config.env.HOST}:${info.port} (mode: ${config.mode})`);
+    console.log(`Copydesk listening on http://${config.env.HOST}:${info.port} (mode: ${config.mode})`);
     console.log(`Workspace: ${REPO_ROOT}`);
     console.log(`Data:      ${config.env.DATA_DIR}`);
   });

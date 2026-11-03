@@ -29,6 +29,7 @@ interface Harness {
   handled: Array<{ activationId: string; signature: string }>;
   fired: string[];
   failFor: Set<string>;
+  closed: string[];
 }
 
 function txFor(leader: string, signature: string, usdMicro: bigint): LeaderTxSummary {
@@ -59,12 +60,16 @@ function harness(): Harness {
   const handled: Array<{ activationId: string; signature: string }> = [];
   const fired: string[] = [];
   const failFor = new Set<string>();
+  const closed: string[] = [];
 
   const engine = {
     handleLeaderTx: async (activationId: string, _candidateId: string, summary: LeaderTxSummary) => {
       handled.push({ activationId, signature: summary.signature });
     },
-    closePosition: async () => 'closed',
+    closePosition: async (positionId: string) => {
+      closed.push(positionId);
+      return 'closed';
+    },
   } as unknown as CopyEngine;
 
   const lifecycle = {
@@ -111,7 +116,7 @@ function harness(): Harness {
     45_000,
     () => null,
   );
-  return { monitor, handled, fired, failFor };
+  return { monitor, handled, fired, failFor, closed };
 }
 
 let seatCounter = 0;
@@ -241,5 +246,49 @@ describe('roster monitor (AC8/AC9)', () => {
     expect(
       repo.listAudit(handle.db, 20).some((a) => /cursor initialized at activation/.test(a.message)),
     ).toBe(true);
+  });
+});
+
+/**
+ * The hourly discipline sweep is capped PER SEAT. One shared timestamp let the
+ * first chair consume the hour and starve the rest, so an overdue position on
+ * seat 3 stayed open for hours (live: ANONCOIN 14h past an 8h window).
+ */
+describe('the hourly sweep reaches every seat', () => {
+  function seedOverduePosition(activationId: string, tag: string): string {
+    const positionId = `pos_sweep_${tag}`;
+    repo.insertPosition(handle.db, {
+      positionId,
+      activationId,
+      candidateId: 'cand_mon',
+      mint: `SweepMint${tag}`,
+      mintSymbol: tag,
+      status: 'open',
+      entryIntentId: null,
+      inputMint: USDC,
+      inputUsdMicro: '5000000',
+      copiedTokenBase: '1000',
+      remainingTokenBase: '1000',
+      leaderTokenBase: null,
+      realizedPnlUsdMicro: '0',
+      feesUsdMicro: '1000',
+      // Past max age (8h) + grace (3h): must sell regardless of the mark.
+      openedAt: new Date(Date.now() - 12 * 3_600_000).toISOString(),
+      closedAt: null,
+      closeReason: null,
+    });
+    return positionId;
+  }
+
+  it('closes an overdue position on every chair in a single tick', async () => {
+    reset();
+    const a1 = seedChair('sweep_one');
+    const a2 = seedChair('sweep_two');
+    const p1 = seedOverduePosition(a1, 'ONE');
+    const p2 = seedOverduePosition(a2, 'TWO');
+    const h = harness();
+    await h.monitor.tick();
+    expect(h.closed).toContain(p1);
+    expect(h.closed).toContain(p2);
   });
 });

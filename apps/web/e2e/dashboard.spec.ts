@@ -6,7 +6,7 @@ test.describe('demo dashboard (fictional)', () => {
     await completeSetup(page);
 
     // Header
-    await expect(page.getByRole('heading', { name: 'ZCode Bot' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Copydesk' })).toBeVisible();
     await expect(page.getByText('Copy trading · FOMO')).toBeVisible();
     await expect(page.getByTestId('badge-demo')).toBeVisible();
 

@@ -1,4 +1,4 @@
-# AGENTS.md — ZCode Bot repository rules
+# AGENTS.md — Copydesk repository rules
 
 Architecture, commands, security boundaries, and validation rules for any agent
 (or human) working in this repository. Read this file before making changes.
@@ -10,7 +10,7 @@ Architecture, commands, security boundaries, and validation rules for any agent
 
 ## What this is
 
-A self-hosted Solana copy-trading application ("ZCode Bot"):
+A self-hosted Solana copy-trading application ("Copydesk"):
 
 - Discovers traders through the fomoapi leaderboard (24h + 7d + 30d + the
   alerts feed); the native browser capture and Dawn stay manual fallbacks.

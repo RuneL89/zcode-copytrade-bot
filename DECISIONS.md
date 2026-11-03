@@ -1,4 +1,4 @@
-# Decisions — ZCode Bot
+# Decisions — Copydesk
 
 Running log of operator decisions. Each entry states the decision, why it was
 made, what the code currently does instead (when it differs), and the evidence.

@@ -39,7 +39,7 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
       <form onSubmit={submit} className="card p-6 w-full max-w-[400px]">
         <div className="flex items-center gap-2.5">
           <Logo size={26} />
-          <p className="label">ZCode Bot · first-run setup</p>
+          <p className="label">Copydesk · first-run setup</p>
         </div>
         <h1 className="text-[19px] font-bold mt-1.5">Create the dashboard user</h1>
         <p className="text-[12px] text-muted mt-2">
@@ -112,7 +112,7 @@ export function LoginScreen({ onDone }: { onDone: () => void }) {
       <form onSubmit={submit} className="card p-6 w-full max-w-[380px]">
         <div className="flex items-center gap-2.5">
           <Logo size={26} />
-          <p className="label">ZCode Bot · sign in</p>
+          <p className="label">Copydesk · sign in</p>
         </div>
         <h1 className="text-[19px] font-bold mt-1.5">Dashboard login</h1>
         <label className="label block mt-4">Username</label>

@@ -66,7 +66,7 @@ export function Dashboard({
 
       <footer className="pb-24 text-center">
         <p className="label !text-[10px] !text-faint">
-          ZCode Bot · mode {state.mode} · {state.armed ? 'live armed' : 'not armed'} · worker{' '}
+          Copydesk · mode {state.mode} · {state.armed ? 'live armed' : 'not armed'} · worker{' '}
           {state.health.workerRunning ? 'ok' : 'down'} · helius {state.health.helius.toLowerCase()} · jupiter{' '}
           {state.health.jupiter.toLowerCase()}
         </p>

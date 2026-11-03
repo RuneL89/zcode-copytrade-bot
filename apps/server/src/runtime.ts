@@ -315,7 +315,9 @@ export class Runtime {
     }
 
     this.ops = new OpsRunner(this, this.db.db, repoRoot);
-    this.reports = new ReportsService(this.db, this.notifier, config.mode);
+    // The reports describe the built dashboard state; the marks are refreshed
+    // first so unrealized PnL in a report is never silently stale.
+    this.reports = new ReportsService(this.db, this.notifier, config.mode, () => this.snapshotForReport());
 
     // Discovery inlet (D3): the fomoapi leaderboard. No key → the service never
     // calls the API and audits the skip instead.
@@ -367,6 +369,15 @@ export class Runtime {
     return state;
   }
 
+  /**
+   * A state snapshot for an outbound report (Telegram): re-price first, then
+   * rebuild, so the figures are current rather than up to a minute old.
+   */
+  async snapshotForReport(): Promise<import('./services/state.js').DashboardState> {
+    await this.refreshMarks().catch(() => undefined);
+    return this.rebuildState();
+  }
+
   readiness() {
     return readinessReport(this.db.db, this.config, this.control, this.monitor, Boolean(this.lock));
   }
@@ -385,13 +396,13 @@ export class Runtime {
       this.mountLiveExecutor(new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey));
       repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
       void this.notifier
-        .notify('ZCode Bot restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
+        .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
         .catch(() => {});
     } catch (e) {
       const reason = (e as Error).message;
       this.control.bootDisarm(reason);
       void this.notifier
-        .notify(`⚠️ ZCode Bot restarted and is DISARMED: ${reason}. Re-arm in the dashboard.`)
+        .notify(`⚠️ Copydesk restarted and is DISARMED: ${reason}. Re-arm in the dashboard.`)
         .catch(() => {});
     }
   }
@@ -1162,7 +1173,7 @@ export class Runtime {
 
     if (updates.length > 0) {
       const envFile = process.env.ZCODE_ENV_FILE ?? join(REPO_ROOT, '.env');
-      let text = existsSync(envFile) ? readFileSync(envFile, 'utf8') : '# created by ZCode Bot\n';
+      let text = existsSync(envFile) ? readFileSync(envFile, 'utf8') : '# created by Copydesk\n';
       for (const [key, value] of updates) {
         const line = `${key}=${value}`;
         if (new RegExp(`^${key}=.*$`, 'm').test(text))

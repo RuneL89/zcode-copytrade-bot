@@ -8,7 +8,7 @@
 @import '@fontsource/geist-mono/600.css';
 
 /*
- * ZCode Bot design system — dark + light parity (plan 07).
+ * Copydesk design system — dark + light parity (plan 07).
  * Neutral charcoal base (dark) / paper base (light), frosted-glass surfaces,
  * cyan accent, semantic P/L pair. Every component reads these tokens; the
  * theme switch is one attribute on <html>.
