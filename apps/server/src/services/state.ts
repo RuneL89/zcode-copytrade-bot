@@ -236,6 +236,12 @@ export interface DashboardState {
     benchTarget: number;
     /** Why the next discovery run will (or will not) happen. */
     nextDiscoveryReason: string;
+    /**
+     * Ordered by how soon each wallet would take a free chair: the bench first
+     * (best shadow net first, the order fillRoster hires in), then watching
+     * wallets that already pass every gate, then blocked watchers, cooling, and
+     * archived last. The dashboard renders the order verbatim.
+     */
     rows: WatchlistRow[];
   };
   /**

@@ -7,7 +7,8 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { openDatabase, type DbHandle } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type RiskConfig } from '@zcode-bot/config';
-import { StateBuilder } from '../src/services/builder.js';
+import { StateBuilder, compareWatchRows } from '../src/services/builder.js';
+import type { WatchlistRow } from '../src/services/state.js';
 import { ControlService } from '../src/services/control.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
 import { DiscoveryService } from '../src/services/discovery.js';
@@ -542,5 +543,61 @@ describe('position entries list the individual copy buys', () => {
     expect(zero.usdMicro).toBe('10000000');
     expect(zero.unrealizedPnlUsdMicro).toBeNull();
     expect(p.entries.some((e) => e.intentId === 'intent_zero_2')).toBe(false);
+  });
+});
+
+/**
+ * The watch rail shows the wallets in the order they would take a free chair:
+ * the bench first (fillRoster's own rule), then wallets that already pass the
+ * gate and would be promoted on the next tick, then blocked ones, cooling and
+ * archived. Operators read the top of the list as "next hired".
+ */
+describe('watch list order: next hire first', () => {
+  const row = (over: Partial<WatchlistRow> & Pick<WatchlistRow, 'handle' | 'status'>): WatchlistRow => ({
+    candidateId: `cand_${over.handle}`,
+    profileUrl: null,
+    lastFundedBuyAt: null,
+    fundedBuys24h: 0,
+    fundedSells24h: 0,
+    closedTrades: 0,
+    netShadowPnlUsdMicro: '0',
+    openNotionalUsdMicro: '0',
+    ceilingExposureUsdMicro: '0',
+    blockedReason: null,
+    source: 'SHADOW_LEDGER',
+    lastEventAt: null,
+    ...over,
+  });
+
+  it('bench first (best net first), then ready, blocked, cooling, archived', () => {
+    const rows = [
+      row({ handle: 'archived1', status: 'archived', netShadowPnlUsdMicro: '999000000' }),
+      row({
+        handle: 'blocked1',
+        status: 'watching',
+        blockedReason: 'FEWER_THAN_K_CLOSED',
+        netShadowPnlUsdMicro: '500000000',
+      }),
+      row({ handle: 'ready1', status: 'watching', netShadowPnlUsdMicro: '1000000' }),
+      row({ handle: 'bench_low', status: 'promoted', netShadowPnlUsdMicro: '2000000' }),
+      row({ handle: 'bench_high', status: 'promoted', netShadowPnlUsdMicro: '9000000' }),
+      row({ handle: 'cooling1', status: 'cooling', netShadowPnlUsdMicro: '800000000' }),
+    ].sort(compareWatchRows);
+    expect(rows.map((r) => r.handle)).toEqual([
+      'bench_high',
+      'bench_low',
+      'ready1',
+      'blocked1',
+      'cooling1',
+      'archived1',
+    ]);
+  });
+
+  it('keeps equal-net rows in a stable handle order', () => {
+    const rows = [
+      row({ handle: 'zeta', status: 'promoted' }),
+      row({ handle: 'alpha', status: 'promoted' }),
+    ].sort(compareWatchRows);
+    expect(rows.map((r) => r.handle)).toEqual(['alpha', 'zeta']);
   });
 });

@@ -58,6 +58,9 @@ export function WatchlistPanel({ state }: { state: DashboardState }) {
           {wl.size}/{wl.cap} watching · bench {wl.bench}/{wl.benchTarget}
         </p>
       </div>
+      <p className="label !text-[9px] !text-faint mt-0.5" data-testid="watchlist-order">
+        Next hire first: bench, then ready, then blocked.
+      </p>
 
       {wl.rows.length === 0 ? (
         <p className="text-[11.5px] text-muted mt-2" data-testid="watchlist-empty">

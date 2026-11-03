@@ -30,6 +30,36 @@ export function withinActivityWindow(tIso: string, nowMs: number): boolean {
   return Number.isFinite(t) && nowMs - t <= ACTIVITY_WINDOW_HOURS * 3_600_000;
 }
 
+type WatchRow = DashboardState['watchlist']['rows'][number];
+
+/**
+ * How soon a watch row would be hired, lowest first. The bench is the actual
+ * queue fillRoster drains; a watching wallet that already passes every gate is
+ * promoted on the next watch tick and joins that queue; blocked watchers need
+ * their record to change first; cooling needs a funded buy after the fire; and
+ * archived wallets are not candidates at all.
+ */
+export function watchHireRank(r: Pick<WatchRow, 'status' | 'blockedReason'>): number {
+  if (r.status === 'promoted') return 0;
+  if (r.status === 'watching') return r.blockedReason === null ? 1 : 2;
+  if (r.status === 'cooling') return 3;
+  return 4;
+}
+
+/**
+ * The watch list's display order: most likely to take the next free chair at
+ * the top. Inside a group the bench's own rule applies (best shadow net first),
+ * so the visible order matches the order fillRoster would hire.
+ */
+export function compareWatchRows(a: WatchRow, b: WatchRow): number {
+  const rank = watchHireRank(a) - watchHireRank(b);
+  if (rank !== 0) return rank;
+  const na = BigInt(a.netShadowPnlUsdMicro);
+  const nb = BigInt(b.netShadowPnlUsdMicro);
+  if (na !== nb) return na > nb ? -1 : 1;
+  return a.handle.localeCompare(b.handle);
+}
+
 /**
  * What the tokens a position still holds actually cost. A partial exit sells its
  * share of the position, and the engine books that share's cost basis, so the
@@ -541,6 +571,8 @@ export class StateBuilder {
         lastEventAt: events[0]?.observedAt ?? null,
       };
     });
+    // Next hire first: the panel renders this order verbatim.
+    rows.sort(compareWatchRows);
 
     const decision = discoveryDecision({
       promotableWatchWallets: rows.filter((r) => r.status === 'promoted').length,
