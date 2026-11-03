@@ -141,7 +141,7 @@ export interface DashboardState {
     rows: Array<{
       candidateId: string;
       handle: string;
-      status: 'watching' | 'cooling' | 'promoted' | 'archived';
+      status: 'watching' | 'cooling' | 'promoted' | 'hired' | 'archived';
       profileUrl: string | null;
       lastFundedBuyAt: string | null;
       fundedBuys24h: number;

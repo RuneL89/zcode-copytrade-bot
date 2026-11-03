@@ -141,7 +141,9 @@ pool** — there is no per-leader slice, and promotions are first-come.
 - **A fire frees exactly one chair.** The promotion queue fills it immediately
   from the bench (best shadow record first, then oldest). No bench wallet → the
   chair stays **empty**; that is acceptable, and discovery refills the bench
-  when it drops below `BENCH_TARGET`.
+  when it drops below `BENCH_TARGET`. A hired leader's watch row reads
+  `hired` (his shadow record keeps running) — he is in the roster, not on the
+  bench, so the bench count lists only wallets actually waiting for a chair.
 - **Shared pool.** A hire is not gated on capital: a proved leader takes a
   free chair even when the pool is fully deployed, and starts copying as soon
   as room frees. Each entry is still capped by the deployed-% limit

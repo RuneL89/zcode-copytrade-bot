@@ -222,6 +222,12 @@ export class TraderLifecycle {
       firedReason: null,
       source,
     });
+    // The watch record follows the leader into the chair. A distinct status
+    // keeps him off the bench (he is not waiting for anything) while the shadow
+    // ledger keeps running; a firing moves him on to cooling.
+    if (repo.getWatchWallet(this.db, candidateId)) {
+      repo.setWatchStatus(this.db, candidateId, 'hired', 'hired into the roster');
+    }
     repo.audit(this.db, 'activation', `trader activated (${source})`, { activationId, candidateId });
     return { ok: true, activationId };
   }

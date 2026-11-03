@@ -569,7 +569,7 @@ describe('watch list order: next hire first', () => {
     ...over,
   });
 
-  it('bench first (best net first), then ready, blocked, cooling, archived', () => {
+  it('bench first (best net first), then ready, blocked, cooling, hired, archived', () => {
     const rows = [
       row({ handle: 'archived1', status: 'archived', netShadowPnlUsdMicro: '999000000' }),
       row({
@@ -582,6 +582,7 @@ describe('watch list order: next hire first', () => {
       row({ handle: 'bench_low', status: 'promoted', netShadowPnlUsdMicro: '2000000' }),
       row({ handle: 'bench_high', status: 'promoted', netShadowPnlUsdMicro: '9000000' }),
       row({ handle: 'cooling1', status: 'cooling', netShadowPnlUsdMicro: '800000000' }),
+      row({ handle: 'hired1', status: 'hired', netShadowPnlUsdMicro: '700000000' }),
     ].sort(compareWatchRows);
     expect(rows.map((r) => r.handle)).toEqual([
       'bench_high',
@@ -589,6 +590,7 @@ describe('watch list order: next hire first', () => {
       'ready1',
       'blocked1',
       'cooling1',
+      'hired1',
       'archived1',
     ]);
   });

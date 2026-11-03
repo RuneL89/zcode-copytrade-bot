@@ -849,7 +849,7 @@ describe('watch list API (AC11)', () => {
       const body = (await promoted.json()) as { ok: boolean; outcome: string };
       expect(body.ok).toBe(true);
       expect(body.outcome).toBe('HIRED'); // activate() takes the free single chair
-      expect(repo.getWatchWallet(handle.db, candidateId)?.status).toBe('promoted');
+      expect(repo.getWatchWallet(handle.db, candidateId)?.status).toBe('hired');
       expect(repo.activeActivationCount(handle.db)).toBe(1);
       expect(repo.listAudit(handle.db, 10).some((a) => /watch hired into the roster/.test(a.message))).toBe(
         true,

@@ -4,7 +4,13 @@ import type { AppState, DashboardBadge } from '@zcode-bot/core';
 export interface WatchlistRow {
   candidateId: string;
   handle: string;
-  status: 'watching' | 'cooling' | 'promoted' | 'archived';
+  /**
+   * watching: under observation; promoted: on the bench, waiting for a chair;
+   * hired: holds a roster chair (shadow continues, never a hire candidate);
+   * cooling: fired, back only after a funded buy observed post-fire;
+   * archived: evicted from the watch list.
+   */
+  status: 'watching' | 'cooling' | 'promoted' | 'hired' | 'archived';
   profileUrl: string | null;
   /** Newest funded buy on the watch record (the promotion recency clock). */
   lastFundedBuyAt: string | null;

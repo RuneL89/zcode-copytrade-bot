@@ -180,7 +180,7 @@ describe('roster chairs (AC1/AC4)', () => {
     const bench = seedBench('bench_one');
     const fired = await lifecycle.fire(stillActive[0]!.activationId, 'manual test fire');
     expect(fired.status).toBe('ACTIVATED');
-    expect(repo.getWatchWallet(handle.db, bench)?.status).toBe('promoted'); // hired, still on the bench
+    expect(repo.getWatchWallet(handle.db, bench)?.status).toBe('hired'); // in the roster, off the bench
     const active = repo.listActiveActivations(handle.db);
     expect(active).toHaveLength(3); // the stuck one + the surviving one + the new hire
     expect(active.some((a) => a.candidateId === bench)).toBe(true);
@@ -236,6 +236,8 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
     expect(attempt.ok).toBe(true);
     expect(repo.activeActivationCount(handle.db)).toBe(1);
     expect(repo.getActivation(handle.db, attempt.activationId!)?.state).toBe('ACTIVE');
+    // The watch row follows him into the chair: off the bench, shadow running.
+    expect(repo.getWatchWallet(handle.db, candidateId)?.status).toBe('hired');
   });
 
   it('never activates the same leader twice while his watch record stays on the bench', async () => {

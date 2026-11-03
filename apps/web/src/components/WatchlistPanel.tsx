@@ -91,7 +91,7 @@ export function WatchlistPanel({ state }: { state: DashboardState }) {
                   )}
                   <span
                     className={`chip tag ${
-                      row.status === 'promoted'
+                      row.status === 'promoted' || row.status === 'hired'
                         ? 'bg-posdim text-pos'
                         : row.status === 'cooling'
                           ? 'bg-warndim text-warn'
@@ -160,16 +160,7 @@ export function WatchlistPanel({ state }: { state: DashboardState }) {
                   >
                     {busy === row.candidateId ? 'WORKING…' : 'PROMOTE NOW'}
                   </button>
-                  {row.status !== 'archived' ? (
-                    <button
-                      disabled={busy === row.candidateId}
-                      onClick={() => setArchiveTarget(row.candidateId)}
-                      data-testid={`watch-archive-${row.candidateId}`}
-                      className="rounded-[10px] border border-insetborder bg-inset text-muted mono text-[10.5px] px-2.5 py-1 cursor-pointer"
-                    >
-                      ARCHIVE
-                    </button>
-                  ) : (
+                  {row.status === 'archived' ? (
                     <button
                       disabled={busy === row.candidateId}
                       onClick={() => act(row.candidateId, () => api.watchUnarchive(row.candidateId))}
@@ -177,6 +168,15 @@ export function WatchlistPanel({ state }: { state: DashboardState }) {
                       className="rounded-[10px] border border-insetborder bg-inset text-muted mono text-[10.5px] px-2.5 py-1 cursor-pointer"
                     >
                       UNARCHIVE
+                    </button>
+                  ) : row.status === 'hired' ? null : (
+                    <button
+                      disabled={busy === row.candidateId}
+                      onClick={() => setArchiveTarget(row.candidateId)}
+                      data-testid={`watch-archive-${row.candidateId}`}
+                      className="rounded-[10px] border border-insetborder bg-inset text-muted mono text-[10.5px] px-2.5 py-1 cursor-pointer"
+                    >
+                      ARCHIVE
                     </button>
                   )}
                 </div>

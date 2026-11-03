@@ -467,11 +467,13 @@ export class WatchService {
 
     result.ceilingsClosed = await this.closeDueCeilings();
 
-    // Watching AND promoted: D4 keeps the shadow record running after
-    // promotion as the would-have-copied baseline.
+    // Watching, promoted AND hired: D4 keeps the shadow record running after
+    // promotion (and while the leader holds a chair) as the would-have-copied
+    // baseline.
     for (const wallet of [
       ...repo.listWatchWallets(this.db, 'watching'),
       ...repo.listWatchWallets(this.db, 'promoted'),
+      ...repo.listWatchWallets(this.db, 'hired'),
     ]) {
       try {
         result.newEvents += await this.pollWallet(wallet.candidateId, wallet.address);

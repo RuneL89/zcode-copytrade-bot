@@ -36,14 +36,16 @@ type WatchRow = DashboardState['watchlist']['rows'][number];
  * How soon a watch row would be hired, lowest first. The bench is the actual
  * queue fillRoster drains; a watching wallet that already passes every gate is
  * promoted on the next watch tick and joins that queue; blocked watchers need
- * their record to change first; cooling needs a funded buy after the fire; and
- * archived wallets are not candidates at all.
+ * their record to change first; cooling needs a funded buy after the fire;
+ * hired leaders hold a chair and are not candidates at all; archived wallets
+ * are out of the running.
  */
 export function watchHireRank(r: Pick<WatchRow, 'status' | 'blockedReason'>): number {
   if (r.status === 'promoted') return 0;
   if (r.status === 'watching') return r.blockedReason === null ? 1 : 2;
   if (r.status === 'cooling') return 3;
-  return 4;
+  if (r.status === 'hired') return 4;
+  return 5;
 }
 
 /**
