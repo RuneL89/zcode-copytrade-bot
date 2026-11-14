@@ -57,6 +57,8 @@ export class HeliusProvider {
   private rpcId = 0;
   private governor: CreditGovernor | null = null;
   private watchWalletCreditCap = 150;
+  /** Roster polls spend `roster` while the stream is up and `outage` when it is not. */
+  private spendPath: CreditPath = 'roster';
 
   constructor(
     private apiKey: string,
@@ -67,6 +69,11 @@ export class HeliusProvider {
   setGovernor(governor: CreditGovernor | null, watchWalletCreditCap = 150): void {
     this.governor = governor;
     this.watchWalletCreditCap = watchWalletCreditCap;
+  }
+
+  /** Switch the default meter path. Explicit callers (watch, vetting) still pass their own. */
+  setSpendPath(path: CreditPath): void {
+    this.spendPath = path;
   }
 
   setApiKey(key: string): void {
@@ -214,10 +221,11 @@ export class HeliusProvider {
           preTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
           postTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
         } | null;
-      }>('getTransaction', [
-        signature,
-        { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' },
-      ]);
+      }>(
+        'getTransaction',
+        [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' }],
+        'wallet',
+      );
       const meta = tx?.meta;
       if (!meta) return null;
 
@@ -300,6 +308,7 @@ export class HeliusProvider {
     address: string,
     cursor: LeaderCursor,
     limit = 25,
+    path?: CreditPath,
   ): Promise<Array<{ signature: string; slot: number; blockTime: number | null; err: boolean }>> {
     const result = await this.rpc<
       | Array<{ signature: string; slot: number; blockTime: number | null; err: unknown }>
@@ -314,7 +323,7 @@ export class HeliusProvider {
           ...(cursor.lastSignature ? { until: cursor.lastSignature } : {}),
         },
       ],
-      'roster',
+      path ?? this.spendPath,
     );
     const rows = Array.isArray(result) ? result : (result?.data ?? []);
     return rows
@@ -389,7 +398,7 @@ export class HeliusProvider {
   async transactionSummary(
     address: string,
     signature: string,
-    path: CreditPath = 'roster',
+    path?: CreditPath,
   ): Promise<LeaderTxSummary | null> {
     const tx = await this.rpc<{
       slot?: number;
@@ -400,8 +409,8 @@ export class HeliusProvider {
     } | null>(
       'getTransaction',
       [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' }],
-      path,
-      path === 'watch' ? address : undefined,
+      path ?? this.spendPath,
+      (path ?? this.spendPath) === 'watch' ? address : undefined,
     );
     if (!tx) return null;
     return HeliusProvider.toSignerTxSummary(address, {

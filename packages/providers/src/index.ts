@@ -5,6 +5,7 @@ export * from './leaderboard/profile-copy.js';
 export * from './fomoapi.js';
 export * from './dawn/dawn-lookup.js';
 export * from './solana/helius.js';
+export * from './solana/heliusUsage.js';
 export * from './solana/publicRpc.js';
 export * from './solana/jupiter.js';
 export * from './price.js';

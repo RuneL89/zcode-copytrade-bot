@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, SETTINGS_PATCH_KEYS, type AppConfig } from '@zcode-bot/config';
-import { CreditGovernor } from '@zcode-bot/core';
+import { CreditGovernor, reconcileUsage } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -14,6 +14,7 @@ import {
   FomoApiClient,
   FomoWebLeaderboardProvider,
   HeliusProvider,
+  fetchHeliusProjectUsage,
   JupiterProvider,
   JupiterPriceProvider,
   PublicSolanaProvider,
@@ -40,6 +41,7 @@ import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { DiscoveryService, discoveryDecision } from './services/discovery.js';
 import { deliverSeatOpen } from './services/agentHooks.js';
+import { browserSocket, HeliusRosterPush, SAFETY_POLL_MS } from './services/heliusStream.js';
 import { WatchService } from './services/watch.js';
 import { ReportsService, positionsText, reportText } from './services/reports.js';
 import { TelegramCommandService } from './services/telegram-commands.js';
@@ -111,6 +113,10 @@ export class Runtime {
   private baseExecutor: PaperExecutor;
   private liveExecutor: LiveExecutor | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private usageTimer: ReturnType<typeof setInterval> | null = null;
+  readonly creditGovernor = new CreditGovernor();
+  private rosterPush: HeliusRosterPush | null = null;
+  private rosterPollMs = 0;
   /** Set by stop(): async probes must not touch the closed database after that. */
   private stopping = false;
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
@@ -220,7 +226,7 @@ export class Runtime {
     this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
     this.lifecycle.hireApproval = config.env.HIRE_APPROVAL;
     this.lifecycle.onSeatOpen = (event) => deliverSeatOpen(config.env.AGENT_WEBHOOK_URL, event);
-    this.helius.setGovernor(new CreditGovernor());
+    this.helius.setGovernor(this.creditGovernor);
     this.engineCallbacks();
 
     this.builder = new StateBuilder(
@@ -604,11 +610,12 @@ export class Runtime {
           });
       }, this.config.risk.WATCH_POLL_MS);
       // The ROSTER clock: every hired wallet, every ROSTER_POLL_MS.
-      this.rosterTimer = setInterval(() => {
-        void this.monitor?.tick().catch((e: Error) => {
-          repo.audit(this.db.db, 'monitor', `roster tick failed (fail closed): ${e.message}`, {});
-        });
-      }, this.config.risk.ROSTER_POLL_MS);
+      this.armRosterClock(this.config.risk.ROSTER_POLL_MS);
+      if (this.helius.configured) this.startRosterPush();
+      if (this.config.env.HELIUS_PROJECT_ID && this.config.env.HELIUS_API_KEY) {
+        this.usageTimer = setInterval(() => void this.reconcileHeliusUsage(), 30 * 60_000);
+        void this.reconcileHeliusUsage();
+      }
     });
     repo.audit(
       this.db.db,
@@ -621,6 +628,116 @@ export class Runtime {
     this.rebuildState();
   }
 
+  private armRosterClock(ms: number): void {
+    if (this.rosterTimer && this.rosterPollMs === ms) return;
+    this.rosterPollMs = ms;
+    if (this.rosterTimer) clearInterval(this.rosterTimer);
+    this.rosterTimer = setInterval(() => {
+      void this.monitor?.tick().catch((e: Error) => {
+        repo.audit(this.db.db, 'monitor', `roster tick failed (fail closed): ${e.message}`, {});
+      });
+    }, ms);
+  }
+
+  private startRosterPush(): void {
+    this.rosterPush = new HeliusRosterPush({
+      apiKey: this.config.env.HELIUS_API_KEY,
+      governor: this.creditGovernor,
+      seats: () => this.streamSeats(),
+      onSwap: (address, signature) => {
+        void this.ingestLeaderSignature(address, signature).catch((e: Error) => {
+          repo.audit(this.db.db, 'monitor', `stream swap failed: ${e.message}`, { address });
+        });
+      },
+      gapFill: (address) => this.gapFillSeat(address),
+      openSocket: browserSocket,
+      onMode: (mode, pollMs) => {
+        this.helius.setSpendPath(mode === 'outage' ? 'outage' : 'roster');
+        this.armRosterClock(pollMs);
+        repo.audit(this.db.db, 'monitor', `roster stream ${mode}; poll ${Math.round(pollMs / 1000)}s`, {});
+      },
+    });
+    this.rosterPush.start();
+    this.armRosterClock(SAFETY_POLL_MS);
+  }
+
+  private streamSeats(): string[] {
+    const out: string[] = [];
+    for (const act of repo.listActiveActivations(this.db.db)) {
+      if (act.state !== 'ACTIVE') continue;
+      const address = repo
+        .listCandidateAddresses(this.db.db, act.candidateId)
+        .find((row) => row.chain === 'solana')?.address;
+      if (!address) continue;
+      out.push(address);
+      if (out.length >= 5) break;
+    }
+    return out;
+  }
+
+  private async gapFillSeat(address: string): Promise<void> {
+    const saved = repo.getCursor(this.db.db, address);
+    const sigs = await this.helius.signaturesSince(
+      address,
+      {
+        lastSignature: saved?.lastSignature ?? '',
+        lastSlot: saved?.lastSlot ?? 0,
+        lastTransactionIndex: saved?.lastTransactionIndex ?? 0,
+        lastBlockTime: saved?.lastBlockTime ?? null,
+      },
+      25,
+    );
+    for (const sig of sigs) {
+      if (!sig.err) await this.ingestLeaderSignature(address, sig.signature);
+    }
+  }
+
+  private async ingestLeaderSignature(address: string, signature: string): Promise<void> {
+    const summary = await this.helius.transactionSummary(address, signature);
+    if (!summary) return;
+    const act = repo.listActiveActivations(this.db.db).find((row) => {
+      if (row.state !== 'ACTIVE') return false;
+      return repo
+        .listCandidateAddresses(this.db.db, row.candidateId)
+        .some((item) => item.address === address);
+    });
+    if (!act) return;
+    await this.engine.handleLeaderTx(act.activationId, act.candidateId, summary);
+  }
+
+  private async reconcileHeliusUsage(): Promise<void> {
+    const projectId = this.config.env.HELIUS_PROJECT_ID;
+    const apiKey = this.config.env.HELIUS_API_KEY;
+    if (!projectId || !apiKey || this.stopping) return;
+    try {
+      const report = await fetchHeliusProjectUsage({ projectId, apiKey });
+      const metered = this.creditGovernor.monthMetered(Date.now());
+      const reconciled = reconcileUsage(metered, report.creditsUsed);
+      this.creditGovernor.setReportedUsage(reconciled.used);
+      repo.kvSet(
+        this.db.db,
+        'helius.usage',
+        JSON.stringify({
+          ...report,
+          metered,
+          driftAlert: reconciled.alert,
+          at: new Date().toISOString(),
+        }),
+      );
+      if (reconciled.alert) {
+        repo.audit(
+          this.db.db,
+          'credits',
+          `helius usage drift ${((reconciled.driftPct ?? 0) * 100).toFixed(1)}% (meter ${metered}, reported ${report.creditsUsed})`,
+          {},
+        );
+      }
+    } catch (e) {
+      if (this.stopping) return;
+      repo.audit(this.db.db, 'credits', `helius usage read failed: ${(e as Error).message}`, {});
+    }
+  }
+
   stop(): void {
     this.stopping = true;
     this.monitor?.stop();
@@ -630,6 +747,8 @@ export class Runtime {
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.watchTimer) clearInterval(this.watchTimer);
     if (this.rosterTimer) clearInterval(this.rosterTimer);
+    if (this.usageTimer) clearInterval(this.usageTimer);
+    this.rosterPush?.stop();
     if (this.watchBootTimer) clearTimeout(this.watchBootTimer);
     void this.fomoWeb?.close();
     void this.dawnLookup?.close();
