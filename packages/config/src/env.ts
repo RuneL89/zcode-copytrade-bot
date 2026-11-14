@@ -19,6 +19,19 @@ export const envSchema = z.object({
   EQUITY_START_USD: z.coerce.number().positive().default(100),
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
   LIVE_TRADING_ACK: z.string().optional(),
+  /**
+   * Hard switch for signing. Default false. MODE=live still refuses to sign
+   * until this is true, and a true value refuses to boot if the P1 acceptance
+   * checks fail.
+   */
+  LIVE_TRADING: z
+    .string()
+    .default('false')
+    .transform((v) => ['1', 'true', 'yes'].includes(v.trim().toLowerCase())),
+  /** Encrypted wallet JSON. Unset uses DATA_DIR/wallet/zcode-bot-wallet.json. */
+  WALLET_FILE: z.string().optional(),
+  /** Unlocks WALLET_FILE. Never logged. Empty means the arm form must supply it. */
+  COPYDESK_WALLET_PASSPHRASE: z.string().default(''),
 
   HELIUS_API_KEY: z.string().default(''),
   HELIUS_WEBHOOK_SECRET: z.string().default(''),

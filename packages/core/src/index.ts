@@ -19,3 +19,4 @@ export * from './exitGuard.js';
 export * from './callPattern.js';
 export * from './deskPolicy.js';
 export * from './swapPrograms.js';
+export * from './liveGate.js';

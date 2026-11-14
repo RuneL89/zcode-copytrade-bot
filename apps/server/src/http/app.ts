@@ -817,6 +817,9 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     if (!readiness.ready) {
       return c.json({ error: 'readiness blockers remain', readiness }, 400);
     }
+    if (!rt.config.env.LIVE_TRADING) {
+      return c.json({ error: 'LIVE_TRADING is false; signing is disabled' }, 409);
+    }
     const body = (await c.req.json().catch(() => ({}))) as { ack?: string; walletSecret?: string };
     if (body.ack !== LIVE_ACK_STRING) {
       return c.json(
@@ -826,7 +829,11 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     let secret: Uint8Array;
     try {
-      secret = loadWalletSecret(rt.config.env.DATA_DIR, body.walletSecret ?? '');
+      secret = loadWalletSecret(
+        rt.config.env.DATA_DIR,
+        rt.config.env.COPYDESK_WALLET_PASSPHRASE || (body.walletSecret ?? ''),
+        rt.config.env.WALLET_FILE,
+      );
     } catch (e) {
       return c.json({ error: `wallet unlock failed: ${(e as Error).message}` }, 400);
     }
@@ -848,7 +855,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         error: (e as Error).message,
       });
     }
-    const pk = walletPublicKey(rt.config.env.DATA_DIR)!;
+    const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)!;
     rt.mountLiveExecutor(new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk));
     rt.control.armLive();
     rt.rebuildState();

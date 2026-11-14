@@ -11,7 +11,8 @@ functions that the server wires to real providers and persistence.
 
 `money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
 `events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
-`freshness`, `budget`, `exitGuard`, `callPattern`, `deskPolicy`, `swapPrograms`.
+`freshness`, `budget`, `exitGuard`, `callPattern`, `deskPolicy`, `swapPrograms`,
+`liveGate`.
 Everything is re-exported from `src/index.ts`.
 
 ## Local Contracts

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, SETTINGS_PATCH_KEYS, type AppConfig } from '@zcode-bot/config';
-import { CreditGovernor, reconcileUsage } from '@zcode-bot/core';
+import { CreditGovernor, evaluateP1Acceptance, liveStartDecision, reconcileUsage } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -410,15 +410,19 @@ export class Runtime {
   }
 
   private async restoreLiveArming(): Promise<void> {
-    if (this.config.mode !== 'live') return;
+    if (this.config.mode !== 'live' || !this.config.env.LIVE_TRADING) return;
     if (!this.control.flags.armed) return; // explicit disarm — nothing to restore
     try {
       const passphrase = readRememberedPassphrase(this.config.env.DATA_DIR);
       if (!passphrase) {
         throw new Error('no sealed wallet passphrase on disk — arm once from the dashboard');
       }
-      const secret = loadWalletSecret(this.config.env.DATA_DIR, passphrase);
-      const publicKey = walletPublicKey(this.config.env.DATA_DIR);
+      const secret = loadWalletSecret(
+        this.config.env.DATA_DIR,
+        this.config.env.COPYDESK_WALLET_PASSPHRASE || passphrase,
+        this.config.env.WALLET_FILE,
+      );
+      const publicKey = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
       if (!publicKey) throw new Error('wallet public key missing');
       this.mountLiveExecutor(new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey));
       repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
@@ -449,6 +453,15 @@ export class Runtime {
    * free. Demo mode returns earlier and never reaches any of it.
    */
   async start(): Promise<void> {
+    const signingRequested = this.config.mode === 'live' && this.config.env.LIVE_TRADING;
+    const acceptance = signingRequested ? evaluateP1Acceptance() : { ok: true, failures: [] as string[] };
+    const decision = liveStartDecision({
+      mode: this.config.mode,
+      liveTrading: this.config.env.LIVE_TRADING,
+      acceptanceOk: acceptance.ok,
+      failures: acceptance.failures,
+    });
+    if (!decision.start) throw new Error(`live start refused: ${decision.reason}`);
     this.lock = acquireWorkerLock(this.config.env.DATA_DIR);
     repo.audit(this.db.db, 'system', `runtime starting (mode=${this.config.mode})`);
 
