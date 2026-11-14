@@ -88,12 +88,14 @@ export class JupiterProvider {
   async healthCheck(): Promise<{ ok: boolean; latencyMs: number; detail?: string }> {
     const started = Date.now();
     try {
-      // Cheapest documented probe: a 1-unit USDC->USDT quote.
+      // Cheapest documented probe: a 1-unit USDC->USDT quote. `/build` rejects
+      // the call with HTTP 400 unless `taker` is a public key. This is not a signer.
       await this.quote({
         inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         outputMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
         amount: '1000000',
         slippageBps: 100,
+        taker: '11111111111111111111111111111111',
       });
       return { ok: true, latencyMs: Date.now() - started };
     } catch (e) {

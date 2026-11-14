@@ -49,7 +49,7 @@ Paper defaults, all overridable in `.env` or Risk settings:
 | Stop-loss / trail              | −25% from entry; trail arms at +15% and sells 10% off the peak |
 | Exit slippage ladder           | 300, then 600, then 1,000 bps                                  |
 
-Helius spend is metered. A designed day is about 5,800 credits against a 13,600 hard cap. The roster poll is signature-first. `getTransactionsForAddress` is not on a timer. Leave `HELIUS_API_KEY` empty until that budget is the one you intend to run.
+Helius spend is metered. A designed day is 5,796 credits against a 13,600 hard cap. The roster poll is signature-first. `getTransactionsForAddress` is not on a timer. A hire backfill keeps at most 4 `getTransaction` calls inside a 3-minute window, and at most 6 of those Helius calls in any minute. The watch poll does not re-read signatures behind its cursor. Leave `HELIUS_API_KEY` empty until that budget is the one you intend to run.
 
 `HIRE_APPROVAL=auto` fills an empty seat from the bench. `agent` waits for `POST /api/agent/hire-decisions` (Bearer `AGENT_API_TOKEN`). Exit plans can only be tightened via `POST /api/agent/exit-adjustments`. A seat left empty POSTs to `AGENT_WEBHOOK_URL` when that is set. Telegram is not used.
 

@@ -179,6 +179,31 @@ describe('jupiter adapter', () => {
     const r = await p.healthCheck();
     expect(r.ok).toBe(false);
   });
+
+  it('health probe sends a taker so /build does not answer 400', async () => {
+    const previous = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return new Response(
+        JSON.stringify({
+          inAmount: '1000000',
+          outAmount: '1000000',
+          priceImpactPct: '0',
+          slippageBps: 100,
+          routePlan: [],
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const result = await new JupiterProvider('https://api.jup.ag', '').healthCheck();
+      expect(result.ok).toBe(true);
+      expect(urls[0]).toContain('taker=11111111111111111111111111111111');
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
 });
 
 describe('helius signature extraction', () => {

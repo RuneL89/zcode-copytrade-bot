@@ -252,6 +252,9 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         reported = null;
       }
     }
+    const reportedRecord =
+      reported && typeof reported === 'object' ? (reported as { admin?: string; detail?: string }) : null;
+    const admin = !rt.config.env.HELIUS_PROJECT_ID ? 'unset' : (reportedRecord?.admin ?? 'unknown');
     return c.json({
       dayTotal: snap.dayTotal,
       month: snap.month,
@@ -259,6 +262,14 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       byPath: snap.byPath,
       hardCap: DAILY_HARD_CAP,
       monthCeiling: MONTH_ROSTER_ONLY,
+      admin,
+      adminDetail:
+        admin === 'ok'
+          ? null
+          : (reportedRecord?.detail ??
+            (admin === 'unset'
+              ? 'HELIUS_PROJECT_ID is not set. The figure on this screen is the in-app meter.'
+              : 'Helius Admin usage is unavailable. The figure on this screen is the in-app meter.')),
       reported,
     });
   });

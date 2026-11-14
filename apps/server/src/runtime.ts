@@ -15,6 +15,7 @@ import {
   FomoWebLeaderboardProvider,
   HeliusProvider,
   fetchHeliusProjectUsage,
+  HeliusUsageError,
   JupiterProvider,
   JupiterPriceProvider,
   PublicSolanaProvider,
@@ -49,6 +50,12 @@ import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
 import { PaperExecutor, LiveExecutor } from './services/executors.js';
 import { sendSignedTransaction } from './services/sendPath.js';
+import {
+  HIRE_BACKFILL_PER_MINUTE,
+  MinuteCeiling,
+  selectHireBackfill,
+  type BackfillSignature,
+} from '@zcode-bot/core';
 import { loadWalletSecret, walletPublicKey } from './wallet.js';
 import { readRememberedPassphrase } from './wallet-unlock.js';
 import { REPO_ROOT, migrationsFolder } from './bootstrap.js';
@@ -118,6 +125,8 @@ export class Runtime {
   private seatTimer: ReturnType<typeof setInterval> | null = null;
   readonly creditGovernor = new CreditGovernor();
   private rosterPush: HeliusRosterPush | null = null;
+  /** Caps Helius getTransaction during a hire or reconnect backfill. */
+  private backfillCeiling = new MinuteCeiling(HIRE_BACKFILL_PER_MINUTE);
   private rosterPollMs = 0;
   /** Set by stop(): async probes must not touch the closed database after that. */
   private stopping = false;
@@ -740,23 +749,60 @@ export class Runtime {
 
   private async gapFillSeat(address: string): Promise<void> {
     const saved = repo.getCursor(this.db.db, address);
-    const sigs = await this.helius.signaturesSince(
-      address,
-      {
-        lastSignature: saved?.lastSignature ?? '',
-        lastSlot: saved?.lastSlot ?? 0,
-        lastTransactionIndex: saved?.lastTransactionIndex ?? 0,
-        lastBlockTime: saved?.lastBlockTime ?? null,
-      },
-      25,
-    );
-    for (const sig of sigs) {
-      if (!sig.err) await this.ingestLeaderSignature(address, sig.signature);
+    const now = Date.now();
+    let page: BackfillSignature[] | null = null;
+    if (this.publicSolana.configured) {
+      try {
+        const rows = await this.publicSolana.recentSignatures(address, 25);
+        page = rows.map((row) => ({ signature: row.signature, blockTime: row.blockTime, err: false }));
+      } catch {
+        page = null;
+      }
+    }
+    if (page === null) {
+      const sigs = await this.helius.signaturesSince(
+        address,
+        {
+          lastSignature: saved?.lastSignature ?? '',
+          lastSlot: saved?.lastSlot ?? 0,
+          lastTransactionIndex: saved?.lastTransactionIndex ?? 0,
+          lastBlockTime: saved?.lastBlockTime ?? null,
+        },
+        25,
+      );
+      page = sigs.map((sig) => ({
+        signature: sig.signature,
+        blockTime: sig.blockTime,
+        err: sig.err,
+      }));
+    }
+    if (!page) return;
+    const picked = selectHireBackfill({
+      signatures: page,
+      nowMs: now,
+      cursorSignature: saved?.lastSignature,
+    });
+    for (const sig of picked) {
+      await this.ingestLeaderSignature(address, sig.signature);
     }
   }
 
   private async ingestLeaderSignature(address: string, signature: string): Promise<void> {
-    const summary = await this.helius.transactionSummary(address, signature);
+    let summary = null;
+    if (this.publicSolana.configured) {
+      try {
+        summary = await this.publicSolana.transactionSummary(address, signature);
+      } catch {
+        if (!this.backfillCeiling.allow(Date.now())) return;
+        summary = await this.helius.transactionSummary(address, signature).catch(() => null);
+      }
+    } else if (!this.backfillCeiling.allow(Date.now())) {
+      return;
+    } else {
+      summary = await this.helius.transactionSummary(address, signature);
+    }
+    // A public read that returned null is final. Helius is only asked when that
+    // read threw, and only inside the per-minute ceiling.
     if (!summary) return;
     const act = repo.listActiveActivations(this.db.db).find((row) => {
       if (row.state !== 'ACTIVE') return false;
@@ -782,6 +828,7 @@ export class Runtime {
         'helius.usage',
         JSON.stringify({
           ...report,
+          admin: 'ok',
           metered,
           driftAlert: reconciled.alert,
           at: new Date().toISOString(),
@@ -797,7 +844,21 @@ export class Runtime {
       }
     } catch (e) {
       if (this.stopping) return;
-      repo.audit(this.db.db, 'credits', `helius usage read failed: ${(e as Error).message}`, {});
+      const unavailable = e instanceof HeliusUsageError && e.unavailable;
+      const detail = unavailable
+        ? 'Helius Admin usage rejected this API key. The figure on this screen is the in-app meter.'
+        : `helius usage read failed: ${(e as Error).message}`;
+      repo.kvSet(
+        this.db.db,
+        'helius.usage',
+        JSON.stringify({
+          admin: unavailable ? 'unavailable' : 'error',
+          status: e instanceof HeliusUsageError ? e.status : null,
+          detail,
+          at: new Date().toISOString(),
+        }),
+      );
+      repo.audit(this.db.db, 'credits', detail, {});
     }
   }
 

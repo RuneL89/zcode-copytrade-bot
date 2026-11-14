@@ -204,7 +204,7 @@ export class PublicSolanaProvider {
   async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
     const tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
       signature,
-      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
     ]);
     if (!tx) return null;
     const meta = tx.meta as { err?: unknown } | undefined;
@@ -299,7 +299,7 @@ export class PublicSolanaProvider {
         try {
           tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
             row.signature,
-            { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
+            { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
           ]);
         } catch {
           failedTxs++;

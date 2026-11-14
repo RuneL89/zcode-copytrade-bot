@@ -14,7 +14,9 @@ interface CreditView {
   byPath: Record<string, number>;
   hardCap: number;
   monthCeiling: number;
-  reported: { creditsUsed?: number; driftAlert?: boolean } | null;
+  admin?: string;
+  adminDetail?: string | null;
+  reported: { creditsUsed?: number; driftAlert?: boolean; admin?: string } | null;
 }
 
 const RISK_FIELDS = [
@@ -240,9 +242,14 @@ function CreditsTab() {
           </li>
         ))}
       </ul>
-      {view.reported && (
+      {view.admin && view.admin !== 'ok' && view.admin !== 'unknown' && (
         <p className="text-[12px] text-muted mt-2">
-          Helius Admin reports {view.reported.creditsUsed?.toLocaleString() ?? '—'}
+          {view.adminDetail ?? 'Helius Admin usage is unavailable. This meter is the in-app count.'}
+        </p>
+      )}
+      {view.reported?.creditsUsed !== undefined && (
+        <p className="text-[12px] text-muted mt-2">
+          Helius Admin reports {view.reported.creditsUsed.toLocaleString()}
           {view.reported.driftAlert ? ' · drift over 10%' : ''}
         </p>
       )}

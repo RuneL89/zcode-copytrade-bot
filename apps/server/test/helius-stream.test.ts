@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CreditGovernor, PATH_BUDGETS } from '@zcode-bot/core';
-import { fetchHeliusProjectUsage } from '@zcode-bot/providers';
+import { fetchHeliusProjectUsage, HeliusUsageError } from '@zcode-bot/providers';
 import {
   HeliusRosterPush,
   OUTAGE_POLL_MS,
@@ -137,15 +137,22 @@ describe('Helius admin usage', () => {
     const ok = await fetchHeliusProjectUsage({
       projectId: 'proj',
       apiKey: 'key',
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({ creditsUsed: 1200, creditsRemaining: 998800, creditCycle: '2026-11' }),
-          {
-            status: 200,
-          },
-        )) as typeof fetch,
+      fetchImpl: (async (_url, init) => {
+        const headers = init?.headers as Record<string, string>;
+        expect(headers['x-api-key']).toBe('key');
+        expect(JSON.stringify(headers).toLowerCase()).not.toContain('bearer');
+        return new Response(
+          JSON.stringify({
+            creditsUsed: 1200,
+            creditsRemaining: 998800,
+            creditCycle: { start: '2026-11-01', end: '2026-12-01' },
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch,
     });
     expect(ok.creditsUsed).toBe(1200);
+    expect(ok.creditCycle).toBe('2026-11-01');
     await expect(
       fetchHeliusProjectUsage({
         projectId: 'proj',
@@ -157,8 +164,15 @@ describe('Helius admin usage', () => {
       fetchHeliusProjectUsage({
         projectId: 'proj',
         apiKey: 'key',
-        fetchImpl: (async () => new Response('no', { status: 403 })) as typeof fetch,
+        fetchImpl: (async () => new Response('no', { status: 401 })) as typeof fetch,
       }),
-    ).rejects.toThrow(/403/);
+    ).rejects.toMatchObject({ status: 401, unavailable: true });
+    await expect(
+      fetchHeliusProjectUsage({
+        projectId: 'proj',
+        apiKey: 'key',
+        fetchImpl: (async () => new Response('no', { status: 401 })) as typeof fetch,
+      }),
+    ).rejects.toBeInstanceOf(HeliusUsageError);
   });
 });

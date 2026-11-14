@@ -15,6 +15,7 @@ export * from './risk.js';
 export * from './positionAge.js';
 export * from './transfer.js';
 export * from './budget.js';
+export * from './backfill.js';
 export * from './exitGuard.js';
 export * from './callPattern.js';
 export * from './deskPolicy.js';

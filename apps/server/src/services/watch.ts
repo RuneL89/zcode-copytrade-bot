@@ -8,6 +8,9 @@ import {
   classifyFundedSwap,
   computeCopyNotional,
   usdToMicro,
+  MinuteCeiling,
+  signaturesAfterCursor,
+  WATCH_DETAIL_PER_MINUTE,
   type FundedSwap,
   type PromotionBlockReason,
 } from '@zcode-bot/core';
@@ -97,10 +100,17 @@ export interface WatchServiceDeps {
 const WATCH_TX_SCAN_LIMIT = 25;
 /** Candidates scanned for admission per tick (bounded spend). */
 export const ADMISSION_SCAN_PER_TICK = 3;
+/** A candidate measured inside this window is not read again on the next tick. */
+const ADMISSION_RESCAN_MS = 30 * 60_000;
+
+/** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
+class DetailDeferred extends Error {}
 /** Admission reads look back 24h (D4's window). */
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
+  private detailCeiling = new MinuteCeiling(WATCH_DETAIL_PER_MINUTE);
+
   constructor(private deps: WatchServiceDeps) {}
 
   private get db(): AppDatabase {
@@ -132,10 +142,12 @@ export class WatchService {
   private async txSummary(address: string, signature: string) {
     if (this.deps.publicSolana.configured) {
       try {
-        const summary = await this.deps.publicSolana.transactionSummary(address, signature);
-        if (summary) return summary;
+        // Null is an answer: the node read the transaction and it was not this
+        // signer, or it had nothing to classify. Paying Helius to repeat that
+        // read is what pushed a quiet day to ~12k credits.
+        return await this.deps.publicSolana.transactionSummary(address, signature);
       } catch {
-        // Fall through to Helius.
+        if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
       }
     }
     return this.deps.helius.transactionSummary(address, signature, 'watch').catch(() => null);
@@ -247,7 +259,13 @@ export class WatchService {
 
     const events: FundedSwap[] = [];
     for (const row of inWindow.slice(0, WATCH_TX_SCAN_LIMIT)) {
-      const summary = await this.txSummary(address, row.signature);
+      let summary;
+      try {
+        summary = await this.txSummary(address, row.signature);
+      } catch (error) {
+        if (error instanceof DetailDeferred) break;
+        throw error;
+      }
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -505,24 +523,36 @@ export class WatchService {
   private async pollWallet(candidateId: string, address: string): Promise<number> {
     const cursor = repo.getWatchCursor(this.db, address);
     const rows = await this.signaturePage(address, WATCH_TX_SCAN_LIMIT);
-    const fresh = rows.filter((r) => r.signature.length > 0 && r.signature !== cursor?.lastSignature);
+    const fresh = signaturesAfterCursor(rows, cursor?.lastSignature);
     if (fresh.length === 0) return 0;
 
     // Newest-first from the RPC; apply oldest-first so FIFO stays honest.
+    // A deferred detail stops the cursor in front of that signature so the
+    // next tick retries it instead of paying for the whole page again.
     let applied = 0;
+    let advancedTo = cursor?.lastSignature ?? '';
     for (const row of [...fresh].reverse()) {
-      const summary = await this.txSummary(address, row.signature);
+      let summary;
+      try {
+        summary = await this.txSummary(address, row.signature);
+      } catch (error) {
+        if (error instanceof DetailDeferred) break;
+        throw error;
+      }
+      advancedTo = row.signature;
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap && (await this.applyFundedSwap(candidateId, address, swap))) applied++;
     }
-    repo.setWatchCursor(this.db, {
-      address,
-      candidateId,
-      lastSignature: rows[0]!.signature,
-      lastSlot: cursor?.lastSlot ?? 0,
-      lastTransactionIndex: 0,
-    });
+    if (advancedTo && advancedTo !== cursor?.lastSignature) {
+      repo.setWatchCursor(this.db, {
+        address,
+        candidateId,
+        lastSignature: advancedTo,
+        lastSlot: cursor?.lastSlot ?? 0,
+        lastTransactionIndex: 0,
+      });
+    }
     return applied;
   }
 
@@ -549,6 +579,8 @@ export class WatchService {
     // to the back of the queue for the next tick.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
+      const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
+      if (checkedAt !== null && Date.now() - checkedAt < ADMISSION_RESCAN_MS) continue;
       const address = repo
         .listCandidateAddresses(this.db, candidate.candidateId)
         .find((a) => a.chain === 'solana')?.address;
