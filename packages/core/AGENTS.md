@@ -11,7 +11,8 @@ functions that the server wires to real providers and persistence.
 
 `money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
 `events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
-`freshness`. Everything is re-exported from `src/index.ts`.
+`freshness`, `budget`, `exitGuard`, `callPattern`. Everything is re-exported
+from `src/index.ts`.
 
 ## Local Contracts
 
@@ -31,6 +32,12 @@ functions that the server wires to real providers and persistence.
 - **Fail closed by default.** Ambiguous events are skipped, an unpriced mint or
   a missing quote never invents a fill, and an unproven wallet is reported as
   blocked rather than promoted.
+- **Helius spend goes through `CreditGovernor`.** Path caps, the 13,600/day
+  hard cap, and the 600,000/month ceiling live in `budget.ts`. Roster and exit
+  buckets are ring-fenced. `getTransactionsForAddress` is legal only on the
+  vetting and agent paths. Timer loops are checked by `callPattern.ts`.
+- **Exit mode is matched.** `guardExitMode` refuses when the executor mode and
+  the position mode differ. A refusal does not invent a paper fill.
 - **Purity:** no network, database, filesystem, or clock access. The only
   non-local imports are `zod` and type-only imports from `@zcode-bot/config`.
   Time and IDs come from arguments.
@@ -48,7 +55,10 @@ functions that the server wires to real providers and persistence.
 ## Verification
 
 - `pnpm --filter @zcode-bot/core test` — `sizing`, `swap`, `events`,
-  `activity`, `watch`, `positionAge`, `transfer` suites.
+  `activity`, `watch`, `positionAge`, `transfer`, `budget` suites. The budget
+  suite is the free-tier acceptance bar: nominal day at 5,796, hard cap
+  13,600, month ceiling 600,000, dead-stream signature-first, watch cap, and
+  the 429 storm.
 - `pnpm --filter @zcode-bot/core typecheck`
 - Any behavior change must have a test that fails before the change.
 
