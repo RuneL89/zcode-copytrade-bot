@@ -42,7 +42,9 @@ notifications. This is the only package allowed to talk to the outside world.
   activity refresh then fails the wallet. That refresh does not spend Helius
   to fill the gap. Helius stays the sole source for the leader monitor.
 - **Jupiter uses Swap API v2** `GET /swap/v2/build` on `api.jup.ag` (free key,
-  about 1 request/second, no platform fee). We quote there. Live assembly and
+  about 1 request/second, no platform fee). Every quote sends `taker`: the
+  wallet pubkey when `WALLET_FILE` is present, otherwise a fixed valid pubkey.
+  Live assembly and
   sending are not enabled. A rejected quote is not retried blind; paper falls
   back to the cached price.
 - **`fomo.family` is NEVER accessed through this package's browser adapter,

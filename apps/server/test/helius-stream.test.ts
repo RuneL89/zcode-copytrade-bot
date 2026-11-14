@@ -108,6 +108,34 @@ describe('Helius roster stream', () => {
     expect(h.modes.at(-1)).toEqual({ mode: 'push', pollMs: SAFETY_POLL_MS });
   });
 
+  it('subscribes a seat hired after the socket is open', () => {
+    const seats = ['SeatA'];
+    const sockets: FakeSocket[] = [];
+    const gaps: string[] = [];
+    const push = new HeliusRosterPush({
+      apiKey: 'test-key',
+      governor: new CreditGovernor(),
+      seats: () => seats,
+      onSwap: () => undefined,
+      gapFill: async (address) => {
+        gaps.push(address);
+      },
+      openSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    push.start();
+    sockets[0]!.emit('open', {});
+    expect(sockets[0]!.sent).toHaveLength(1);
+    seats.push('SeatB');
+    expect(push.refreshSeats()).toEqual(['SeatB']);
+    expect(sockets[0]!.sent).toHaveLength(2);
+    expect(sockets[0]!.sent[1]).toContain('SeatB');
+    expect(gaps).toEqual(['SeatA']);
+  });
+
   it('meters websocket bytes on the roster bucket and stops when the bucket refuses', () => {
     const governor = new CreditGovernor({ caps: { roster: 2 } });
     const h = harness(governor);

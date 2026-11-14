@@ -1,4 +1,4 @@
-import type { JupiterProvider } from './solana/jupiter.js';
+import { JUPITER_FALLBACK_TAKER, type JupiterProvider } from './solana/jupiter.js';
 
 export interface CachedPrice {
   /** Micro-USD per 1 whole token. */
@@ -19,6 +19,7 @@ export interface PriceProvider {
 export class JupiterPriceProvider implements PriceProvider {
   private cache = new Map<string, CachedPrice>();
   private jup: JupiterProvider | null = null;
+  private taker = JUPITER_FALLBACK_TAKER;
 
   constructor(
     jup: JupiterProvider,
@@ -37,6 +38,7 @@ export class JupiterPriceProvider implements PriceProvider {
       outputMint: this.usdcMint,
       amount: (10n ** BigInt(decimals)).toString(),
       slippageBps: 1000,
+      taker: this.taker,
     });
     const outBase = BigInt(quote.outAmount); // USDC has 6 decimals == micro-USD directly
     const cached: CachedPrice = { priceUsdMicro: outBase, observedAt: Date.now() };
@@ -48,6 +50,10 @@ export class JupiterPriceProvider implements PriceProvider {
   setJupiter(jup: JupiterProvider): void {
     this.jup = jup;
     this.cache.clear();
+  }
+
+  setTaker(taker: string): void {
+    if (taker.trim()) this.taker = taker.trim();
   }
 
   /** Test/inspection hook. */

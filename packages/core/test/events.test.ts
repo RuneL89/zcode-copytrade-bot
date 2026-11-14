@@ -182,6 +182,12 @@ describe('event ordering and dedupe', () => {
     expect(isEventTooOld(Math.floor(now / 1000) - 3600, now, 90)).toBe(true);
     expect(isEventTooOld(null, now, 90)).toBe(true);
     expect(isEventTooOld(Math.floor(now / 1000) - 5, now, 90)).toBe(false);
+    // A logsSubscribe notification resolved 2s after the leader block is copyable.
+    // The same buy first seen by the 300s safety poll is not.
+    const block = Math.floor(now / 1000) - 2;
+    expect(isEventTooOld(block, block * 1000 + 2_000, 90)).toBe(false);
+    expect(Math.round(2_000 / 1000)).toBe(2);
+    expect(isEventTooOld(block, block * 1000 + 300_000, 90)).toBe(true);
   });
 });
 

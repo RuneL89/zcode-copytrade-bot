@@ -6,7 +6,8 @@
  * minute ceiling spreads whatever still has to be paid.
  */
 
-export const HIRE_BACKFILL_LOOKBACK_MS = 3 * 60_000;
+/** Short enough that a fetched buy is still inside the 90s copy window. */
+export const HIRE_BACKFILL_LOOKBACK_MS = 60_000;
 export const HIRE_BACKFILL_MAX_TX = 4;
 /** Helius getTransaction calls allowed for a hire/reconnect backfill in one minute. */
 export const HIRE_BACKFILL_PER_MINUTE = 6;

@@ -64,6 +64,21 @@ export class HeliusRosterPush {
     this.reportMode();
   }
 
+  /**
+   * Subscribe any hired seat that joined after the socket opened. A hire that
+   * waits for the 5-minute safety poll only sees buys that are already older
+   * than the 90s copy window.
+   */
+  refreshSeats(): string[] {
+    if (this.stopped || this.active === 'down') return [];
+    const socket = this.active === 'primary' ? this.primary : this.spare;
+    if (!socket) return [];
+    const known = new Set(this.subToAddress.values());
+    const added = this.seatList().filter((address) => !known.has(address));
+    for (const address of added) this.sendSubscribe(socket, address);
+    return added;
+  }
+
   /** Charge websocket payload. Returns false when the roster bucket refuses. */
   noteBytes(byteLength: number, atMs = this.now()): boolean {
     if (byteLength <= 0) return true;
@@ -141,18 +156,20 @@ export class HeliusRosterPush {
   }
 
   private subscribe(socket: PushSocket): void {
-    for (const address of this.seatList()) {
-      const id = this.nextId++;
-      this.subToAddress.set(id, address);
-      socket.send(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id,
-          method: 'logsSubscribe',
-          params: [{ mentions: [address] }, { commitment: 'confirmed' }],
-        }),
-      );
-    }
+    for (const address of this.seatList()) this.sendSubscribe(socket, address);
+  }
+
+  private sendSubscribe(socket: PushSocket, address: string): void {
+    const id = this.nextId++;
+    this.subToAddress.set(id, address);
+    socket.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method: 'logsSubscribe',
+        params: [{ mentions: [address] }, { commitment: 'confirmed' }],
+      }),
+    );
   }
 
   private onMessage(data: unknown): void {

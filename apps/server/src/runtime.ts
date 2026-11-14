@@ -18,6 +18,7 @@ import {
   HeliusUsageError,
   JupiterProvider,
   JupiterPriceProvider,
+  JUPITER_FALLBACK_TAKER,
   PublicSolanaProvider,
   isTelegramNotifier,
   notifierFromEnv,
@@ -123,6 +124,7 @@ export class Runtime {
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private usageTimer: ReturnType<typeof setInterval> | null = null;
   private seatTimer: ReturnType<typeof setInterval> | null = null;
+  private seatRefreshTimer: ReturnType<typeof setInterval> | null = null;
   readonly creditGovernor = new CreditGovernor();
   private rosterPush: HeliusRosterPush | null = null;
   /** Caps Helius getTransaction during a hire or reconnect backfill. */
@@ -193,6 +195,11 @@ export class Runtime {
         ? new StaticPriceProvider(new Map([['So11111111111111111111111111111111111111112', 180_000_000n]]))
         : new JupiterPriceProvider(this.jupiter, config.risk.PRICE_MAX_AGE_SECONDS * 1000);
     this.priceProvider = prices;
+    const taker = walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE);
+    if (taker) {
+      this.jupiter.setTaker(taker);
+      if (this.priceProvider instanceof JupiterPriceProvider) this.priceProvider.setTaker(taker);
+    }
 
     this.baseExecutor = new PaperExecutor(this.jupiter, async (mint, decimals) => {
       const p = await (
@@ -220,6 +227,7 @@ export class Runtime {
           });
         },
         onStateChanged: () => {
+          this.subscribeNewSeats();
           this.rebuildState();
           // A new position lands here first: resolve its ticker off the hot
           // path so the dashboard shows a symbol instead of a mint fragment.
@@ -717,7 +725,7 @@ export class Runtime {
       governor: this.creditGovernor,
       seats: () => this.streamSeats(),
       onSwap: (address, signature) => {
-        void this.ingestLeaderSignature(address, signature).catch((e: Error) => {
+        void this.ingestLeaderSignature(address, signature, 'push').catch((e: Error) => {
           repo.audit(this.db.db, 'monitor', `stream swap failed: ${e.message}`, { address });
         });
       },
@@ -731,6 +739,18 @@ export class Runtime {
     });
     this.rosterPush.start();
     this.armRosterClock(SAFETY_POLL_MS);
+    if (this.seatRefreshTimer) clearInterval(this.seatRefreshTimer);
+    this.seatRefreshTimer = setInterval(() => this.subscribeNewSeats(), 15_000);
+  }
+
+  /** Put a hire on the socket without waiting for the safety poll. */
+  private subscribeNewSeats(): void {
+    const added = this.rosterPush?.refreshSeats() ?? [];
+    for (const address of added) {
+      void this.gapFillSeat(address).catch((e: Error) => {
+        repo.audit(this.db.db, 'monitor', `seat subscribe gap-fill failed: ${e.message}`, { address });
+      });
+    }
   }
 
   private streamSeats(): string[] {
@@ -783,26 +803,36 @@ export class Runtime {
       cursorSignature: saved?.lastSignature,
     });
     for (const sig of picked) {
-      await this.ingestLeaderSignature(address, sig.signature);
+      await this.ingestLeaderSignature(address, sig.signature, 'backfill');
     }
   }
 
-  private async ingestLeaderSignature(address: string, signature: string): Promise<void> {
+  /**
+   * A pushed swap has a 2s public attempt, then one roster-bucket
+   * getTransaction. Backfill may spend that Helius call only inside the
+   * per-minute ceiling. Either way the buy is resolved while it is still
+   * inside the 90s copy window, not on the 300s safety poll.
+   */
+  private async ingestLeaderSignature(
+    address: string,
+    signature: string,
+    source: 'push' | 'backfill',
+  ): Promise<void> {
     let summary = null;
     if (this.publicSolana.configured) {
       try {
-        summary = await this.publicSolana.transactionSummary(address, signature);
+        summary = await this.publicSolana.transactionSummary(address, signature, {
+          timeoutMs: 2_000,
+          attempts: 1,
+        });
       } catch {
-        if (!this.backfillCeiling.allow(Date.now())) return;
-        summary = await this.helius.transactionSummary(address, signature).catch(() => null);
+        summary = null;
       }
-    } else if (!this.backfillCeiling.allow(Date.now())) {
-      return;
-    } else {
-      summary = await this.helius.transactionSummary(address, signature);
     }
-    // A public read that returned null is final. Helius is only asked when that
-    // read threw, and only inside the per-minute ceiling.
+    if (!summary) {
+      if (source === 'backfill' && !this.backfillCeiling.allow(Date.now())) return;
+      summary = await this.helius.transactionSummary(address, signature, 'roster').catch(() => null);
+    }
     if (!summary) return;
     const act = repo.listActiveActivations(this.db.db).find((row) => {
       if (row.state !== 'ACTIVE') return false;
@@ -812,6 +842,17 @@ export class Runtime {
     });
     if (!act) return;
     await this.engine.handleLeaderTx(act.activationId, act.candidateId, summary);
+    const saved = repo.getCursor(this.db.db, address);
+    if (saved && saved.activationId === act.activationId && saved.lastSlot > summary.slot) return;
+    repo.setCursor(this.db.db, {
+      address,
+      chain: 'solana',
+      activationId: act.activationId,
+      lastSignature: summary.signature,
+      lastSlot: summary.slot,
+      lastTransactionIndex: summary.transactionIndex,
+      lastBlockTime: summary.blockTime,
+    });
   }
 
   private async reconcileHeliusUsage(): Promise<void> {
@@ -873,6 +914,7 @@ export class Runtime {
     if (this.rosterTimer) clearInterval(this.rosterTimer);
     if (this.usageTimer) clearInterval(this.usageTimer);
     if (this.seatTimer) clearInterval(this.seatTimer);
+    if (this.seatRefreshTimer) clearInterval(this.seatRefreshTimer);
     this.rosterPush?.stop();
     if (this.watchBootTimer) clearTimeout(this.watchBootTimer);
     void this.fomoWeb?.close();
@@ -1028,6 +1070,8 @@ export class Runtime {
           outputMint: USDC_MINT,
           amount: p.remainingTokenBase,
           slippageBps: 1000,
+          taker:
+            walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE) ?? JUPITER_FALLBACK_TAKER,
         });
         this.builder.setMark(p.positionId, BigInt(quote.outAmount), Date.now());
       } catch {

@@ -134,10 +134,16 @@ export class PublicSolanaProvider {
   }
 
   /** JSON-RPC with a hard per-request timeout and bounded retry on transient failures. */
-  private async rpc<T>(method: string, params: unknown): Promise<T> {
+  private async rpc<T>(
+    method: string,
+    params: unknown,
+    opts?: { timeoutMs?: number; attempts?: number },
+  ): Promise<T> {
     if (!this.configured) throw new Error('public-solana: endpoint not configured');
+    const timeoutMs = opts?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    const attempts = opts?.attempts ?? this.maxAttempts;
     let lastError: Error = new Error('public-solana: request failed');
-    for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) await sleep(1500 * attempt);
       let res: Response;
       try {
@@ -146,7 +152,7 @@ export class PublicSolanaProvider {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: ++this.rpcId, method, params }),
           // Without this a stalled connection blocked the whole refresh forever.
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (e) {
         lastError = new Error('public-solana: ' + (e as Error).message);
@@ -208,11 +214,19 @@ export class PublicSolanaProvider {
    * One signature's detail, signer-attributed, through the free node. Null
    * when the transaction is unreadable or was not signed by the address.
    */
-  async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
-    const tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
-      signature,
-      { encoding: 'jsonParsed', maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed' },
-    ]);
+  async transactionSummary(
+    address: string,
+    signature: string,
+    opts?: { timeoutMs?: number; attempts?: number },
+  ): Promise<LeaderTxSummary | null> {
+    const tx = await this.rpc<Record<string, unknown> | null>(
+      'getTransaction',
+      [
+        signature,
+        { encoding: 'jsonParsed', maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed' },
+      ],
+      opts,
+    );
     if (!tx) return null;
     const meta = tx.meta as { err?: unknown } | undefined;
     return HeliusProvider.toSignerTxSummary(address, {

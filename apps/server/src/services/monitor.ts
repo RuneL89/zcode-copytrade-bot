@@ -1,7 +1,7 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
-import { isIdleOver, dayTradeExitDecision, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
+import { isIdleOver, dayTradeExitDecision, isEventTooOld, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import { remainingCostBasis } from './builder.js';
 import type { TraderLifecycle } from './lifecycle.js';
@@ -352,6 +352,10 @@ export class LeaderMonitor {
 
     for (const sig of sigs) {
       if (sig.err) continue;
+      // The 5-minute safety poll is a backstop. A buy already outside the copy
+      // window is not fetched: that getTransaction cannot become a fill, and
+      // the push path is what copies a buy while it is still fresh.
+      if (isEventTooOld(sig.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) continue;
       const summary = await this.helius.transactionSummary(address, sig.signature);
       if (summary) await this.engine.handleLeaderTx(activationId, candidateId, summary);
     }

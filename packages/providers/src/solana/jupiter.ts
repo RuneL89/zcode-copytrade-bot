@@ -22,13 +22,22 @@ export interface BuiltSwap {
   lastValidBlockHeight?: number;
 }
 
+/** Used when the desk has no wallet file yet. `/build` rejects a missing taker. */
+export const JUPITER_FALLBACK_TAKER = '11111111111111111111111111111111';
+
 export class JupiterProvider {
   readonly name = 'jupiter';
+  private defaultTaker = JUPITER_FALLBACK_TAKER;
 
   constructor(
     private baseUrl: string = 'https://api.jup.ag',
     private apiKey: string = '',
   ) {}
+
+  /** Paper quotes use the wallet pubkey when the file is present. */
+  setTaker(taker: string): void {
+    if (taker.trim()) this.defaultTaker = taker.trim();
+  }
 
   setCredentials(baseUrl: string, apiKey: string): void {
     this.baseUrl = baseUrl;
@@ -47,15 +56,16 @@ export class JupiterProvider {
     /** Raw base-unit amount of inputMint. */
     amount: string;
     slippageBps: number;
-    /** Required by `/build`. Paper mode omits it and uses the price fallback. */
+    /** Required by `/build`. Falls back to the provider taker, never omitted. */
     taker?: string;
   }): Promise<JupiterQuote> {
+    const taker = params.taker?.trim() || this.defaultTaker;
     const qs = new URLSearchParams({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
       slippageBps: String(params.slippageBps),
-      ...(params.taker ? { taker: params.taker } : {}),
+      taker,
     });
     const res = await fetch(`${this.baseUrl}/swap/v2/build?${qs}`, { headers: this.headers() });
     if (res.status === 429) throw new Error('jupiter: rate limited (429)');
@@ -95,7 +105,7 @@ export class JupiterProvider {
         outputMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
         amount: '1000000',
         slippageBps: 100,
-        taker: '11111111111111111111111111111111',
+        taker: this.defaultTaker,
       });
       return { ok: true, latencyMs: Date.now() - started };
     } catch (e) {

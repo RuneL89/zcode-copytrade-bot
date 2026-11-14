@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HIRE_BACKFILL_LOOKBACK_MS,
   HIRE_BACKFILL_MAX_TX,
   HIRE_BACKFILL_PER_MINUTE,
   MinuteCeiling,
@@ -27,6 +28,7 @@ describe('hire backfill', () => {
     const page = recentPage(25, 5);
     const first = selectHireBackfill({ signatures: page, nowMs: NOW });
     const second = selectHireBackfill({ signatures: page, nowMs: NOW });
+    expect(HIRE_BACKFILL_LOOKBACK_MS).toBe(60_000);
     expect(first).toHaveLength(HIRE_BACKFILL_MAX_TX);
     expect(second).toHaveLength(HIRE_BACKFILL_MAX_TX);
     expect(first.every((row) => NOW - row.blockTime! * 1000 <= 3 * 60_000)).toBe(true);

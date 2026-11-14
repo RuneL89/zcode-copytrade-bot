@@ -1,4 +1,4 @@
-import type { JupiterProvider, JupiterQuote } from '@zcode-bot/providers';
+import { JUPITER_FALLBACK_TAKER, type JupiterProvider, type JupiterQuote } from '@zcode-bot/providers';
 import { usdToMicro } from '@zcode-bot/core';
 import type { SendResult } from './sendPath.js';
 import { assembleJupiterBuild, withSenderTip, type JupiterBuildBody } from './txBuild.js';
@@ -120,6 +120,7 @@ export class PaperExecutor implements Executor {
           outputMint: spec.outputMint,
           amount: spec.inputAmountBase,
           slippageBps: spec.slippageBpsCap,
+          taker: spec.userPublicKey || JUPITER_FALLBACK_TAKER,
         });
         const priceImpactBps = Math.max(0, Math.round(Number(q.priceImpactPct ?? '0') * 10000));
         return {
@@ -148,6 +149,7 @@ export class PaperExecutor implements Executor {
           outputMint: spec.outputMint,
           amount: spec.inputAmountBase,
           slippageBps: spec.slippageBpsCap,
+          taker: spec.userPublicKey || JUPITER_FALLBACK_TAKER,
         });
         const feeUsdMicro = (BigInt(spec.inputUsdMicro) * BigInt(PAPER_ASSUMPTIONS.feeBps)) / 10000n;
         return {
@@ -273,6 +275,7 @@ export class LiveExecutor implements Executor {
       outputMint: spec.outputMint,
       amount: spec.inputAmountBase,
       slippageBps: spec.slippageBpsCap,
+      taker: this.publicKey,
     });
     return {
       slippageBps: spec.slippageBpsCap,
