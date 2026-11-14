@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { canPromote, canReenter, ceilingAction, type PromotionConfig } from '../src/watch.js';
+import {
+  canPromote,
+  canReenter,
+  ceilingAction,
+  isRepeatOffender,
+  type PromotionConfig,
+} from '../src/watch.js';
 import { isIdleOver } from '../src/positionAge.js';
 
 const HOUR = 3_600_000;
@@ -80,6 +86,34 @@ describe('canReenter — no timed cooldown, a post-fire buy (AC7)', () => {
 
   it('a funded buy observed after the fire lifts the ban', () => {
     expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 60_000) })).toBe(true);
+  });
+
+  it('holds the ban until the cooldown elapses, then accepts the post-fire buy', () => {
+    const firedAt = iso(NOW - 36 * HOUR);
+    const buyAt = iso(NOW - 60_000);
+    expect(
+      canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW - 60_000, cooldownHours: 36 }),
+    ).toBe(false);
+    expect(canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW, cooldownHours: 36 })).toBe(
+      true,
+    );
+    expect(
+      canReenter({
+        lastFiredAt: iso(NOW - 36 * HOUR + 1),
+        lastFundedBuyAt: buyAt,
+        nowMs: NOW,
+        cooldownHours: 36,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isRepeatOffender', () => {
+  it('archives the second firing inside 7 days and ignores an older one', () => {
+    const day = 86_400_000;
+    expect(isRepeatOffender([NOW - day, NOW], NOW)).toBe(true);
+    expect(isRepeatOffender([NOW], NOW)).toBe(false);
+    expect(isRepeatOffender([NOW - 8 * day, NOW], NOW)).toBe(false);
   });
 });
 

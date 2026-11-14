@@ -373,6 +373,9 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
       swapSummary({ signature: 'f-s1', minutesAgo: 5, tokens: 2_000_000n, usd: 2_000_000n, side: 'sell' }),
     );
     h.page.unshift({ signature: 'f-s1', blockTime: NOW_SEC - 5 * 60 });
+    // The live mark has to sit on the dearer lot's entry, or the −25% stop
+    // closes that lot before the sell is applied.
+    h.prices.set(TOKEN, 4_000_000n);
     await h.svc.tick();
 
     // The repo returns them in FIFO order (openedAt), which is the order the
@@ -450,8 +453,8 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     h.page.unshift({ signature: 'g-b1', blockTime: NOW_SEC - 9 * 60 * 60 });
     await h.svc.tick();
 
-    // 9h old, mark below entry: grace has not elapsed (8h + 3h = 11h).
-    h.prices.set(TOKEN, 500_000n);
+    // 9h old and only 10% red: inside the 3h grace, and above the −25% stop.
+    h.prices.set(TOKEN, 900_000n);
     await h.svc.tick();
     expect(repo.listOpenShadowTrades(handle.db, 'cand_grace')).toHaveLength(1);
 
@@ -626,7 +629,8 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     expect(h.svc.promotionDecision('cand_reentry').reason).toBe('REENTRY_BANNED');
     expect(repo.listAudit(handle.db, 5).some((a) => /re-entry blocked/.test(a.message))).toBe(false); // audit comes from evaluate()
 
-    // The cooling rotation readmits him once a funded buy lands after the fire.
+    // The cooling rotation readmits him once a funded buy lands after the fire
+    // AND the cooldown has elapsed. A buy inside the cooldown does not.
     repo.setWatchStatus(handle.db, 'cand_reentry', 'cooling', 'fired');
     expect(await h.svc.coolingTick()).toBe(0);
     repo.insertWatchEvent(handle.db, {
@@ -642,6 +646,11 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
       observedAt: iso(Date.now() - 10_000),
       source: 'test',
     });
+    // The buy is after the fire, but the 36h cooldown has not elapsed.
+    expect(await h.svc.coolingTick()).toBe(0);
+    handle.sqlite
+      .prepare('update firing_events set fired_at = ? where candidate_id = ?')
+      .run(iso(Date.now() - 37 * HOUR), 'cand_reentry');
     expect(await h.svc.coolingTick()).toBe(1);
     expect(repo.getWatchWallet(handle.db, 'cand_reentry')?.status).toBe('watching');
     expect(h.svc.promotionDecision('cand_reentry').ok).toBe(true);

@@ -174,7 +174,12 @@ describe('per-mint cap (AC7)', () => {
     seedActivation('act_cap_on');
     // $10 copy with a $10 cap: the first entry fills the mint, the second is
     // refused with PER_MINT_CAP (aged past the coalescing window first).
-    const engine = engineFor({ MAX_PER_BUY_USD: 10, MIN_PER_BUY_USD: 5, PER_MINT_CAP_USD: 10 });
+    const engine = engineFor({
+      MAX_PER_BUY_USD: 10,
+      MIN_PER_BUY_USD: 5,
+      PER_MINT_CAP_USD: 10,
+      MAX_OPEN_PER_TRADER_USD: 1_000,
+    });
     await engine.handleLeaderTx('act_cap_on', 'cand_roster', leaderBuy(40_000_000n, MEOW_CAP_ON));
     const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_cap_on')!;
     handle.sqlite

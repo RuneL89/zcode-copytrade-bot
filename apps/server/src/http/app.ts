@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
@@ -25,13 +25,44 @@ import { PAPER_ASSUMPTIONS } from '../services/executors.js';
 import { loadWalletSecret, walletPublicKey } from '../wallet.js';
 import { rememberWalletPassphrase } from '../wallet-unlock.js';
 import { LiveExecutor } from '../services/executors.js';
+import { adjustExit, decideHire } from '../services/agentHooks.js';
 
 export function buildApp(rt: Runtime): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const sessions = new SessionManager(rt.config.env.SESSION_SECRET);
   const db: AppDatabase = rt.db.db;
 
+  // ---- local agent hooks (no session; a separate token; no order or arm routes)
+  const agentDenied = (c: Context<AppEnv>) => {
+    const expected = rt.config.env.AGENT_API_TOKEN;
+    if (!expected) return c.json({ error: 'agent api disabled' }, 404);
+    if (c.req.header('authorization') !== `Bearer ${expected}`) return c.json({ error: 'unauthorized' }, 401);
+    return null;
+  };
+
+  app.post('/api/agent/hire-decisions', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await decideHire(
+      db,
+      rt.config.risk,
+      rt.lifecycle,
+      (body ?? {}) as Record<string, unknown>,
+    );
+    return c.json(result.body, result.status as 200);
+  });
+
+  app.post('/api/agent/exit-adjustments', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await adjustExit(db, rt.config.risk, rt.engine, (body ?? {}) as Record<string, unknown>);
+    return c.json(result.body, result.status as 200);
+  });
+
   // ---- public bootstrap -----------------------------------------------------
+
   app.get('/api/bootstrap', (c) => {
     const needsSetup = repo.countUsers(db) === 0;
     const state = rt.store.get();

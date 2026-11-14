@@ -19,6 +19,49 @@ What you end up with:
 
 The rest of this page shows how that works, twice: first at a glance, then in detail. If you just want to run it, skip to [Getting started](#getting-started).
 
+## Running paper mode
+
+Paper is the default. It watches public market data and simulates fills. It does not sign, and it does not need a wallet.
+
+```bash
+pnpm install
+cp .env.example .env
+# Set SESSION_SECRET to 32+ random characters. Leave every API key empty
+# to boot. Add HELIUS_API_KEY, JUPITER_API_KEY and FOMOAPI_KEY locally
+# when you want live leaderboard and chain reads. Never commit .env.
+pnpm build
+pnpm db:migrate
+pnpm dev:server    # http://127.0.0.1:8787  (or pnpm start after a build)
+```
+
+The first login uses the one-time setup token printed by the server (also in `data/setup-token.txt`).
+
+Paper defaults, all overridable in `.env` or Risk settings:
+
+| Limit                          | Default                                                        |
+| ------------------------------ | -------------------------------------------------------------- |
+| Bankroll                       | $100 (`EQUITY_START_USD`)                                      |
+| Per copied buy                 | $2 floor, $10 ceiling                                          |
+| Open exposure per hired trader | $40                                                            |
+| Deployed cap                   | 80% of bankroll, so $80 total even though 5 × $40 is $200      |
+| Daily realized loss stop       | $15                                                            |
+| Max hold                       | 5h, then 1.5h grace that sells on green                        |
+| Stop-loss / trail              | −25% from entry; trail arms at +15% and sells 10% off the peak |
+| Exit slippage ladder           | 300, then 600, then 1,000 bps                                  |
+
+Helius spend is metered. A designed day is about 5,800 credits against a 13,600 hard cap. The roster poll is signature-first. `getTransactionsForAddress` is not on a timer. Leave `HELIUS_API_KEY` empty until that budget is the one you intend to run.
+
+`HIRE_APPROVAL=auto` fills an empty seat from the bench. `agent` waits for `POST /api/agent/hire-decisions` (Bearer `AGENT_API_TOKEN`). Exit plans can only be tightened via `POST /api/agent/exit-adjustments`. A seat left empty POSTs to `AGENT_WEBHOOK_URL` when that is set. Telegram is not used.
+
+What is not in this build yet, and blocks a live desk:
+
+- No measured 24h WebSocket cost. The CI day is the designed call pattern, not a week of real Helius traffic.
+- No live signing. Jupiter `/swap/v2/build` is quoted; assembling and sending a transaction is deferred.
+- Shadow lots still book a flat 1% slippage when no Jupiter quote is available. A quote needs a taker public key.
+- Helius Admin usage reconciliation needs `HELIUS_PROJECT_ID` and a project that exposes the Admin API. Without it the in-app meter stands alone.
+- Hiring judgement, calibration, and the assembly-line UI are later phases. The dashboard is the current one.
+- `HIRE_APPROVAL` defaults to `auto` so paper can run with no agent process. Switch it to `agent` when something is answering the hire endpoint.
+
 ## Getting started
 
 **The double-click path.** Run `install.bat` from the project folder. It installs a portable Node if you do not have one, sets up pnpm, installs the dependencies, builds every package, creates `.env` from the example with a generated session secret, creates the SQLite database, offers to load example candidates, and adds Start Menu and Desktop shortcuts. An existing `.env` is never overwritten. At the end it asks whether to start the app.

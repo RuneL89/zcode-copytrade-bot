@@ -8,8 +8,10 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File                   | Owns                                                                                                                                                                                                       |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                                                                |
-| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the `canReenter` rule (no timed cooldowns).                                                                    |
-| `monitor.ts`           | Roster polling (one pass per activation), cursor persistence per hire, dedupe, restart reconciliation.                                                                                                     |
+| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, `canReenter` plus `COOLDOWN_HOURS`, repeat-fire archive, and the seat-open webhook.                            |
+| `monitor.ts`           | Signature-first roster polling, code exits on every tick, cursor persistence per hire, dedupe, restart reconciliation.                                                                                     |
+| `rosterStream.ts`      | Push filter: swap-program logs only, and the 60s outage switch back to the signature-first poll.                                                                                                           |
+| `agentHooks.ts`        | Hire decision and tighten-only exit plan. Neither route can arm, sign, or withdraw.                                                                                                                        |
 | `discovery.ts`         | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                                                           |
 | `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling rotation.                                                                                |
 | `dawn-targets.ts`      | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                                                          |
@@ -45,9 +47,10 @@ no LLM in the loop (D6).
   unbounded loops. `engine.ts` is invoked per event, never on its own timer.
 - **Firing is transactional.** Mark `FIRING` and cancel unsigned intents
   atomically, then apply the position policy and `fillRoster()` in that
-  order; a fired trader returns only after a funded buy observed after the
-  firing (D4's `canReenter`), never on a timed cooldown. A crash must not
-  leave a half-fired trader.
+  order. A fired trader also waits out `COOLDOWN_HOURS` (default 36) and
+  needs a funded buy observed after the firing. `HIRE_APPROVAL=agent` leaves
+  the seat empty and posts the seat-open webhook instead of hiring. A crash
+  must not leave a half-fired trader.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.

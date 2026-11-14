@@ -16,7 +16,7 @@ export const envSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   DATA_DIR: z.string().default('./data'),
   /** Paper-mode starting bankroll in USD (dashboard equity baseline). */
-  EQUITY_START_USD: z.coerce.number().positive().default(1000),
+  EQUITY_START_USD: z.coerce.number().positive().default(100),
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
   LIVE_TRADING_ACK: z.string().optional(),
 
@@ -30,8 +30,19 @@ export const envSchema = z.object({
   // uses this.
   PUBLIC_SOLANA_RPC_URL: z.string().default('https://api.mainnet-beta.solana.com'),
 
-  JUPITER_BASE_URL: z.string().url().default('https://lite-api.jup.ag'),
+  JUPITER_BASE_URL: z.string().url().default('https://api.jup.ag'),
   JUPITER_API_KEY: z.string().default(''),
+  /** Helius project id for the Admin usage API. Empty skips reconciliation. */
+  HELIUS_PROJECT_ID: z.string().default(''),
+  /**
+   * Local agent API. Empty disables the routes. The token is not a session
+   * cookie and cannot arm, sign, or withdraw.
+   */
+  AGENT_API_TOKEN: z.string().default(''),
+  /** Outbound webhook for an opened seat. Empty disables the post. */
+  AGENT_WEBHOOK_URL: z.string().url().optional(),
+  /** `auto` fills a free seat from the bench. `agent` waits for a hire decision. */
+  HIRE_APPROVAL: z.enum(['auto', 'agent']).default('auto'),
 
   // Optional FOMO web discovery (read-only browser adapter). Unset = manual import only.
   FOMO_LEADERBOARD_URL: z.string().optional(),

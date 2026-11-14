@@ -1,4 +1,13 @@
-import { scanForRecentBuy, type LeaderTxSummary, type TokenDelta } from '@zcode-bot/core';
+import {
+  scanForRecentBuy,
+  METHOD_CREDITS,
+  type CreditGovernor,
+  type CreditPath,
+  type HeliusMethod,
+  type LeaderTxSummary,
+  type TokenDelta,
+  GovernedSpendError,
+} from '@zcode-bot/core';
 
 /**
  * Helius Solana monitor.
@@ -46,11 +55,19 @@ export function signatureOf(row: {
 export class HeliusProvider {
   readonly name = 'helius';
   private rpcId = 0;
+  private governor: CreditGovernor | null = null;
+  private watchWalletCreditCap = 150;
 
   constructor(
     private apiKey: string,
     private baseUrl = 'https://mainnet.helius-rpc.com',
   ) {}
+
+  /** Attach the credit governor. Unset keeps the historical direct-call behavior for tests. */
+  setGovernor(governor: CreditGovernor | null, watchWalletCreditCap = 150): void {
+    this.governor = governor;
+    this.watchWalletCreditCap = watchWalletCreditCap;
+  }
 
   setApiKey(key: string): void {
     this.apiKey = key;
@@ -64,7 +81,23 @@ export class HeliusProvider {
     return `${this.baseUrl}/?api-key=${encodeURIComponent(this.apiKey)}`;
   }
 
-  private async rpc<T>(method: string, params: unknown): Promise<T> {
+  private async rpc<T>(
+    method: string,
+    params: unknown,
+    path: CreditPath = 'roster',
+    subKey?: string,
+  ): Promise<T> {
+    if (this.governor) {
+      const known = (method in METHOD_CREDITS ? method : 'getAccountInfo') as HeliusMethod;
+      const decision = this.governor.spend({
+        path,
+        method: known,
+        atMs: Date.now(),
+        fallback: path === 'watch' || path === 'wallet',
+        ...(subKey ? { subBucket: { key: subKey, cap: this.watchWalletCreditCap } } : {}),
+      });
+      if (!decision.ok) throw new GovernedSpendError(decision);
+    }
     if (!this.configured) throw new Error('helius: API key not configured');
     let res: Response;
     try {
@@ -79,7 +112,10 @@ export class HeliusProvider {
       // catch-up) forever: time out and let the caller fail this one request.
       throw new Error(`helius: request failed: ${(e as Error).message}`);
     }
-    if (res.status === 429) throw new Error('helius: rate limited (429); backing off');
+    if (res.status === 429) {
+      this.governor?.note429(path, Date.now());
+      throw new Error('helius: rate limited (429); backing off');
+    }
     if (!res.ok) throw new Error(`helius: HTTP ${res.status}`);
     const json = (await res.json()) as { result?: T; error?: { message: string } };
     if (json.error) throw new Error(`helius: ${json.error.message}`);
@@ -89,7 +125,7 @@ export class HeliusProvider {
   async healthCheck(): Promise<{ ok: boolean; latencyMs: number; detail?: string }> {
     const started = Date.now();
     try {
-      await this.rpc<{ context: unknown; value: unknown }>('getLatestBlockhash', []);
+      await this.rpc<{ context: unknown; value: unknown }>('getSlot', [], 'health');
       return { ok: true, latencyMs: Date.now() - started };
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - started, detail: (e as Error).message };
@@ -103,7 +139,7 @@ export class HeliusProvider {
    */
   async solBalanceLamports(address: string): Promise<number | null> {
     try {
-      const result = await this.rpc<{ context: unknown; value: number }>('getBalance', [address]);
+      const result = await this.rpc<{ context: unknown; value: number }>('getBalance', [address], 'wallet');
       return result.value;
     } catch {
       return null;
@@ -140,6 +176,8 @@ export class HeliusProvider {
       const rows = await this.rpc<Array<{ signature: string; blockTime: number | null }>>(
         'getSignaturesForAddress',
         [address, { limit }],
+        'watch',
+        address,
       );
       return rows ?? [];
     } catch {
@@ -238,13 +276,11 @@ export class HeliusProvider {
 
   /** On first activation: store the latest confirmed signature as the cursor. */
   async latestCursor(address: string): Promise<LeaderCursor> {
-    const result = await this.rpc<{
-      data: Array<{ signature: string; slot: number; blockTime: number | null }>;
-    }>('getTransactionsForAddress', [
-      address,
-      { transactionDetails: 'signatures', sortOrder: 'desc', limit: 1, commitment: 'confirmed' },
-    ]);
-    const latest = result?.data?.[0];
+    const result = await this.rpc<
+      | Array<{ signature: string; slot: number; blockTime: number | null }>
+      | { data?: Array<{ signature: string; slot: number; blockTime: number | null }> }
+    >('getSignaturesForAddress', [address, { limit: 1, commitment: 'confirmed' }], 'roster');
+    const latest = Array.isArray(result) ? result[0] : result?.data?.[0];
     if (!latest) {
       return { lastSignature: '', lastSlot: 0, lastTransactionIndex: 0, lastBlockTime: null };
     }
@@ -254,6 +290,42 @@ export class HeliusProvider {
       lastTransactionIndex: 0,
       lastBlockTime: latest.blockTime ?? null,
     };
+  }
+
+  /**
+   * Signatures newer than the cursor, oldest first. One credit each. This is
+   * the roster and outage poll; it never requests full history.
+   */
+  async signaturesSince(
+    address: string,
+    cursor: LeaderCursor,
+    limit = 25,
+  ): Promise<Array<{ signature: string; slot: number; blockTime: number | null; err: boolean }>> {
+    const result = await this.rpc<
+      | Array<{ signature: string; slot: number; blockTime: number | null; err: unknown }>
+      | { data?: Array<{ signature: string; slot: number; blockTime: number | null; err: unknown }> }
+    >(
+      'getSignaturesForAddress',
+      [
+        address,
+        {
+          limit,
+          commitment: 'confirmed',
+          ...(cursor.lastSignature ? { until: cursor.lastSignature } : {}),
+        },
+      ],
+      'roster',
+    );
+    const rows = Array.isArray(result) ? result : (result?.data ?? []);
+    return rows
+      .filter((row) => row.signature && row.signature !== cursor.lastSignature)
+      .map((row) => ({
+        signature: row.signature,
+        slot: row.slot,
+        blockTime: row.blockTime ?? null,
+        err: row.err != null,
+      }))
+      .sort((a, b) => a.slot - b.slot);
   }
 
   /**
@@ -272,16 +344,20 @@ export class HeliusProvider {
         transaction?: { signatures?: string[] } | null;
         meta?: unknown;
       }>;
-    }>('getTransactionsForAddress', [
-      address,
-      {
-        transactionDetails: 'full',
-        sortOrder: 'desc',
-        limit,
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 1,
-      },
-    ]);
+    }>(
+      'getTransactionsForAddress',
+      [
+        address,
+        {
+          transactionDetails: 'full',
+          sortOrder: 'desc',
+          limit,
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 1,
+        },
+      ],
+      'vetting',
+    );
     const rows = result?.data ?? [];
     const fresh = rows
       .filter(
@@ -310,17 +386,23 @@ export class HeliusProvider {
    * transaction is unreadable or was not signed by the address — the caller
    * advances past it rather than guessing.
    */
-  async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
+  async transactionSummary(
+    address: string,
+    signature: string,
+    path: CreditPath = 'roster',
+  ): Promise<LeaderTxSummary | null> {
     const tx = await this.rpc<{
       slot?: number;
       blockTime?: number | null;
       transactionIndex?: number;
       meta?: { err?: unknown } | null;
       transaction?: { signatures?: string[] };
-    } | null>('getTransaction', [
-      signature,
-      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
-    ]);
+    } | null>(
+      'getTransaction',
+      [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' }],
+      path,
+      path === 'watch' ? address : undefined,
+    );
     if (!tx) return null;
     return HeliusProvider.toSignerTxSummary(address, {
       signature: signatureOf({ signature, transaction: tx.transaction }),
@@ -425,17 +507,21 @@ export class HeliusProvider {
         transaction?: { signatures?: string[] } | null;
         meta?: unknown;
       }>;
-    }>('getTransactionsForAddress', [
-      address,
-      {
-        transactionDetails: 'full',
-        sortOrder: 'desc',
-        limit,
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 1,
-        ...(opts.before ? { before: opts.before } : {}),
-      },
-    ]);
+    }>(
+      'getTransactionsForAddress',
+      [
+        address,
+        {
+          transactionDetails: 'full',
+          sortOrder: 'desc',
+          limit,
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 1,
+          ...(opts.before ? { before: opts.before } : {}),
+        },
+      ],
+      'vetting',
+    );
     return (result?.data ?? [])
       .map((r) => ({
         signature: signatureOf(r),
@@ -468,17 +554,21 @@ export class HeliusProvider {
             transaction?: { signatures?: string[] } | null;
             meta?: unknown;
           }>;
-        }>('getTransactionsForAddress', [
-          address,
-          {
-            transactionDetails: 'full',
-            sortOrder: 'desc',
-            limit: PAGE,
-            commitment: 'confirmed',
-            maxSupportedTransactionVersion: 1,
-            ...(before ? { before } : {}),
-          },
-        ]);
+        }>(
+          'getTransactionsForAddress',
+          [
+            address,
+            {
+              transactionDetails: 'full',
+              sortOrder: 'desc',
+              limit: PAGE,
+              commitment: 'confirmed',
+              maxSupportedTransactionVersion: 1,
+              ...(before ? { before } : {}),
+            },
+          ],
+          'vetting',
+        );
         const rows = (result?.data ?? [])
           .map((r) => ({
             signature: signatureOf(r),

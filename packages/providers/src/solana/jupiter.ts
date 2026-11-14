@@ -1,9 +1,9 @@
 /**
- * Jupiter Swap API v1 adapter (verified against current docs):
- *   GET  {base}/swap/v1/quote?inputMint&outputMint&amount&slippageBps
- *   POST {base}/swap/v1/swap  { quoteResponse, userPublicKey, ... }
- * Production base https://api.jup.ag requires x-api-key; the keyless
- * rate-limited mirror https://lite-api.jup.ag is the default.
+ * Jupiter Swap API v2 `/build` (Metis routing, no Jupiter platform fee).
+ *   GET {base}/swap/v2/build?inputMint&outputMint&amount&slippageBps&taker
+ * The response is a quote plus raw instructions. We assemble, sign and send
+ * ourselves. Live assembly is not enabled yet: paper mode uses the quote
+ * fields and falls back to a cached price when `/build` refuses the call.
  */
 
 export interface JupiterQuote {
@@ -26,7 +26,7 @@ export class JupiterProvider {
   readonly name = 'jupiter';
 
   constructor(
-    private baseUrl: string = 'https://lite-api.jup.ag',
+    private baseUrl: string = 'https://api.jup.ag',
     private apiKey: string = '',
   ) {}
 
@@ -47,14 +47,17 @@ export class JupiterProvider {
     /** Raw base-unit amount of inputMint. */
     amount: string;
     slippageBps: number;
+    /** Required by `/build`. Paper mode omits it and uses the price fallback. */
+    taker?: string;
   }): Promise<JupiterQuote> {
     const qs = new URLSearchParams({
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
       slippageBps: String(params.slippageBps),
+      ...(params.taker ? { taker: params.taker } : {}),
     });
-    const res = await fetch(`${this.baseUrl}/swap/v1/quote?${qs}`, { headers: this.headers() });
+    const res = await fetch(`${this.baseUrl}/swap/v2/build?${qs}`, { headers: this.headers() });
     if (res.status === 429) throw new Error('jupiter: rate limited (429)');
     if (!res.ok) {
       throw new Error(`jupiter: quote HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -68,22 +71,11 @@ export class JupiterProvider {
     /** Funding mint to receive/forward. */
     wrapAndUnwrapSol?: boolean;
   }): Promise<BuiltSwap> {
-    const res = await fetch(`${this.baseUrl}/swap/v1/swap`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({
-        quoteResponse: params.quoteResponse,
-        userPublicKey: params.userPublicKey,
-        wrapAndUnwrapSol: params.wrapAndUnwrapSol ?? true,
-        dynamicComputeUnitLimit: true,
-        dynamicSlippage: false,
-      }),
-    });
-    if (res.status === 429) throw new Error('jupiter: rate limited (429)');
-    if (!res.ok) {
-      throw new Error(`jupiter: swap HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    }
-    return (await res.json()) as BuiltSwap;
+    // `/build` already returned instructions on the quote call. Signing and
+    // sending are the live gate, which this paper rebuild does not exercise.
+    void params.wrapAndUnwrapSol;
+    if (!params.userPublicKey) throw new Error('jupiter: build requires the taker public key');
+    throw new Error('jupiter: live transaction assembly is not enabled (paper mode only)');
   }
 
   /** Price impact expressed in whole basis points from the quote's fraction string. */

@@ -27,9 +27,10 @@ notifications. This is the only package allowed to talk to the outside world.
 - **Fail closed.** Adapter or markup drift aborts the operation and surfaces as
   provider health. Never invent an endpoint, fill, price, capability, or
   fallback value.
-- **Helius uses `getTransactionsForAddress`.** Enhanced Transactions is
-  deprecated — do not reintroduce it. Polling is the baseline; webhooks are
-  optional.
+- **Helius timer paths are signature-first.** `getSignaturesForAddress`, then
+  `getTransaction` for an unseen signature. `getTransactionsForAddress` is a
+  vetting scan only and is rejected by the credit governor on every other
+  path. Enhanced Transactions stays retired.
 - **The public Solana RPC is the bulk-refresh workhorse (2026-10-31).**
   Candidate activity refreshes run often and in bursts; they hit the free
   public RPC first (`PublicSolanaProvider.walletActivity`, IP-throttled, never
@@ -38,9 +39,10 @@ notifications. This is the only package allowed to talk to the outside world.
   means the same thing everywhere. `getTransaction` calls must admit versioned
   transactions (`maxSupportedTransactionVersion` > 0) or every modern swap
   errors. Helius stays the sole source for the 8-second leader monitor.
-- **Jupiter uses Swap API v1** (`/swap/v1/quote`, `/swap/v1/swap`) on
-  `api.jup.ag` (keyed) or `lite-api.jup.ag` (free, rate-limited). A rejected
-  quote is logged and never retried blind; 429s skip a cycle.
+- **Jupiter uses Swap API v2** `GET /swap/v2/build` on `api.jup.ag` (free key,
+  about 1 request/second, no platform fee). We quote there. Live assembly and
+  sending are not enabled. A rejected quote is not retried blind; paper falls
+  back to the cached price.
 - **`fomo.family` is NEVER accessed through this package's browser adapter,
   Playwright, or any automation browser.** Operator policy (workspace
   `../AGENTS.md`) requires the operator's normal desktop Chrome driven by GUI

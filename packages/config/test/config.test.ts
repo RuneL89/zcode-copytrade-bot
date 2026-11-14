@@ -26,14 +26,33 @@ describe('loadConfig', () => {
   it('defaults to paper mode with default risk limits', () => {
     const cfg = loadConfig(base);
     expect(cfg.mode).toBe('paper');
+    expect(cfg.env.EQUITY_START_USD).toBe(100);
+    expect(cfg.env.JUPITER_BASE_URL).toBe('https://api.jup.ag');
     expect(cfg.risk.COPY_SCALE).toBe(0.25);
+    expect(cfg.risk.MIN_PER_BUY_USD).toBe(2);
+    expect(cfg.risk.MAX_PER_BUY_USD).toBe(10);
+    expect(cfg.risk.MAX_OPEN_PER_TRADER_USD).toBe(40);
+    expect(cfg.risk.MAX_DEPLOYED_PCT).toBe(80);
+    expect(cfg.risk.MAX_DAILY_REALIZED_LOSS_USD).toBe(15);
+    expect(cfg.risk.MAX_POSITION_AGE_HOURS).toBe(5);
+    expect(cfg.risk.POSITION_GRACE_HOURS).toBe(1.5);
+    expect(cfg.risk.STOP_LOSS_BPS).toBe(2500);
+    expect(cfg.risk.COOLDOWN_HOURS).toBe(36);
+    expect(cfg.risk.EXIT_SLIPPAGE_BPS_3).toBe(1000);
+    expect(cfg.risk.SELL_ON_GREEN).toBe(true);
     expect(cfg.risk.LOSS_STREAK_UNIT).toBe('fully_closed_position');
     expect(cfg.risk.FIRE_POSITION_POLICY).toBe('close_all_before_switch');
   });
 
   it('coerces risk numbers from env strings', () => {
-    const cfg = loadConfig({ ...base, MIN_PER_BUY_USD: '20', MAX_SLIPPAGE_BPS: '150' });
+    const cfg = loadConfig({
+      ...base,
+      MIN_PER_BUY_USD: '20',
+      MAX_PER_BUY_USD: '40',
+      MAX_SLIPPAGE_BPS: '150',
+    });
     expect(cfg.risk.MIN_PER_BUY_USD).toBe(20);
+    expect(cfg.risk.MAX_PER_BUY_USD).toBe(40);
     expect(cfg.risk.MAX_SLIPPAGE_BPS).toBe(150);
   });
 

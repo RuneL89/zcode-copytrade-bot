@@ -4,7 +4,7 @@ import type { RiskConfig } from '@zcode-bot/config';
 import {
   canPromote,
   canReenter,
-  ceilingAction,
+  dayTradeExitDecision,
   classifyFundedSwap,
   computeCopyNotional,
   usdToMicro,
@@ -138,7 +138,7 @@ export class WatchService {
         // Fall through to Helius.
       }
     }
-    return this.deps.helius.transactionSummary(address, signature).catch(() => null);
+    return this.deps.helius.transactionSummary(address, signature, 'watch').catch(() => null);
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -190,6 +190,11 @@ export class WatchService {
       .listCandidateAddresses(this.db, candidateId)
       .find((a) => a.chain === 'solana')?.address;
     if (!address) return { ok: false, reason: 'NO_WALLET' };
+
+    const already = repo.listWatchWallets(this.db, 'watching').some((row) => row.candidateId === candidateId);
+    if (!already && repo.listWatchWallets(this.db, 'watching').length >= risk.WATCH_LIST_SIZE) {
+      throw new Error(`watch list is full (${risk.WATCH_LIST_SIZE})`);
+    }
 
     repo.upsertWatchWallet(this.db, {
       candidateId,
@@ -418,20 +423,29 @@ export class WatchService {
         mark = null; // no quote: retry next tick, never invent a price
       }
       const entry = BigInt(lot.entryPriceUsdMicro);
-      const decision = ceilingAction({
-        openedAt: lot.openedAt,
+      const decision = dayTradeExitDecision({
+        openedAtIso: lot.openedAt,
         nowMs: Date.now(),
         maxAgeHours: this.risk.MAX_POSITION_AGE_HOURS,
         graceHours: this.risk.POSITION_GRACE_HOURS,
-        markUsdMicro: mark,
         entryUsdMicro: entry,
+        markUsdMicro: mark,
+        peakUsdMicro: mark,
+        lowSinceMaxHoldUsdMicro: null,
+        stopLossBps: this.risk.STOP_LOSS_BPS,
+        trailArmBps: this.risk.TRAIL_ARM_BPS,
+        trailDistanceBps: this.risk.TRAIL_DISTANCE_BPS,
+        partialTpBps: 0,
+        partialTaken: false,
+        graceBounceBps: this.risk.GRACE_BOUNCE_BPS,
+        sellOnGreen: this.risk.SELL_ON_GREEN,
       });
-      if (decision !== 'close_now' || mark === null) continue;
+      if (decision === 'none' || decision === 'partial_take_profit' || mark === null) continue;
       const notional = BigInt(lot.notionalUsdMicro);
       const pnl = shadowPnlUsdMicro(notional, entry, mark);
       repo.closeShadowTrade(this.db, lot.id, {
         closedAt: new Date().toISOString(),
-        exitReason: 'ceiling',
+        exitReason: decision,
         exitPriceUsdMicro: mark.toString(),
         pnlUsdMicro: pnl.toString(),
       });
@@ -466,14 +480,10 @@ export class WatchService {
 
     result.ceilingsClosed = await this.closeDueCeilings();
 
-    // Watching, benched AND hired: D4 keeps the shadow record running on the
-    // bench (and while the leader holds a chair) as the would-have-copied
-    // baseline.
-    for (const wallet of [
-      ...repo.listWatchWallets(this.db, 'watching'),
-      ...repo.listWatchWallets(this.db, 'bench'),
-      ...repo.listWatchWallets(this.db, 'hired'),
-    ]) {
+    // Watching only. Hired seats are covered by the roster stream and its
+    // safety poll, so this pass does not pay for them a second time. Bench
+    // rows keep the record they already earned; a fresh check is the hire path.
+    for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
       try {
         result.newEvents += await this.pollWallet(wallet.candidateId, wallet.address);
         result.polled++;
@@ -683,6 +693,7 @@ export class WatchService {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
         promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+        cooldownHours: this.risk.COOLDOWN_HOURS,
       },
     };
   }
@@ -701,7 +712,14 @@ export class WatchService {
     for (const wallet of repo.listWatchWallets(this.db, 'cooling')) {
       const firedAt = repo.lastFiredAt(this.db, wallet.candidateId);
       const lastBuy = repo.lastFundedBuyAt(this.db, wallet.candidateId);
-      if (canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: lastBuy })) {
+      if (
+        canReenter({
+          lastFiredAt: firedAt,
+          lastFundedBuyAt: lastBuy,
+          nowMs: Date.now(),
+          cooldownHours: this.risk.COOLDOWN_HOURS,
+        })
+      ) {
         repo.setWatchStatus(this.db, wallet.candidateId, 'watching', 'funded buy observed after the firing');
         repo.audit(this.db, 'watch', 're-entry observed: funded buy after the firing', {
           candidateId: wallet.candidateId,

@@ -17,3 +17,5 @@ export * from './transfer.js';
 export * from './budget.js';
 export * from './exitGuard.js';
 export * from './callPattern.js';
+export * from './deskPolicy.js';
+export * from './swapPrograms.js';

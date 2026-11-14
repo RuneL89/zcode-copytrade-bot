@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, SETTINGS_PATCH_KEYS, type AppConfig } from '@zcode-bot/config';
+import { CreditGovernor } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -38,6 +39,7 @@ import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { DiscoveryService, discoveryDecision } from './services/discovery.js';
+import { deliverSeatOpen } from './services/agentHooks.js';
 import { WatchService } from './services/watch.js';
 import { ReportsService, positionsText, reportText } from './services/reports.js';
 import { TelegramCommandService } from './services/telegram-commands.js';
@@ -216,6 +218,9 @@ export class Runtime {
     );
 
     this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
+    this.lifecycle.hireApproval = config.env.HIRE_APPROVAL;
+    this.lifecycle.onSeatOpen = (event) => deliverSeatOpen(config.env.AGENT_WEBHOOK_URL, event);
+    this.helius.setGovernor(new CreditGovernor());
     this.engineCallbacks();
 
     this.builder = new StateBuilder(
@@ -500,7 +505,7 @@ export class Runtime {
     (this.builder as unknown as { monitor: LeaderMonitor | null }).monitor = this.monitor;
 
     // Provider health sampler (housekeeping).
-    this.healthTimer = setInterval(() => void this.sampleHealth(), 60_000);
+    this.healthTimer = setInterval(() => void this.sampleHealth(), 15 * 60_000);
     void this.sampleHealth();
 
     // Fee ledger scan cadence (housekeeping): wallet history is a billed call,
@@ -669,7 +674,10 @@ export class Runtime {
       await this.refreshMarks().catch(() => undefined);
       // Fee wallet runway: SOL pays every network fee, so surface its balance.
       const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
-      const solLamports = feeAddress ? await this.helius.solBalanceLamports(feeAddress) : null;
+      let solLamports = feeAddress
+        ? await this.publicSolana.getBalanceLamports(feeAddress).catch(() => null)
+        : null;
+      if (solLamports === null && feeAddress) solLamports = await this.helius.solBalanceLamports(feeAddress);
       let solPriceUsdMicro: bigint | null = null;
       try {
         solPriceUsdMicro = (await this.priceProvider.priceOf(SOL_MINT, 9)).priceUsdMicro;
@@ -688,7 +696,11 @@ export class Runtime {
       const ledger = this.feeLedger.snapshot();
       this.builder.setFeeLedger({ totals: ledger.totals, tx: ledger.tx, solUsdMicro: solPriceUsdMicro });
       // USDC wallet balance: the withdrawable-cap cross-check for the OPS card.
-      const usdcBase = feeAddress ? await this.helius.tokenBalanceBase(USDC_MINT, feeAddress) : null;
+      let usdcBase = feeAddress
+        ? await this.publicSolana.tokenBalanceBase(USDC_MINT, feeAddress).catch(() => null)
+        : null;
+      if (usdcBase === null && feeAddress)
+        usdcBase = await this.helius.tokenBalanceBase(USDC_MINT, feeAddress);
       this.builder.setWalletUsdc(usdcBase);
       // Symbols can appear later (a token gains metadata after launch), so keep
       // retrying the ones still missing on the health cadence.

@@ -91,19 +91,18 @@ function harness(): Harness {
       lastTransactionIndex: 0,
       lastBlockTime: null,
     }),
-    transactionsSince: async (address: string) => {
+    signaturesSince: async (address: string) => {
       if (failFor.has(address)) throw new Error(`provider down for ${address}`);
       return [
         {
           signature: `sig_${address}`,
           slot: 1,
-          transactionIndex: 0,
           blockTime: Math.floor(Date.now() / 1000),
           err: false,
-          raw: txFor(address, `sig_${address}`, 40_000_000n),
         },
       ];
     },
+    transactionSummary: async (address: string, signature: string) => txFor(address, signature, 40_000_000n),
   } as unknown as Parameters<(typeof LeaderMonitor.prototype)['constructor']>[1];
 
   const monitor = new LeaderMonitor(

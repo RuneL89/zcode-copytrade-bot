@@ -6,14 +6,15 @@ import type { PriceProvider } from '@zcode-bot/providers';
 import {
   applyCloseUnit,
   bankrollHeadroom,
-  capToHeadroom,
   classifyLeaderEvent,
-  computeCopyNotional,
   countsAsUnit,
   evaluateEntryRisk,
+  exitSlippageBps,
+  guardExitMode,
   isEventTooOld,
   leaderSoldFraction,
   planCopiedExit,
+  sizeCopy,
   stringifyBigIntSafe,
   usdToMicro,
   type LeaderClassifiedEvent,
@@ -200,45 +201,12 @@ export class CopyEngine {
       leaderInputUsdMicro = (inputAmountBase * price.priceUsdMicro) / 10n ** 9n;
     }
 
-    const sizing = computeCopyNotional({
-      leaderInputUsdMicro,
-      scaleNumerator: BigInt(Math.round(this.risk.COPY_SCALE * 10000)),
-      scaleDenominator: 10000n,
-      minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
-      maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
-    });
-
     const intentId = 'intent_' + randomUUID();
     const idempotencyKey = `entry:${activationId}:${event.signature}:${event.mint}`;
-
-    if (sizing.action !== 'copy') {
-      // Sizing's only skip is invalid input (D1: MIN_PER_BUY_USD is an absolute
-      // floor, so a below-floor copy is placed at the floor, never skipped).
-      repo.insertIntent(this.db, {
-        intentId,
-        kind: 'entry',
-        mode: this.executor.mode,
-        activationId,
-        candidateId,
-        positionId: null,
-        mint: event.mint,
-        inputMint,
-        inputAmountBase: '0',
-        inputUsdMicro: sizing.desiredUsdMicro.toString(),
-        state: 'skipped',
-        idempotencyKey,
-        reason: sizing.action === 'skip_invalid' ? 'invalid input' : sizing.action,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    // Bankroll step: deployed (open entries INCL. entry fees) may not exceed
-    // MAX_DEPLOYED_PCT of capital (equity start + fee-net realized PnL). A
-    // copy that doesn't fit is downsized to the headroom; skipped only when
-    // the remainder is below the per-bet minimum.
     const openAll = repo.openPositions(this.db);
+    const traderOpen = openAll
+      .filter((p) => p.candidateId === candidateId)
+      .reduce((acc, p) => acc + BigInt(p.inputUsdMicro) + BigInt(p.feesUsdMicro), 0n);
     const bank = bankrollHeadroom({
       equityStartUsdMicro: this.equityStartUsdMicro,
       openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
@@ -246,12 +214,18 @@ export class CopyEngine {
       realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
       maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
     });
-    const capped = capToHeadroom(
-      sizing.finalUsdMicro!,
-      bank.headroomUsdMicro,
-      usdToMicro(this.risk.MIN_PER_BUY_USD),
-    );
-    if (capped.action === 'skip_headroom') {
+    const sizing = sizeCopy({
+      leaderInputUsdMicro,
+      scaleNumerator: BigInt(Math.round(this.risk.COPY_SCALE * 10000)),
+      scaleDenominator: 10000n,
+      minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
+      maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
+      traderOpenUsdMicro: traderOpen,
+      maxOpenPerTraderUsdMicro: usdToMicro(this.risk.MAX_OPEN_PER_TRADER_USD),
+      bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
+    });
+
+    if (sizing.action !== 'copy') {
       repo.insertIntent(this.db, {
         intentId,
         kind: 'entry',
@@ -262,26 +236,36 @@ export class CopyEngine {
         mint: event.mint,
         inputMint,
         inputAmountBase: '0',
-        inputUsdMicro: sizing.finalUsdMicro!.toString(),
+        inputUsdMicro: '0',
         state: 'skipped',
         idempotencyKey,
-        reason: 'MAX_DEPLOYED_PCT: bankroll cap',
+        reason:
+          sizing.action === 'skip_invalid'
+            ? 'invalid input'
+            : sizing.rule === 'MAX_DEPLOYED_PCT'
+              ? 'MAX_DEPLOYED_PCT: bankroll cap'
+              : `${sizing.rule}: headroom`,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
-      repo.insertRiskRejection(this.db, {
-        activationId,
-        rule: 'MAX_DEPLOYED_PCT',
-        limitValue: bank.headroomUsdMicro.toString(),
-        actualValue: sizing.finalUsdMicro!.toString(),
-        detail: `bankroll cap: ${(Number(bank.deployedUsdMicro) / 1e6).toFixed(2)} of ${(
-          Number(bank.capitalUsdMicro) / 1e6
-        ).toFixed(2)} deployed, headroom ${(Number(bank.headroomUsdMicro) / 1e6).toFixed(2)}`,
-        createdAt: new Date().toISOString(),
-      });
+      if (sizing.action === 'skip_headroom') {
+        repo.insertRiskRejection(this.db, {
+          activationId,
+          rule: sizing.rule,
+          limitValue: sizing.headroomUsdMicro.toString(),
+          actualValue: leaderInputUsdMicro.toString(),
+          detail:
+            sizing.rule === 'MAX_DEPLOYED_PCT'
+              ? `bankroll cap: ${(Number(bank.deployedUsdMicro) / 1e6).toFixed(2)} of ${(
+                  Number(bank.capitalUsdMicro) / 1e6
+                ).toFixed(2)} deployed, headroom ${(Number(bank.headroomUsdMicro) / 1e6).toFixed(2)}`
+              : `trader open cap, headroom ${(Number(sizing.headroomUsdMicro) / 1e6).toFixed(2)}`,
+          createdAt: new Date().toISOString(),
+        });
+      }
       return;
     }
-    const notional = capped.finalUsdMicro;
+    const notional = sizing.finalUsdMicro;
 
     // Convert notional to input token base units.
     let amountBase: bigint;
@@ -459,6 +443,46 @@ export class CopyEngine {
       event.signature,
     );
     this.callbacks.onStateChanged();
+  }
+
+  /** Sell a fraction of the remaining position (partial take-profit). 10000 closes it. */
+  async closeShare(
+    positionId: string,
+    sellBps: number,
+    reason: string,
+  ): Promise<'closed' | 'partial' | 'unknown' | 'failed'> {
+    const position = repo.getPosition(this.db, positionId);
+    if (!position) return 'failed';
+    const remaining = BigInt(position.remainingTokenBase);
+    if (remaining <= 0n) return 'closed';
+    const exitBase = (remaining * BigInt(Math.min(10_000, Math.max(0, Math.floor(sellBps))))) / 10_000n;
+    if (exitBase <= 0n || exitBase >= remaining) {
+      const full = await this.closePosition(positionId, reason);
+      return full === 'closed' ? 'closed' : full;
+    }
+    const out = await this.executeExit(positionId, exitBase, remaining - exitBase, false, reason, null);
+    this.callbacks.onStateChanged();
+    if (out === 'no-position') return 'failed';
+    if (out.kind === 'filled') return 'partial';
+    if (out.kind === 'unknown') return 'unknown';
+    return 'failed';
+  }
+
+  private exitAttempt(positionId: string): number {
+    const raw = repo.kvGet(this.db, `exit.attempt:${positionId}`);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  }
+
+  /** Pre-signature failure: keep retrying, and do not freeze the chair. */
+  private queueExit(positionId: string, detail: string): void {
+    const next = this.exitAttempt(positionId) + 1;
+    repo.kvSet(this.db, `exit.attempt:${positionId}`, String(next));
+    repo.kvSet(
+      this.db,
+      `exit.queue:${positionId}`,
+      JSON.stringify({ at: new Date().toISOString(), attempt: next, detail }),
+    );
   }
 
   /** Close the entire remaining position (fire policy / close-all / emergency). */
@@ -810,7 +834,11 @@ export class CopyEngine {
       inputDecimals: 6, // best-effort; priced via provider anyway
       outputDecimals: 6,
       inputUsdMicro: inputUsdEstimate.toString(),
-      slippageBpsCap: this.risk.MAX_SLIPPAGE_BPS,
+      slippageBpsCap: exitSlippageBps(this.exitAttempt(positionId), [
+        this.risk.EXIT_SLIPPAGE_BPS_1,
+        this.risk.EXIT_SLIPPAGE_BPS_2,
+        this.risk.EXIT_SLIPPAGE_BPS_3,
+      ]),
       userPublicKey: this.walletPublicKey,
     };
     repo.insertIntent(this.db, {
@@ -830,35 +858,22 @@ export class CopyEngine {
       updatedAt: new Date().toISOString(),
     });
 
-    // Live mode with the paper executor mounted means the wallet is locked
-    // (armed flag set but the key is not in memory). Simulating the sale here
-    // would settle the lot and mark the position closed while the tokens are
-    // still in the wallet — the dashboard would show an exit that never
-    // happened. Refuse, and surface it for reconciliation instead.
-    if (this.liveMode && this.executor.mode !== 'live') {
-      const detail = 'wallet locked: live executor not mounted — exit was NOT sent, position left open';
-      repo.updateIntent(this.db, intentId, { state: 'requires_reconciliation', reason: detail });
-      repo.insertReconciliationCase(this.db, {
-        kind: 'wallet_locked',
-        intentId,
-        positionId,
-        signature: null,
-        status: 'open',
-        detail,
-        createdAt: new Date().toISOString(),
-        resolvedAt: null,
-      });
-      repo.updatePosition(this.db, positionId, { status: 'requires_reconciliation' });
-      repo.audit(this.db, 'monitor', `exit blocked — ${detail}`, {
-        positionId,
-        mint: position.mint,
-      });
-      void this.notifier
-        .notify(
-          `⚠️ Copydesk: exit blocked for ${position.mint} — wallet locked, position left OPEN. Re-arm, then close it manually.`,
-        )
-        .catch(() => {});
-      return { kind: 'unknown', detail };
+    // A paper executor must not fill a live position, and a live executor must
+    // not fill a paper one. No signature was sent, so the position stays open
+    // and the chair is not frozen in reconciliation.
+    const entryIntent = position.entryIntentId ? repo.getIntent(this.db, position.entryIntentId) : undefined;
+    const positionMode =
+      entryIntent?.mode === 'live' || entryIntent?.mode === 'paper'
+        ? entryIntent.mode
+        : this.liveMode
+          ? 'live'
+          : 'paper';
+    if (guardExitMode(positionMode, this.executor.mode) === 'refuse') {
+      const detail = `exit refused: ${this.executor.mode} executor cannot close a ${positionMode} position`;
+      repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
+      this.queueExit(positionId, detail);
+      repo.audit(this.db, 'monitor', `exit refused — ${detail}`, { positionId, mint: position.mint });
+      return { kind: 'failed', error: detail };
     }
 
     // Fee headroom: a wallet this low on SOL cannot reliably pay swap fees and
@@ -920,6 +935,7 @@ export class CopyEngine {
     }
     if (outcome.kind === 'failed') {
       repo.updateIntent(this.db, intentId, { state: 'failed', reason: outcome.error });
+      this.queueExit(positionId, outcome.error);
       return outcome;
     }
     if (outcome.kind === 'skipped') {
