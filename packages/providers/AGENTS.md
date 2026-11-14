@@ -36,9 +36,11 @@ notifications. This is the only package allowed to talk to the outside world.
   public RPC first (`PublicSolanaProvider.walletActivity`, IP-throttled, never
   billed) and fall back to Helius only when it fails. Classification is shared
   with Helius (`toLeaderTxSummary` + core `classifyLeaderEvent`), so "buy"
-  means the same thing everywhere. `getTransaction` calls must admit versioned
-  transactions (`maxSupportedTransactionVersion` > 0) or every modern swap
-  errors. Helius stays the sole source for the 8-second leader monitor.
+  means the same thing everywhere. `getTransaction` must send
+  `maxSupportedTransactionVersion` of at least 1 (this client sends 255).
+  `0` makes the public node reject version 1 swaps as unreadable, and the
+  activity refresh then fails the wallet. That refresh does not spend Helius
+  to fill the gap. Helius stays the sole source for the leader monitor.
 - **Jupiter uses Swap API v2** `GET /swap/v2/build` on `api.jup.ag` (free key,
   about 1 request/second, no platform fee). We quote there. Live assembly and
   sending are not enabled. A rejected quote is not retried blind; paper falls

@@ -538,6 +538,74 @@ describe('public RPC wallet activity', () => {
     }
   });
 
+  it('reads a version 1 public transaction instead of treating it as unreadable', async () => {
+    const at = (minutesAgo: number) => Math.floor((NOW - minutesAgo * 60_000) / 1000);
+    const originalFetch = globalThis.fetch;
+    const versions: number[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const { method, params } = JSON.parse(init?.body ?? '{}') as {
+        method: string;
+        params: [string, { maxSupportedTransactionVersion?: number }?];
+      };
+      if (method === 'getSignaturesForAddress') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            result: [1, 2, 3].map((n) => ({
+              signature: `buy-${n}`,
+              slot: 100,
+              blockTime: at(n),
+              err: null,
+            })),
+          }),
+          { status: 200 },
+        );
+      }
+      const version = params[1]?.maxSupportedTransactionVersion ?? 0;
+      versions.push(version);
+      // Live public nodes reject version 1 swaps when the client only claims version 0.
+      if (version < 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: -32015,
+              message:
+                'Transaction version (1) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 1',
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      const body = structuredClone(buyRaw) as {
+        transaction?: { message?: { accountKeys?: Array<{ pubkey: string; signer?: boolean }> } };
+      };
+      for (const key of body.transaction?.message?.accountKeys ?? []) {
+        if (key.pubkey === leader) key.signer = true;
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          result: { ...body, slot: 100, transactionIndex: 0, blockTime: at(1), version: 1 },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    try {
+      const provider = new PublicSolanaProvider('https://public.test', 1);
+      const res = await provider.walletActivity(leader, {
+        lookbackHours: 24,
+        maxTxScans: 10,
+        nowMs: NOW,
+        priceOf: async (mint) => (mint === MEOW ? 200_000_000n : null),
+      });
+      expect(versions.every((version) => version >= 1)).toBe(true);
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.copyableTrades24h).toBeGreaterThanOrEqual(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('walletActivity fails open on a broken public node (never throws)', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;

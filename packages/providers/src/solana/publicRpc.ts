@@ -27,6 +27,13 @@ import { HeliusProvider, signatureOf, type FetchedLeaderTx } from './helius.js';
  */
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Highest transaction version the public node should return. `0` rejects
+ * version 1, which current Jupiter swaps use, and the node answers
+ * "Transaction version (1) is not supported". 255 is what this client used
+ * before that regression and what the public node accepts.
+ */
+const MAX_TX_VERSION = 255;
 const DEFAULT_MAX_TX_SCANS = 100;
 const DEFAULT_MAX_PRICE_MINTS = 5;
 const PAGE_SLEEP_MS = 300;
@@ -204,7 +211,7 @@ export class PublicSolanaProvider {
   async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
     const tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
       signature,
-      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
+      { encoding: 'jsonParsed', maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed' },
     ]);
     if (!tx) return null;
     const meta = tx.meta as { err?: unknown } | undefined;
@@ -299,7 +306,11 @@ export class PublicSolanaProvider {
         try {
           tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
             row.signature,
-            { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
+            {
+              encoding: 'jsonParsed',
+              maxSupportedTransactionVersion: MAX_TX_VERSION,
+              commitment: 'confirmed',
+            },
           ]);
         } catch {
           failedTxs++;
