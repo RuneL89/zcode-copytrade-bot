@@ -108,9 +108,33 @@ export class TraderLifecycle {
   onSeatOpen: ((event: { activationId: string; candidateId: string; reason: string }) => void) | null = null;
 
   private async fillOrWait(holdEmpty = false): Promise<{ hired: string[]; reason: string }> {
+    // Qualified watchers join the bench before anyone is hired, so a fire can
+    // refill from the watching pool. Agent mode still leaves the seat empty.
+    this.promoteQualifiedWatchers();
     if (holdEmpty) return { hired: [], reason: 'seat held empty' };
     if (this.hireApproval === 'agent') return { hired: [], reason: 'waiting for agent hire decision' };
     return this.fillRoster();
+  }
+
+  /** Move a watching wallet onto the bench when it already passes promotion. */
+  private promoteQualifiedWatchers(): void {
+    const promotionConfig = {
+      promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
+      promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
+      promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+      cooldownHours: this.risk.COOLDOWN_HOURS,
+    };
+    for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
+      const decision = canPromote({
+        aggregates: repo.shadowAggregates(this.db, wallet.candidateId),
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
+        lastFiredAt: repo.lastFiredAt(this.db, wallet.candidateId),
+        nowMs: Date.now(),
+        config: promotionConfig,
+      });
+      if (!decision.ok) continue;
+      repo.setWatchStatus(this.db, wallet.candidateId, 'bench', 'bench: record passes');
+    }
   }
 
   private notifySeat(activationId: string, candidateId: string, reason: string, hired: string[]): void {
@@ -289,6 +313,7 @@ export class TraderLifecycle {
     // candidates for a free chair, and a bench wallet is only hired while its
     // record still qualifies (a fired wallet is re-entry banned until a
     // post-fire buy, a stale record is not a hire).
+    this.promoteQualifiedWatchers();
     const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
       .listWatchWallets(this.db, 'bench')

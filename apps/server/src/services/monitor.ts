@@ -1,7 +1,13 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
-import { isIdleOver, dayTradeExitDecision, isEventTooOld, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
+import {
+  isIdleOver,
+  dayTradeExitDecision,
+  isEventTooOld,
+  stallDecision,
+  ACTIVITY_FRESH_MS,
+} from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import { remainingCostBasis } from './builder.js';
 import type { TraderLifecycle } from './lifecycle.js';
@@ -251,21 +257,23 @@ export class LeaderMonitor {
       this.onStateChange();
     }
 
-    // Stall watcher: a hired leader whose wallet goes silent for
-    // LEADER_STALL_FIRE_HOURS while we hold is fired and replaced — regardless
-    // of open-position winners. Judged only on fresh evidence: if the last
-    // Helius check itself is stale, we do not know the leader stalled.
+    // Stall watcher. The clock is the newer of the shadow funded buy (what
+    // promotion used) and a fresh activity sample. A seat younger than the
+    // stall window is in its hire grace and is not fired on pre-hire history.
     const activation = repo.getActivation(this.db, activationId);
     const candidate = activation ? repo.getCandidate(this.db, activation.candidateId) : null;
-    if (
-      candidate?.activityCheckedAt &&
-      candidate.lastSwapAt &&
-      nowMs - Date.parse(candidate.activityCheckedAt) <= ACTIVITY_FRESH_MS
-    ) {
-      const silentMs = nowMs - Date.parse(candidate.lastSwapAt);
-      const fireMs = this.risk.LEADER_STALL_FIRE_HOURS * 3_600_000;
-      if (silentMs > fireMs) {
-        const hours = (silentMs / 3_600_000).toFixed(1);
+    if (activation && candidate) {
+      const decision = stallDecision({
+        nowMs,
+        startedAtIso: activation.startedAt,
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidate.candidateId),
+        lastSwapAt: candidate.lastSwapAt,
+        activityCheckedAt: candidate.activityCheckedAt,
+        activityFreshMs: ACTIVITY_FRESH_MS,
+        stallHours: this.risk.LEADER_STALL_FIRE_HOURS,
+      });
+      if (decision.fire) {
+        const hours = (decision.silentHours ?? 0).toFixed(1);
         repo.audit(this.db, 'monitor', `stall watcher: leader wallet silent ${hours}h — firing`, {
           activationId,
           candidateId: candidate.candidateId,

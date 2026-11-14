@@ -99,6 +99,61 @@ export function canReenter(input: {
  * Fired at least `limit` times inside the window (the firing just recorded
  * counts). Those wallets are archived instead of returning to the bench.
  */
+/**
+ * Newest usable activity stamp. Promotion hires on the shadow ledger's last
+ * funded buy; the activity sample's last trade can be hours older when that
+ * sample missed the buy. The stall watcher uses this same later stamp.
+ */
+export function latestActivityMs(stamps: Array<string | null | undefined>): number | null {
+  let best: number | null = null;
+  for (const stamp of stamps) {
+    if (!stamp) continue;
+    const ms = Date.parse(stamp);
+    if (!Number.isFinite(ms)) continue;
+    if (best === null || ms > best) best = ms;
+  }
+  return best;
+}
+
+export interface StallInput {
+  nowMs: number;
+  startedAtIso: string;
+  /** Shadow-ledger funded buy. This is the promotion clock. */
+  lastFundedBuyAt: string | null;
+  /** Activity-sample last copyable trade. */
+  lastSwapAt: string | null;
+  activityCheckedAt: string | null;
+  activityFreshMs: number;
+  stallHours: number;
+}
+
+/**
+ * Fire only after the seat has been held for a full stall window, and only
+ * when the shared activity stamp (the newer of the funded buy and the
+ * activity sample) is older than that window. A sample that is itself stale
+ * is ignored, so an old `lastSwapAt` cannot outvote a fresh funded buy.
+ */
+export function stallDecision(input: StallInput): { fire: boolean; silentHours: number | null } {
+  const startedMs = Date.parse(input.startedAtIso);
+  const stallMs = input.stallHours * 3_600_000;
+  if (!Number.isFinite(startedMs) || input.nowMs - startedMs < stallMs) {
+    return { fire: false, silentHours: null };
+  }
+  const fundedMs = input.lastFundedBuyAt ? Date.parse(input.lastFundedBuyAt) : NaN;
+  const sampledMs = input.lastSwapAt ? Date.parse(input.lastSwapAt) : NaN;
+  const fundedOk = Number.isFinite(fundedMs);
+  const sampledOk = Number.isFinite(sampledMs);
+  const checkedMs = input.activityCheckedAt ? Date.parse(input.activityCheckedAt) : NaN;
+  const sampleFresh = Number.isFinite(checkedMs) && input.nowMs - checkedMs <= input.activityFreshMs;
+  let activityMs: number | null = null;
+  if (fundedOk && sampledOk && sampleFresh) activityMs = Math.max(fundedMs, sampledMs);
+  else if (fundedOk) activityMs = fundedMs;
+  else if (sampledOk && sampleFresh) activityMs = sampledMs;
+  if (activityMs === null) return { fire: false, silentHours: null };
+  const silentHours = (input.nowMs - activityMs) / 3_600_000;
+  return { fire: input.nowMs - activityMs > stallMs, silentHours };
+}
+
 export function isRepeatOffender(
   firedAtMs: readonly number[],
   nowMs: number,

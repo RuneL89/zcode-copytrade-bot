@@ -52,7 +52,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function seedAndHire(stallHours: number, activityFreshHours: number): string {
+function seedAndHire(stallHours: number, activityFreshHours: number, startedHoursAgo = stallHours): string {
   repo.upsertCandidate(handle.db, {
     candidateId: 'cand_ape',
     handle: 'ape_vasco',
@@ -84,7 +84,7 @@ function seedAndHire(stallHours: number, activityFreshHours: number): string {
     activationId,
     candidateId: 'cand_ape',
     state: 'ACTIVE',
-    startedAt: new Date().toISOString(),
+    startedAt: new Date(Date.now() - startedHoursAgo * 3600_000).toISOString(),
     endedAt: null,
     endReason: null,
     lossStreak: 0,
@@ -114,6 +114,34 @@ describe('stall watcher (8h, fresh evidence only)', () => {
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');
   });
 
+  it('does not fire a just-hired seat on an older activity sample when the funded buy is recent', async () => {
+    const activationId = seedAndHire(11, 0.1, 5 / 60);
+    repo.upsertWatchWallet(handle.db, {
+      candidateId: 'cand_ape',
+      address: LEADER,
+      status: 'hired',
+      reason: 'test',
+    });
+    repo.insertWatchEvent(handle.db, {
+      candidateId: 'cand_ape',
+      address: LEADER,
+      signature: 'recent-buy',
+      side: 'buy',
+      mint: 'Mint111111111111111111111111111111111111111111',
+      tokenAmountBase: '1',
+      decimals: 6,
+      usdMicro: '6000000',
+      blockTime: Math.floor(Date.now() / 1000) - 50 * 60,
+      observedAt: new Date(Date.now() - 45 * 60_000).toISOString(),
+      source: 'test',
+    });
+    await (monitor as unknown as { sweep: (a: string, n: Date) => Promise<void> }).sweep(
+      activationId,
+      new Date(),
+    );
+    expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');
+  });
+
   it('does not judge staleness from an out-of-date activity check', async () => {
     // Wallet silent 12h, but the last Helius check itself is 12h old — the
     // watcher must not act on evidence it cannot trust.
@@ -123,5 +151,85 @@ describe('stall watcher (8h, fresh evidence only)', () => {
       new Date(),
     );
     expect(repo.getActivation(handle.db, activationId)?.state).toBe('ACTIVE');
+  });
+});
+
+describe('a stall fire refills from the watching pool', () => {
+  const MINT = 'Mint111111111111111111111111111111111111111111';
+
+  function seedWatcher(id: string): void {
+    repo.upsertCandidate(handle.db, {
+      candidateId: id,
+      handle: id,
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: null,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: new Date().toISOString(),
+    });
+    repo.upsertCandidateAddress(handle.db, id, {
+      chain: 'solana',
+      address: `wallet-${id}`,
+      verification: 'reported',
+    });
+    repo.upsertWatchWallet(handle.db, {
+      candidateId: id,
+      address: `wallet-${id}`,
+      status: 'watching',
+      reason: 'test',
+    });
+    repo.insertWatchEvent(handle.db, {
+      candidateId: id,
+      address: `wallet-${id}`,
+      signature: `buy-${id}`,
+      side: 'buy',
+      mint: MINT,
+      tokenAmountBase: '1',
+      decimals: 6,
+      usdMicro: '6000000',
+      blockTime: Math.floor(Date.now() / 1000) - 600,
+      observedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      source: 'test',
+    });
+    for (let i = 0; i < 8; i++) {
+      const tradeId = repo.openShadowTrade(handle.db, {
+        candidateId: id,
+        mint: MINT,
+        openedAt: new Date(Date.now() - (i + 2) * 3_600_000).toISOString(),
+        entryPriceUsdMicro: '1000000',
+        notionalUsdMicro: '5000000',
+      });
+      repo.closeShadowTrade(handle.db, tradeId, {
+        closedAt: new Date(Date.now() - (i + 2) * 3_600_000 + 60_000).toISOString(),
+        exitReason: 'leader_sell',
+        exitPriceUsdMicro: '1000000',
+        pnlUsdMicro: '1000000',
+      });
+    }
+  }
+
+  it('auto mode hires a qualified watcher into the freed seat', async () => {
+    const activationId = seedAndHire(9, 1);
+    seedWatcher('cand_next');
+    const outcome = await lifecycle.fire(activationId, 'stall: leader inactive 9.0h');
+    expect(outcome.status).toBe('ACTIVATED');
+    expect(repo.getWatchWallet(handle.db, 'cand_next')?.status).toBe('hired');
+    expect(repo.listActiveActivations(handle.db).some((row) => row.candidateId === 'cand_next')).toBe(true);
+  });
+
+  it('agent mode leaves the seat empty and posts the opening', async () => {
+    const activationId = seedAndHire(9, 1);
+    seedWatcher('cand_agent');
+    const openings: string[] = [];
+    lifecycle.hireApproval = 'agent';
+    lifecycle.onSeatOpen = (event) => openings.push(event.activationId);
+    const outcome = await lifecycle.fire(activationId, 'stall: leader inactive 9.0h');
+    expect(outcome.status).toBe('NO_REPLACEMENT');
+    expect(openings).toEqual([activationId]);
+    expect(repo.getWatchWallet(handle.db, 'cand_agent')?.status).toBe('bench');
+    expect(repo.getActivation(handle.db, activationId)?.state).toBe('FIRED');
+    expect(repo.listActiveActivations(handle.db).some((row) => row.candidateId === 'cand_agent')).toBe(false);
   });
 });

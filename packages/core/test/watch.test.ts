@@ -4,6 +4,7 @@ import {
   canReenter,
   ceilingAction,
   isRepeatOffender,
+  stallDecision,
   type PromotionConfig,
 } from '../src/watch.js';
 import { isIdleOver } from '../src/positionAge.js';
@@ -228,5 +229,48 @@ describe('operator scenarios (8h idle / 14h after a close / no old-record return
         lastFundedBuyAt: iso(NOW - 2 * HOUR),
       }),
     ).toEqual({ ok: true, reason: null });
+  });
+});
+
+describe('stallDecision — the same clock as promotion', () => {
+  const fresh = iso(NOW - 30 * 60_000);
+  const base = {
+    nowMs: NOW,
+    activityCheckedAt: fresh,
+    activityFreshMs: 6 * HOUR,
+    stallHours: 8,
+  };
+
+  it('does not fire a seat that has not yet sat for a full stall window', () => {
+    expect(
+      stallDecision({
+        ...base,
+        startedAtIso: iso(NOW - 5 * 60_000),
+        lastFundedBuyAt: iso(NOW - 45 * 60_000),
+        lastSwapAt: iso(NOW - 11 * HOUR),
+      }),
+    ).toEqual({ fire: false, silentHours: null });
+  });
+
+  it('trusts a funded buy that is newer than an old activity sample', () => {
+    const decision = stallDecision({
+      ...base,
+      startedAtIso: iso(NOW - 9 * HOUR),
+      lastFundedBuyAt: iso(NOW - 45 * 60_000),
+      lastSwapAt: iso(NOW - 11 * HOUR),
+    });
+    expect(decision.fire).toBe(false);
+    expect(decision.silentHours).toBeLessThan(1);
+  });
+
+  it('fires once the shared stamp and the seat are both older than the stall window', () => {
+    const decision = stallDecision({
+      ...base,
+      startedAtIso: iso(NOW - 9 * HOUR),
+      lastFundedBuyAt: iso(NOW - 10 * HOUR),
+      lastSwapAt: iso(NOW - 11 * HOUR),
+    });
+    expect(decision.fire).toBe(true);
+    expect(decision.silentHours).toBeGreaterThan(8);
   });
 });
