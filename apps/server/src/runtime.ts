@@ -40,7 +40,7 @@ import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { DiscoveryService, discoveryDecision } from './services/discovery.js';
-import { deliverSeatOpen } from './services/agentHooks.js';
+import { deliverSeatOpen, dueSeatTimeouts, type OpenSeat } from './services/agentHooks.js';
 import { browserSocket, HeliusRosterPush, SAFETY_POLL_MS } from './services/heliusStream.js';
 import { WatchService } from './services/watch.js';
 import { ReportsService, positionsText, reportText } from './services/reports.js';
@@ -114,6 +114,7 @@ export class Runtime {
   private liveExecutor: LiveExecutor | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
   private usageTimer: ReturnType<typeof setInterval> | null = null;
+  private seatTimer: ReturnType<typeof setInterval> | null = null;
   readonly creditGovernor = new CreditGovernor();
   private rosterPush: HeliusRosterPush | null = null;
   private rosterPollMs = 0;
@@ -225,7 +226,10 @@ export class Runtime {
 
     this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
     this.lifecycle.hireApproval = config.env.HIRE_APPROVAL;
-    this.lifecycle.onSeatOpen = (event) => deliverSeatOpen(config.env.AGENT_WEBHOOK_URL, event);
+    this.lifecycle.onSeatOpen = (event) => {
+      this.rememberOpenSeat(event);
+      deliverSeatOpen(config.env.AGENT_WEBHOOK_URL, event);
+    };
     this.helius.setGovernor(this.creditGovernor);
     this.engineCallbacks();
 
@@ -625,6 +629,7 @@ export class Runtime {
       // The ROSTER clock: every hired wallet, every ROSTER_POLL_MS.
       this.armRosterClock(this.config.risk.ROSTER_POLL_MS);
       if (this.helius.configured) this.startRosterPush();
+      this.seatTimer = setInterval(() => this.pingSeatTimeouts(), 60_000);
       if (this.config.env.HELIUS_PROJECT_ID && this.config.env.HELIUS_API_KEY) {
         this.usageTimer = setInterval(() => void this.reconcileHeliusUsage(), 30 * 60_000);
         void this.reconcileHeliusUsage();
@@ -639,6 +644,48 @@ export class Runtime {
     );
 
     this.rebuildState();
+  }
+
+  private rememberOpenSeat(event: { activationId: string; candidateId: string; reason: string }): void {
+    const opens = this.readOpenSeats();
+    opens.push({ ...event, atMs: Date.now(), pinged: false });
+    repo.kvSet(this.db.db, 'seat.opens', JSON.stringify(opens));
+  }
+
+  private readOpenSeats(): OpenSeat[] {
+    const raw = repo.kvGet(this.db.db, 'seat.opens');
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as OpenSeat[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Agent mode only. A seat with no decision after 15 minutes is pinged and left empty. */
+  private pingSeatTimeouts(): void {
+    if (this.config.env.HIRE_APPROVAL !== 'agent' || this.stopping) return;
+    const opens = this.readOpenSeats();
+    const due = dueSeatTimeouts(opens, Date.now());
+    if (due.length === 0) return;
+    const dueIds = new Set(due.map((seat) => seat.activationId));
+    for (const seat of due) {
+      deliverSeatOpen(this.config.env.AGENT_WEBHOOK_URL, {
+        activationId: seat.activationId,
+        candidateId: seat.candidateId,
+        reason: seat.reason,
+        timedOut: true,
+      });
+      repo.audit(this.db.db, 'agent', 'seat left empty after 15 minutes', {
+        activationId: seat.activationId,
+      });
+    }
+    repo.kvSet(
+      this.db.db,
+      'seat.opens',
+      JSON.stringify(opens.map((seat) => (dueIds.has(seat.activationId) ? { ...seat, pinged: true } : seat))),
+    );
   }
 
   private armRosterClock(ms: number): void {
@@ -761,6 +808,7 @@ export class Runtime {
     if (this.watchTimer) clearInterval(this.watchTimer);
     if (this.rosterTimer) clearInterval(this.rosterTimer);
     if (this.usageTimer) clearInterval(this.usageTimer);
+    if (this.seatTimer) clearInterval(this.seatTimer);
     this.rosterPush?.stop();
     if (this.watchBootTimer) clearTimeout(this.watchBootTimer);
     void this.fomoWeb?.close();

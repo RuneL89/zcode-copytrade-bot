@@ -25,7 +25,7 @@ import { PAPER_ASSUMPTIONS } from '../services/executors.js';
 import { loadWalletSecret, walletPublicKey } from '../wallet.js';
 import { rememberWalletPassphrase } from '../wallet-unlock.js';
 import { LiveExecutor } from '../services/executors.js';
-import { adjustExit, decideHire } from '../services/agentHooks.js';
+import { adjustExit, decideHire, overruleSeat } from '../services/agentHooks.js';
 
 export function buildApp(rt: Runtime): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -50,6 +50,14 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       rt.lifecycle,
       (body ?? {}) as Record<string, unknown>,
     );
+    return c.json(result.body, result.status as 200);
+  });
+
+  app.post('/api/agent/overrule', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await overruleSeat(db, rt.lifecycle, (body ?? {}) as Record<string, unknown>);
     return c.json(result.body, result.status as 200);
   });
 

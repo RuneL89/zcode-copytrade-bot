@@ -152,6 +152,58 @@ export async function adjustExit(
   return { status: 200, body: { ok: true, plan: adjusted.plan, close: closed } };
 }
 
+export const SEAT_DECISION_MS = 15 * 60_000;
+
+export interface OpenSeat {
+  activationId: string;
+  candidateId: string;
+  reason: string;
+  atMs: number;
+  pinged: boolean;
+}
+
+/** Seats still empty after 15 minutes are pinged again. Nothing is hired. */
+export function dueSeatTimeouts(opens: OpenSeat[], nowMs: number, timeoutMs = SEAT_DECISION_MS): OpenSeat[] {
+  return opens.filter((seat) => !seat.pinged && nowMs - seat.atMs >= timeoutMs);
+}
+
+export async function overruleSeat(
+  db: AppDatabase,
+  lifecycle: TraderLifecycle,
+  body: { activationId?: unknown; action?: unknown; wallet?: unknown; reason?: unknown },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const activationId = typeof body.activationId === 'string' ? body.activationId : '';
+  const action = body.action === 'undo' || body.action === 'replace' ? body.action : null;
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!activationId || !action)
+    return { status: 400, body: { error: 'activationId and action are required' } };
+  if (!reason) return { status: 400, body: { error: 'reason is required' } };
+  const activation = repo.getActivation(db, activationId);
+  if (!activation || activation.state !== 'ACTIVE')
+    return { status: 404, body: { error: 'active seat not found' } };
+  const fired = await lifecycle.fire(activationId, `overrule: ${reason}`, { holdEmpty: true });
+  if (fired.status === 'SKIPPED_NOT_FLAT') {
+    return { status: 409, body: { error: 'seat is not flat', status: fired.status } };
+  }
+  repo.audit(db, 'agent', 'hire overruled', { activationId, action, reason, status: fired.status });
+  if (action === 'undo') {
+    return { status: 200, body: { ok: true, seat: 'empty', status: fired.status } };
+  }
+  const wallet = typeof body.wallet === 'string' ? body.wallet.trim() : '';
+  const candidate = wallet ? repo.findCandidateByWallet(db, wallet) : undefined;
+  if (!candidate) return { status: 409, body: { error: 'replacement wallet not found', seat: 'empty' } };
+  const hired = await lifecycle.hireFromWatch(candidate.candidateId);
+  if (!hired.ok)
+    return { status: 409, body: { error: hired.reason ?? 'replacement refused', seat: 'empty' } };
+  repo.audit(db, 'agent', 'hire replaced', {
+    activationId,
+    wallet,
+    reason,
+    activationIdNext: hired.activationId,
+  });
+  return { status: 200, body: { ok: true, seat: 'replaced', activationId: hired.activationId } };
+}
+
 /** Fire-and-forget. A missing URL or a failed post never throws. */
 export function deliverSeatOpen(url: string | undefined, event: Record<string, unknown>): void {
   if (!url) return;

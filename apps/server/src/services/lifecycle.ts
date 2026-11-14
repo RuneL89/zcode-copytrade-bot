@@ -107,7 +107,8 @@ export class TraderLifecycle {
   /** Outbound notice when a seat is left empty. Must not throw into the fire. */
   onSeatOpen: ((event: { activationId: string; candidateId: string; reason: string }) => void) | null = null;
 
-  private async fillOrWait(): Promise<{ hired: string[]; reason: string }> {
+  private async fillOrWait(holdEmpty = false): Promise<{ hired: string[]; reason: string }> {
+    if (holdEmpty) return { hired: [], reason: 'seat held empty' };
     if (this.hireApproval === 'agent') return { hired: [], reason: 'waiting for agent hire decision' };
     return this.fillRoster();
   }
@@ -324,7 +325,7 @@ export class TraderLifecycle {
   async fire(
     activationId: string,
     reason: string,
-    opts: { requireFlat?: boolean } = {},
+    opts: { requireFlat?: boolean; holdEmpty?: boolean } = {},
   ): Promise<HandoffOutcome> {
     const activation = repo.getActivation(this.db, activationId);
     if (!activation || activation.state === 'FIRED') {
@@ -452,8 +453,8 @@ export class TraderLifecycle {
     }
 
     // A fire frees exactly one chair. Auto mode fills it from the bench.
-    // Agent mode leaves it empty and posts the opening.
-    const filled = await this.fillOrWait();
+    // Agent mode, and an overrule, leave it empty and post the opening.
+    const filled = await this.fillOrWait(opts.holdEmpty === true);
     this.notifySeat(activationId, activation.candidateId, reason, filled.hired);
     const outcome: HandoffOutcome =
       filled.hired.length > 0
