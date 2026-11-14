@@ -48,6 +48,7 @@ import { TelegramCommandService } from './services/telegram-commands.js';
 import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
 import { PaperExecutor, LiveExecutor } from './services/executors.js';
+import { sendSignedTransaction } from './services/sendPath.js';
 import { loadWalletSecret, walletPublicKey } from './wallet.js';
 import { readRememberedPassphrase } from './wallet-unlock.js';
 import { REPO_ROOT, migrationsFolder } from './bootstrap.js';
@@ -428,7 +429,9 @@ export class Runtime {
       );
       const publicKey = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
       if (!publicKey) throw new Error('wallet public key missing');
-      this.mountLiveExecutor(new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey));
+      this.mountLiveExecutor(
+        new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey, undefined, this.liveSubmit()),
+      );
       repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
       void this.notifier
         .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
@@ -1111,6 +1114,24 @@ export class Runtime {
 
   heliusRpcUrl(): string {
     return `https://mainnet.helius-rpc.com/?api-key=${this.config.env.HELIUS_API_KEY}`;
+  }
+
+  /** Sender, then a governor-metered staked send, then the public RPC. */
+  liveSubmit() {
+    return (args: { signedBase64: string; trySender: boolean; path: 'exit' | 'wallet' }) =>
+      sendSignedTransaction({
+        signedBase64: args.signedBase64,
+        trySender: args.trySender,
+        heliusRpcUrl: this.heliusRpcUrl(),
+        publicRpcUrl: this.config.env.PUBLIC_SOLANA_RPC_URL,
+        apiKey: this.config.env.HELIUS_API_KEY,
+        allowStaked: () =>
+          this.creditGovernor.spend({
+            path: args.path,
+            method: 'sendTransaction',
+            atMs: Date.now(),
+          }).ok,
+      });
   }
 
   /**

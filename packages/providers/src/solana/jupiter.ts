@@ -1,9 +1,9 @@
 /**
  * Jupiter Swap API v2 `/build` (Metis routing, no Jupiter platform fee).
  *   GET {base}/swap/v2/build?inputMint&outputMint&amount&slippageBps&taker
- * The response is a quote plus raw instructions. We assemble, sign and send
- * ourselves. Live assembly is not enabled yet: paper mode uses the quote
- * fields and falls back to a cached price when `/build` refuses the call.
+ * The response is a quote plus raw instructions. The live executor assembles,
+ * signs and sends that body. Paper mode uses the quote fields and falls back
+ * to a cached price when `/build` refuses the call.
  */
 
 export interface JupiterQuote {

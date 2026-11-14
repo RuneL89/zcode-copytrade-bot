@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { settingsPatchSchema, riskConfigSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
+import { DAILY_HARD_CAP, MONTH_ROSTER_ONLY, riskPatchDirection } from '@zcode-bot/core';
 import { parseManualCsv, parseManualJson } from '@zcode-bot/providers';
 import {
   applyCsrfCookie,
@@ -240,9 +241,34 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     });
   });
 
+  app.get('/api/credits', requireAuth(sessions), (c) => {
+    const snap = rt.creditGovernor.snapshot(Date.now());
+    const raw = repo.kvGet(db, 'helius.usage');
+    let reported: unknown = null;
+    if (raw) {
+      try {
+        reported = JSON.parse(raw);
+      } catch {
+        reported = null;
+      }
+    }
+    return c.json({
+      dayTotal: snap.dayTotal,
+      month: snap.month,
+      level: snap.level,
+      byPath: snap.byPath,
+      hardCap: DAILY_HARD_CAP,
+      monthCeiling: MONTH_ROSTER_ONLY,
+      reported,
+    });
+  });
+
   app.patch('/api/settings', requireAuth(sessions), requireCsrf, async (c) => {
-    const body = await c.req.json().catch(() => null);
-    const parsed = settingsPatchSchema.safeParse(body);
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const pin = typeof body?.pin === 'string' ? body.pin : '';
+    const patchBody = { ...(body ?? {}) };
+    delete patchBody.pin;
+    const parsed = settingsPatchSchema.safeParse(patchBody);
     if (!parsed.success) {
       return c.json(
         {
@@ -265,6 +291,16 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         },
         400,
       );
+    }
+    const direction = riskPatchDirection(
+      rt.config.risk as unknown as Record<string, unknown>,
+      parsed.data as unknown as Record<string, unknown>,
+    );
+    if (direction === 'increase') {
+      const expected = rt.config.env.RISK_PIN;
+      if (!expected || pin !== expected) {
+        return c.json({ error: 'raising risk needs the PIN' }, 403);
+      }
     }
     rt.applySettings(parsed.data);
     repo.audit(db, 'settings', 'risk settings updated', redact(parsed.data));
@@ -864,7 +900,9 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       });
     }
     const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)!;
-    rt.mountLiveExecutor(new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk));
+    rt.mountLiveExecutor(
+      new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk, undefined, rt.liveSubmit()),
+    );
     rt.control.armLive();
     rt.rebuildState();
     return c.json({

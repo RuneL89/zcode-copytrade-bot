@@ -32,6 +32,8 @@ export const envSchema = z.object({
   WALLET_FILE: z.string().optional(),
   /** Unlocks WALLET_FILE. Never logged. Empty means the arm form must supply it. */
   COPYDESK_WALLET_PASSPHRASE: z.string().default(''),
+  /** Required to raise a risk limit from the dashboard. Empty rejects increases. */
+  RISK_PIN: z.string().default(''),
 
   HELIUS_API_KEY: z.string().default(''),
   HELIUS_WEBHOOK_SECRET: z.string().default(''),

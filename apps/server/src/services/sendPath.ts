@@ -65,6 +65,8 @@ export async function sendSignedTransaction(args: {
   apiKey: string;
   /** When false, skip Sender (the transaction has no tip). */
   trySender?: boolean;
+  /** When this returns false, skip the staked Helius send and try the public RPC. */
+  allowStaked?: () => boolean;
   fetchImpl?: typeof fetch;
   onStakedSend?: () => void;
 }): Promise<SendResult> {
@@ -79,11 +81,13 @@ export async function sendSignedTransaction(args: {
     if (sent.transport) return { kind: 'unknown', detail: `sender transport: ${sent.error}` };
     attempts.push(`sender: ${sent.error}`);
   }
-  args.onStakedSend?.();
-  const staked = await postSend(args.heliusRpcUrl, args.signedBase64, fetchImpl);
-  if (staked.signature) return { kind: 'sent', signature: staked.signature, via: 'staked' };
-  if (staked.transport) return { kind: 'unknown', detail: `staked transport: ${staked.error}` };
-  attempts.push(`staked: ${staked.error}`);
+  if (args.allowStaked?.() !== false) {
+    args.onStakedSend?.();
+    const staked = await postSend(args.heliusRpcUrl, args.signedBase64, fetchImpl);
+    if (staked.signature) return { kind: 'sent', signature: staked.signature, via: 'staked' };
+    if (staked.transport) return { kind: 'unknown', detail: `staked transport: ${staked.error}` };
+    attempts.push(`staked: ${staked.error}`);
+  }
   const pub = await postSend(args.publicRpcUrl, args.signedBase64, fetchImpl);
   if (pub.signature) return { kind: 'sent', signature: pub.signature, via: 'public' };
   if (pub.transport) return { kind: 'unknown', detail: `public transport: ${pub.error}` };

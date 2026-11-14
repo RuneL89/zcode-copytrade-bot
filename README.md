@@ -53,14 +53,37 @@ Helius spend is metered. A designed day is about 5,800 credits against a 13,600 
 
 `HIRE_APPROVAL=auto` fills an empty seat from the bench. `agent` waits for `POST /api/agent/hire-decisions` (Bearer `AGENT_API_TOKEN`). Exit plans can only be tightened via `POST /api/agent/exit-adjustments`. A seat left empty POSTs to `AGENT_WEBHOOK_URL` when that is set. Telegram is not used.
 
-What is not in this build yet, and blocks a live desk:
+## Running as a service
 
-- No measured 24h WebSocket cost. The CI day is the designed call pattern, not a week of real Helius traffic.
-- No live signing. Jupiter `/swap/v2/build` is quoted; assembling and sending a transaction is deferred.
-- Shadow lots still book a flat 1% slippage when no Jupiter quote is available. A quote needs a taker public key.
-- Helius Admin usage reconciliation needs `HELIUS_PROJECT_ID` and a project that exposes the Admin API. Without it the in-app meter stands alone.
-- Hiring judgement, calibration, and the assembly-line UI are later phases. The dashboard is the current one.
-- `HIRE_APPROVAL` defaults to `auto` so paper can run with no agent process. Switch it to `agent` when something is answering the hire endpoint.
+On a Linux box, build once and let systemd keep the process up. The unit is `deploy/copydesk.service`.
+
+```bash
+sudo mkdir -p /opt/copydesk
+sudo rsync -a --exclude data --exclude node_modules ./ /opt/copydesk/
+cd /opt/copydesk
+pnpm install --frozen-lockfile
+pnpm build
+# Write /opt/copydesk/.env locally. chmod 600. Do not commit it.
+pnpm db:migrate
+sudo cp deploy/copydesk.service /etc/systemd/system/copydesk.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now copydesk
+sudo journalctl -u copydesk -f
+```
+
+The process runs `node apps/server/dist/index.js` with the repo as its working directory. It restarts on failure. One process holds `data/worker.lock`.
+
+`LIVE_TRADING` defaults to false. `MODE=live` together with `LIVE_TRADING=true` re-runs the budget, 429, and exit-guard checks and exits instead of listening if any fail. The wallet file is `WALLET_FILE`, unlocked with `COPYDESK_WALLET_PASSPHRASE`. Raising a risk limit from the Desk risk tab needs `RISK_PIN`.
+
+The Desk screen is `#/desk`: funnel counts, five seats with per-trader open copies, the credit meter, and the risk form. SOL balance is the headline figure.
+
+## Still open
+
+- WebSocket bytes are metered. They have not been measured against a day of live traffic.
+- Sender uses the 0.000005 SOL SWQOS tip. The 0.001 SOL Sender Max tip is not the default.
+- Shadow lots still use 1% slippage when Jupiter does not return a quote.
+- Odds-of-profit, calibration, and the 4-hour review loop are not built. Hire, timeout, overrule, and tighten-only exits are.
+- `HIRE_APPROVAL` stays `auto` unless you set `agent`.
 
 ## Getting started
 

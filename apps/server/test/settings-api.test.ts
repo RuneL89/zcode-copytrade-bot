@@ -11,7 +11,12 @@ let rt: Runtime;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'zcode-settings-'));
-  const config = loadConfig({ SESSION_SECRET: 't'.repeat(48), DATA_DIR: dir, MODE: 'paper' });
+  const config = loadConfig({
+    SESSION_SECRET: 't'.repeat(48),
+    DATA_DIR: dir,
+    MODE: 'paper',
+    RISK_PIN: '2468',
+  });
   config.env.DATA_DIR = dir;
   rt = new Runtime(config);
 });
@@ -58,10 +63,17 @@ describe('settings PATCH', () => {
       version: number;
     };
 
+    const refused = await app.request('/api/settings', {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
+      body: JSON.stringify({ MAX_POSITION_AGE_HOURS: 9 }),
+    });
+    expect(refused.status).toBe(403);
+
     const res = await app.request('/api/settings', {
       method: 'PATCH',
       headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
-      body: JSON.stringify({ MAX_POSITION_AGE_HOURS: 9, IDLE_FIRE_HOURS: 7 }),
+      body: JSON.stringify({ MAX_POSITION_AGE_HOURS: 9, IDLE_FIRE_HOURS: 7, pin: '2468' }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; risk: Record<string, number> };
