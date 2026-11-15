@@ -78,6 +78,7 @@ export interface WatchTickResult {
   polled: number;
   newEvents: number;
   ceilingsClosed: number;
+  readmitted: number;
   admitted: number;
   benched: number;
   hired: string | null;
@@ -482,12 +483,16 @@ export class WatchService {
 
   // ---- ticks ---------------------------------------------------------------
 
-  /** Poll every watching wallet, apply new funded swaps, then evaluate. */
+  /**
+   * Re-admit cooling wallets whose re-entry block has lifted, poll every
+   * watching wallet, apply new funded swaps, then evaluate.
+   */
   async tick(): Promise<WatchTickResult> {
     const result: WatchTickResult = {
       polled: 0,
       newEvents: 0,
       ceilingsClosed: 0,
+      readmitted: 0,
       admitted: 0,
       benched: 0,
       hired: null,
@@ -497,6 +502,9 @@ export class WatchService {
     };
 
     result.ceilingsClosed = await this.closeDueCeilings();
+    // Re-admit before polling so a wallet whose block just lifted is observed
+    // in this same tick.
+    result.readmitted = await this.coolingTick();
 
     // Watching only. Hired seats are covered by the roster stream and its
     // safety poll, so this pass does not pay for them a second time. Bench
@@ -684,7 +692,7 @@ export class WatchService {
       const decision = this.promotionDecision(wallet.candidateId);
       if (decision.ok) promotable.push(wallet.candidateId);
       else if (decision.reason === 'REENTRY_BANNED') {
-        repo.audit(this.db, 'watch', 're-entry blocked (no funded buy since the firing)', {
+        repo.audit(this.db, 'watch', 're-entry blocked (waiting for another hire or the free-chair window)', {
           candidateId: wallet.candidateId,
         });
       }
@@ -716,11 +724,14 @@ export class WatchService {
 
   /** The live inputs of a wallet's own promotion gates (no chair count). */
   private recordInput(candidateId: string) {
+    const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
     return {
       aggregates: repo.shadowAggregates(this.db, candidateId),
       lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
-      lastFiredAt: repo.lastFiredAt(this.db, candidateId),
+      lastFiredAt,
       nowMs: Date.now(),
+      anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, candidateId),
+      freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
       config: {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
@@ -736,41 +747,41 @@ export class WatchService {
   }
 
   /**
-   * Cooling rotation: a fired trader returns only on a funded buy observed
-   * after the fire; without one he is archived after the eviction window.
+   * Re-admission: a cooling wallet returns to the watch list when another
+   * trader was hired after its firing, or when the re-entry window has elapsed
+   * while a roster chair is free. The normal promotion gates then decide.
    */
   async coolingTick(): Promise<number> {
     let readmitted = 0;
+    let watchingCount = repo.listWatchWallets(this.db, 'watching').length;
+    const freeChair = repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE;
     for (const wallet of repo.listWatchWallets(this.db, 'cooling')) {
       const firedAt = repo.lastFiredAt(this.db, wallet.candidateId);
-      const lastBuy = repo.lastFundedBuyAt(this.db, wallet.candidateId);
+      if (firedAt === null) continue; // fail closed: no firing clock, no re-entry
+      const anotherHired = repo.hasHireSince(this.db, firedAt, wallet.candidateId);
       if (
-        canReenter({
+        !canReenter({
           lastFiredAt: firedAt,
-          lastFundedBuyAt: lastBuy,
           nowMs: Date.now(),
           cooldownHours: this.risk.COOLDOWN_HOURS,
+          anotherHiredSinceFire: anotherHired,
+          freeChair,
         })
       ) {
-        repo.setWatchStatus(this.db, wallet.candidateId, 'watching', 'funded buy observed after the firing');
-        repo.audit(this.db, 'watch', 're-entry observed: funded buy after the firing', {
-          candidateId: wallet.candidateId,
-          lastFiredAt: firedAt,
-          lastFundedBuyAt: lastBuy,
-        });
-        readmitted++;
         continue;
       }
-      if (lastBuy === null && firedAt !== null) {
-        const quietDays = (Date.now() - Date.parse(firedAt)) / (24 * 3_600_000);
-        if (quietDays >= this.risk.WATCH_EVICTION_DAYS) {
-          repo.setWatchStatus(this.db, wallet.candidateId, 'archived', 'no funded buy since the firing');
-          repo.audit(this.db, 'watch', 'watch archived: no funded buy since the firing', {
-            candidateId: wallet.candidateId,
-            lastFiredAt: firedAt,
-          });
-        }
-      }
+      // The watch list is a funnel cap, not a re-entry right: wait for room.
+      if (watchingCount >= this.risk.WATCH_LIST_SIZE) continue;
+      const reason = anotherHired
+        ? 're-entry: another trader was hired after the firing'
+        : `re-entry: ${this.risk.COOLDOWN_HOURS}h elapsed with a free chair`;
+      repo.setWatchStatus(this.db, wallet.candidateId, 'watching', reason);
+      repo.audit(this.db, 'watch', `watch re-admitted: ${reason}`, {
+        candidateId: wallet.candidateId,
+        lastFiredAt: firedAt,
+      });
+      watchingCount++;
+      readmitted++;
     }
     if (readmitted > 0) this.deps.onStateChanged();
     return readmitted;

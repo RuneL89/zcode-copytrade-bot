@@ -609,51 +609,72 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     );
   });
 
-  it('re-entry: an old record cannot return a fired trader; a post-fire buy can (AC7)', async () => {
+  it('re-entry: another trader hired after the firing lifts the block (AC7)', async () => {
+    handle.sqlite.prepare('delete from trader_activations').run();
     seedCandidate('cand_reentry', 'reentry', 'WalletReentry');
     const h = harness(riskConfig());
     await h.svc.admit('cand_reentry', readingFrom([buy('r1', 60), buy('r2', 30), buy('r3', 5)]));
     recordBuys('cand_reentry', 'WalletReentry', 1, 5);
     seedRecord('cand_reentry', 3, 2_000_000n);
-    // The last funded buy is 5 minutes old, the firing happened 1 minute ago.
+    const firedAt = iso(Date.now() - 60_000);
     repo.insertFiringEvent(handle.db, {
       activationId: 'act_old',
       candidateId: 'cand_reentry',
       reason: 'idle',
       lossStreak: 0,
       positionPolicy: 'keep_positions',
-      firedAt: iso(Date.now() - 60_000),
+      firedAt,
       closeCompletedAt: null,
       handoffStatus: 'none',
     });
-    expect(h.svc.promotionDecision('cand_reentry').reason).toBe('REENTRY_BANNED');
-    expect(repo.listAudit(handle.db, 5).some((a) => /re-entry blocked/.test(a.message))).toBe(false); // audit comes from evaluate()
-
-    // The cooling rotation readmits him once a funded buy lands after the fire
-    // AND the cooldown has elapsed. A buy inside the cooldown does not.
     repo.setWatchStatus(handle.db, 'cand_reentry', 'cooling', 'fired');
+
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry')).toBe(false);
+    expect(h.svc.promotionDecision('cand_reentry').reason).toBe('REENTRY_BANNED');
     expect(await h.svc.coolingTick()).toBe(0);
-    repo.insertWatchEvent(handle.db, {
-      candidateId: 'cand_reentry',
-      address: 'WalletReentry',
-      signature: 'post-fire-buy',
-      side: 'buy',
-      mint: TOKEN,
-      tokenAmountBase: '6000000',
-      decimals: 6,
-      usdMicro: '6000000',
-      blockTime: NOW_SEC - 10,
-      observedAt: iso(Date.now() - 10_000),
-      source: 'test',
+
+    // Another trader is hired after the firing: the block lifts immediately,
+    // even though the 3h window has not elapsed.
+    repo.createActivation(handle.db, {
+      activationId: 'act_other_hire',
+      candidateId: 'cand_other_hire',
+      state: 'ACTIVE',
+      startedAt: iso(Date.now() - 30_000),
+      endedAt: null,
+      endReason: null,
+      lossStreak: 0,
+      firedReason: null,
+      source: 'manual',
     });
-    // The buy is after the fire, but the 36h cooldown has not elapsed.
-    expect(await h.svc.coolingTick()).toBe(0);
-    handle.sqlite
-      .prepare('update firing_events set fired_at = ? where candidate_id = ?')
-      .run(iso(Date.now() - 37 * HOUR), 'cand_reentry');
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry')).toBe(true);
     expect(await h.svc.coolingTick()).toBe(1);
     expect(repo.getWatchWallet(handle.db, 'cand_reentry')?.status).toBe('watching');
     expect(h.svc.promotionDecision('cand_reentry').ok).toBe(true);
+  });
+
+  it('re-entry: the cooldown with a free chair returns a fired trader (AC7)', async () => {
+    handle.sqlite.prepare('delete from trader_activations').run();
+    seedCandidate('cand_reentry_timed', 'reentry_timed', 'WalletReentryTimed');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_reentry_timed', readingFrom([buy('t1', 60), buy('t2', 30), buy('t3', 5)]));
+    recordBuys('cand_reentry_timed', 'WalletReentryTimed', 1, 5);
+    seedRecord('cand_reentry_timed', 3, 2_000_000n);
+    const firedAt = iso(Date.now() - 4 * HOUR);
+    repo.insertFiringEvent(handle.db, {
+      activationId: 'act_timed',
+      candidateId: 'cand_reentry_timed',
+      reason: 'idle',
+      lossStreak: 0,
+      positionPolicy: 'keep_positions',
+      firedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    repo.setWatchStatus(handle.db, 'cand_reentry_timed', 'cooling', 'fired');
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry_timed')).toBe(false);
+    expect(await h.svc.coolingTick()).toBe(1);
+    expect(repo.getWatchWallet(handle.db, 'cand_reentry_timed')?.status).toBe('watching');
+    expect(h.svc.promotionDecision('cand_reentry_timed').ok).toBe(true);
   });
 
   it('evicts a wallet with no funded buy for the eviction window (AC8)', async () => {

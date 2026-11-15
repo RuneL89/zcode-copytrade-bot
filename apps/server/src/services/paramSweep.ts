@@ -781,12 +781,26 @@ export function windowsForRun(
   if (policy === 'actual') return dataset.actualWindows;
   const windows: HireWindow[] = [];
   const selectedAtStart = new Map<number, Set<string>>();
+  const actualHires = dataset.actualWindows.map((window) => ({
+    candidateId: window.candidateId,
+    startMs: window.startMs,
+  }));
+  const simulatedHires: Array<{ candidateId: string; startMs: number }> = [];
   for (const moment of [...dataset.hireMoments].sort((a, b) => a.actual.startMs - b.actual.startMs)) {
     const selected = selectedAtStart.get(moment.actual.startMs) ?? new Set<string>();
     selectedAtStart.set(moment.actual.startMs, selected);
     const active = new Set([...moment.activeCandidateIds, ...selected]);
     const eligible = moment.bench.filter((candidate) => {
       if (active.has(candidate.candidateId)) return false;
+      const firedMs = candidate.lastFiredAt === null ? null : ms(candidate.lastFiredAt);
+      const anotherHiredSinceFire =
+        firedMs !== null &&
+        [...actualHires, ...simulatedHires].some(
+          (hire) =>
+            hire.candidateId !== candidate.candidateId &&
+            hire.startMs > firedMs &&
+            hire.startMs < moment.actual.startMs,
+        );
       const decision = canPromote({
         aggregates: {
           closedCount: candidate.closedCount,
@@ -796,6 +810,8 @@ export function windowsForRun(
         lastFundedBuyAt: candidate.lastFundedBuyAt,
         lastFiredAt: candidate.lastFiredAt,
         nowMs: moment.actual.startMs,
+        anotherHiredSinceFire,
+        freeChair: active.size < risk.ROSTER_SIZE,
         config: {
           promotionMinClosed: risk.PROMOTION_MIN_CLOSED,
           promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
@@ -816,6 +832,7 @@ export function windowsForRun(
       handle: moment.actual.handle,
     };
     selected.add(chosen.candidateId);
+    simulatedHires.push({ candidateId: chosen.candidateId, startMs: moment.actual.startMs });
     windows.push({
       ...moment.actual,
       id: `${moment.actual.id}_${policy}_${ranking}`,
@@ -1431,7 +1448,7 @@ export function defaultSweepGrid(): SweepGrid {
       MAX_DEPLOYED_PCT: [25, 50, 80, 100],
       MAX_DAILY_REALIZED_LOSS_USD: [5, 10, 15, 25, 50],
       IDLE_FIRE_HOURS: [4, 8, 12, 24],
-      COOLDOWN_HOURS: [12, 24, 36, 72],
+      COOLDOWN_HOURS: [1, 6, 12, 24],
       PROMOTION_MIN_CLOSED: [4, 8, 12, 20],
       PROMOTION_MIN_NET_USD: [1, 3, 5, 10],
       PROMOTION_MAX_LAST_BUY_HOURS: [1, 4, 8, 24],

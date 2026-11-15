@@ -31,6 +31,10 @@ Everything is re-exported from `src/index.ts`.
 - **Watch/bench gates return exact, stable reason codes** (`FEWER_THAN_K_CLOSED`,
   `NET_BELOW_THRESHOLD`, `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`).
   The dashboard shows them verbatim; rename only with a coordinated change.
+  A fired trader is `REENTRY_BANNED` until another trader is hired after the
+  firing, or until `COOLDOWN_HOURS` (default 3) elapse while a roster chair is
+  free. His shadow record is kept and the same promotion gates apply; there is
+  no repeat-fire archive.
   A hire is not gated on capital (operator decision, 2026-11-03); entries that do
   not fit the deployed-% cap are still skipped by `MAX_DEPLOYED_PCT`.
   `stallDecision` uses the newer of that funded buy and a fresh activity sample.

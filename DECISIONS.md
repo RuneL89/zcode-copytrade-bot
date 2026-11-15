@@ -195,11 +195,12 @@ from fomo/Dawn is context only — never the gate.
 **Watch list.** **20 watched wallets, bench target 10.** Discovery runs when
 fewer than 10 promotable wallets sit on the bench (D5).
 
-**Re-entry (operator decision).** A fired trader cannot be promoted again until a
-**funded buy is observed after the firing time**. There is no timed cooldown
-(consistent with the existing just-fired exclusion). Fired traders move to a
-`cooling` status, are scanned on a slow rotation (working: 2h) for that new buy,
-and are archived after N days without one.
+**Re-entry (operator decision, revised 2026-11-15).** A fired trader cannot be
+rehired immediately. The block lifts when **another trader is hired after the
+firing**, or after **`COOLDOWN_HOURS` (default 3)** with a roster chair still
+free. The fired trader keeps his shadow record and the normal promotion gates
+apply (8 closed, net above $3, last funded buy inside 4h); the same block
+applies to a manual activation. There is no repeat-fire archive.
 
 **Lifecycle.** The idle clock runs from `max(hire time, last held position)`; 8h
 idle fires. Replacements are taken from the promotion queue within one watch tick
@@ -230,10 +231,10 @@ after promotion, becoming the would-have-copied baseline) and a **roster cursor*
   thresholds are load-bearing.
 - 7 dropped (two at −$0.66 and −$1.96 — noise), 24 left on watch.
 
-**Open parameters.** The cooling scan cadence (working 2h), the eviction window,
-whether the shadow record is backfilled from the admission scan, whether the
-shadow continues for hired traders (recommended), and a minimum-headroom rule
-for a shared-pool hire.
+**Open parameters.** The re-entry window (`COOLDOWN_HOURS`, currently 3h), the
+eviction window, whether the shadow record is backfilled from the admission
+scan, whether the shadow continues for hired traders (recommended), and a
+minimum-headroom rule for a shared-pool hire.
 
 **Decided 2026-11-03 (operator).** A hire is **not** gated on capital. A wallet
 that passes the record gates takes a free chair even when the pool is fully

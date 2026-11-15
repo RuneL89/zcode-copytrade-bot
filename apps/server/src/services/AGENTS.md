@@ -8,13 +8,13 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File                   | Owns                                                                                                                                                                                                                                                            |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                                                                                                                     |
-| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, `canReenter` plus `COOLDOWN_HOURS`, repeat-fire archive, and the seat-open webhook.                                                                                 |
+| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the re-entry block (`canReenter` + `COOLDOWN_HOURS`), and the seat-open webhook.                                                                                    |
 | `monitor.ts`           | Signature-first roster polling, code exits on every tick, cursor persistence per hire, dedupe, restart reconciliation.                                                                                                                                          |
 | `rosterStream.ts`      | Push filter: swap-program logs only, and the 60s outage switch back to the signature-first poll.                                                                                                                                                                |
 | `heliusStream.ts`      | Live Helius `logsSubscribe` for five seats, hot spare, roster-bucket byte meter, capped gap-fill (60s lookback, 4 transactions, 6 Helius calls per minute), a seat hired later is subscribed without waiting for the safety poll, and the outage poll switch.   |
 | `agentHooks.ts`        | Hire decision and tighten-only exit plan. Neither route can arm, sign, or withdraw.                                                                                                                                                                             |
 | `discovery.ts`         | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                                                                                                                |
-| `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling rotation.                                                                                                                                     |
+| `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling re-admission.                                                                                                                                 |
 | `dawn-targets.ts`      | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                                                                                                               |
 | `activity-check.ts`    | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                                                                                                                  |
 | `executors.ts`         | The execution boundary: paper simulation vs the armed live signer. Live submits through `sendPath.ts` (Sender, metered staked send, public RPC) and confirms. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
@@ -53,10 +53,12 @@ no LLM in the loop (D6).
   unbounded loops. `engine.ts` is invoked per event, never on its own timer.
 - **Firing is transactional.** Mark `FIRING` and cancel unsigned intents
   atomically, then apply the position policy and `fillRoster()` in that
-  order. A fired trader also waits out `COOLDOWN_HOURS` (default 36) and
-  needs a funded buy observed after the firing. `HIRE_APPROVAL=agent` leaves
-  the seat empty and posts the seat-open webhook instead of hiring. A crash
-  must not leave a half-fired trader.
+  order. A fired trader is blocked until another trader is hired after the
+  firing, or until `COOLDOWN_HOURS` (default 3) elapse with a free roster
+  chair; his shadow record is kept and the normal promotion gates apply.
+  Manual activation obeys the same block. `HIRE_APPROVAL=agent` leaves the
+  seat empty and posts the seat-open webhook instead of hiring. A crash must
+  not leave a half-fired trader.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.

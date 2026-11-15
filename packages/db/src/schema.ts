@@ -410,7 +410,7 @@ export const watchWallets = sqliteTable(
     candidateId: text('candidate_id').primaryKey(),
     userId: text('user_id'),
     address: text('address').notNull(),
-    status: text('status').notNull().default('watching'), // watching|cooling|promoted|archived
+    status: text('status').notNull().default('watching'), // watching|cooling|bench|hired|archived
     admittedAt: text('admitted_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     reason: text('reason'),

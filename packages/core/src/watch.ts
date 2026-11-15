@@ -21,10 +21,10 @@ export interface PromotionConfig {
   /** The operator's tighter recency rule: the last funded buy must be within this. */
   promotionMaxLastBuyHours: number;
   /**
-   * Minimum hours after a firing before a new funded buy can requalify the
-   * wallet. Omitted or 0 keeps the older "buy after the fire is enough" rule.
+   * Hours after a firing before the free-chair re-entry path opens. A hire of
+   * another candidate after the firing lifts the block immediately.
    */
-  cooldownHours?: number;
+  cooldownHours: number;
 }
 
 export interface PromotionInput {
@@ -32,6 +32,10 @@ export interface PromotionInput {
   lastFundedBuyAt: string | null;
   lastFiredAt: string | null;
   nowMs: number;
+  /** Another candidate was activated after `lastFiredAt`. */
+  anotherHiredSinceFire: boolean;
+  /** At least one roster chair is free right now. */
+  freeChair: boolean;
   config: PromotionConfig;
 }
 
@@ -62,9 +66,10 @@ export function canPromote(input: PromotionInput): PromotionDecision {
   if (
     !canReenter({
       lastFiredAt: input.lastFiredAt,
-      lastFundedBuyAt: input.lastFundedBuyAt,
       nowMs: input.nowMs,
       cooldownHours: input.config.cooldownHours,
+      anotherHiredSinceFire: input.anotherHiredSinceFire,
+      freeChair: input.freeChair,
     })
   ) {
     return { ok: false, reason: 'REENTRY_BANNED' };
@@ -73,32 +78,26 @@ export function canPromote(input: PromotionInput): PromotionDecision {
 }
 
 /**
- * Re-entry: a fired trader needs a funded buy observed after the fire, and,
- * when `cooldownHours` is set, that buy is not enough until the cooldown has
- * elapsed. Timestamps are local ISO strings.
+ * Re-entry: a fired trader is blocked until another trader is hired after the
+ * firing, or until `cooldownHours` have elapsed while a roster chair is free.
+ * The shadow record is not part of this decision — the normal promotion gates
+ * still apply. Fail closed on an unreadable firing timestamp.
  */
 export function canReenter(input: {
   lastFiredAt: string | null;
-  lastFundedBuyAt: string | null;
-  nowMs?: number;
-  cooldownHours?: number;
+  nowMs: number;
+  cooldownHours: number;
+  anotherHiredSinceFire: boolean;
+  freeChair: boolean;
 }): boolean {
   if (input.lastFiredAt === null) return true;
-  if (input.lastFundedBuyAt === null) return false;
-  if (input.lastFundedBuyAt <= input.lastFiredAt) return false;
-  const cooldownMs = (input.cooldownHours ?? 0) * 3_600_000;
-  if (cooldownMs > 0) {
-    const firedMs = Date.parse(input.lastFiredAt);
-    if (!Number.isFinite(firedMs) || input.nowMs === undefined) return false;
-    if (input.nowMs - firedMs < cooldownMs) return false;
-  }
-  return true;
+  const firedMs = Date.parse(input.lastFiredAt);
+  if (!Number.isFinite(firedMs) || !Number.isFinite(input.nowMs)) return false;
+  if (input.anotherHiredSinceFire) return true;
+  if (!input.freeChair) return false;
+  return input.nowMs - firedMs >= input.cooldownHours * 3_600_000;
 }
 
-/**
- * Fired at least `limit` times inside the window (the firing just recorded
- * counts). Those wallets are archived instead of returning to the bench.
- */
 /**
  * Newest usable activity stamp. Promotion hires on the shadow ledger's last
  * funded buy; the activity sample's last trade can be hours older when that
@@ -152,20 +151,6 @@ export function stallDecision(input: StallInput): { fire: boolean; silentHours: 
   if (activityMs === null) return { fire: false, silentHours: null };
   const silentHours = (input.nowMs - activityMs) / 3_600_000;
   return { fire: input.nowMs - activityMs > stallMs, silentHours };
-}
-
-export function isRepeatOffender(
-  firedAtMs: readonly number[],
-  nowMs: number,
-  windowDays = 7,
-  limit = 2,
-): boolean {
-  const cutoff = nowMs - windowDays * 86_400_000;
-  let count = 0;
-  for (const firedAt of firedAtMs) {
-    if (firedAt >= cutoff && firedAt <= nowMs) count++;
-  }
-  return count >= limit;
 }
 
 export type CeilingDecision = 'none' | 'close_now' | 'close_at_grace';

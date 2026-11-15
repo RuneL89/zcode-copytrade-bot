@@ -70,12 +70,13 @@ export const riskConfigSchema = z
     EXIT_SLIPPAGE_BPS_2: positiveInt('EXIT_SLIPPAGE_BPS_2'),
     /** Last exit slippage step. Further attempts reuse it. */
     EXIT_SLIPPAGE_BPS_3: positiveInt('EXIT_SLIPPAGE_BPS_3'),
-    /** Hours after a firing before a funded buy can requalify the wallet. */
+    /**
+     * Hours after a firing before the free-chair re-entry path opens. A hire
+     * of another trader after the firing lifts the block immediately.
+     */
     COOLDOWN_HOURS: positiveInt('COOLDOWN_HOURS'),
     /** Agent hire decisions allowed per local day. */
     MAX_HIRES_PER_DAY: positiveInt('MAX_HIRES_PER_DAY'),
-    REPEAT_FIRE_WINDOW_DAYS: positiveInt('REPEAT_FIRE_WINDOW_DAYS'),
-    REPEAT_FIRE_LIMIT: positiveInt('REPEAT_FIRE_LIMIT'),
     /** Fire the hire after this many hours with zero open positions. */
     IDLE_FIRE_HOURS: positiveInt('IDLE_FIRE_HOURS'),
     MAX_SLIPPAGE_BPS: positiveInt('MAX_SLIPPAGE_BPS'),
@@ -128,8 +129,6 @@ export const riskConfigSchema = z
     WATCH_POLL_MS: positiveInt('WATCH_POLL_MS').min(60_000, 'WATCH_POLL_MS must be at least 60000'),
     /** Roster: signature poll per hired wallet (a real order follows). */
     ROSTER_POLL_MS: positiveInt('ROSTER_POLL_MS').min(15_000, 'ROSTER_POLL_MS must be at least 15000'),
-    /** Cooling traders: slow rotation scan for a funded buy after the firing. */
-    COOLING_SCAN_MS: positiveInt('COOLING_SCAN_MS'),
     /** Evict wallets that fail the funded-buy screen for this many days. */
     WATCH_EVICTION_DAYS: positiveInt('WATCH_EVICTION_DAYS'),
     /** Seed the shadow record from the admission scan (observed trades only). */
@@ -206,10 +205,10 @@ export const DEFAULT_RISK: RiskConfig = {
   EXIT_SLIPPAGE_BPS_1: 300,
   EXIT_SLIPPAGE_BPS_2: 600,
   EXIT_SLIPPAGE_BPS_3: 1000,
-  COOLDOWN_HOURS: 36,
+  // A fired trader is blocked until another trader is hired after the firing,
+  // or until this many hours pass with a roster chair still free.
+  COOLDOWN_HOURS: 3,
   MAX_HIRES_PER_DAY: 3,
-  REPEAT_FIRE_WINDOW_DAYS: 7,
-  REPEAT_FIRE_LIMIT: 2,
   // D4's lifecycle rule: the idle clock runs from max(hire, last held position)
   // and fires at 8h.
   IDLE_FIRE_HOURS: 8,
@@ -246,7 +245,6 @@ export const DEFAULT_RISK: RiskConfig = {
   PER_MINT_CAP_USD: 0, // 0 = disabled (operator decision: no cap for now)
   WATCH_POLL_MS: 300000,
   ROSTER_POLL_MS: 45000,
-  COOLING_SCAN_MS: 7200000,
   WATCH_EVICTION_DAYS: 14,
   SHADOW_BACKFILL_ON_ADMIT: true,
   DISCOVERY_MIN_INTERVAL_MS: 1800000,
@@ -273,8 +271,6 @@ const settingsPatchObjectSchema = z
     EXIT_SLIPPAGE_BPS_3: z.number().int().positive().optional(),
     COOLDOWN_HOURS: z.number().int().positive().optional(),
     MAX_HIRES_PER_DAY: z.number().int().positive().optional(),
-    REPEAT_FIRE_WINDOW_DAYS: z.number().int().positive().optional(),
-    REPEAT_FIRE_LIMIT: z.number().int().positive().optional(),
     IDLE_FIRE_HOURS: z.number().int().positive().optional(),
     MAX_SLIPPAGE_BPS: z.number().int().positive().optional(),
     MAX_PRICE_IMPACT_BPS: z.number().int().positive().optional(),
@@ -300,7 +296,6 @@ const settingsPatchObjectSchema = z
     PER_MINT_CAP_USD: z.number().int().nonnegative().optional(),
     WATCH_POLL_MS: z.number().int().min(60_000).optional(),
     ROSTER_POLL_MS: z.number().int().min(15_000).optional(),
-    COOLING_SCAN_MS: z.number().int().positive().optional(),
     WATCH_EVICTION_DAYS: z.number().int().positive().optional(),
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().optional(),
     DISCOVERY_MIN_INTERVAL_MS: z.number().int().min(600_000).optional(),

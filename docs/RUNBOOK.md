@@ -114,11 +114,14 @@ idle chair.
 ### The fire → bench → hire path
 
 A fire closes the chair's positions under `FIRE_POSITION_POLICY`, marks the
-activation FIRED, moves the trader to `cooling` (he returns only after a funded
-buy observed after the firing) and immediately calls `fillRoster()`, which takes
-the best bench wallet (shadow net first). Every firing path (idle, stall, manual, loss
-streak) performs that hand-off, so a fired leader is never left on the bench —
-otherwise the very fill he triggered could re-hire him. The bench is empty →
+activation FIRED, moves the trader to `cooling` and immediately calls
+`fillRoster()`, which takes the best bench wallet (shadow net first). Every
+firing path (idle, stall, manual, loss streak) performs that hand-off, so a
+fired leader is never left on the bench — otherwise the very fill he triggered
+could re-hire him. The fired trader is blocked until another trader is hired
+after the firing, or until `COOLDOWN_HOURS` (default 3) elapse while a roster
+chair is still free; he keeps his shadow record and must pass the normal
+promotion gates. A manual activation obeys the same block. The bench is empty →
 the chair stays empty and the demand trigger asks discovery for a fresh bench. A
 close-out that needs reconciliation freezes **only** that chair.
 

@@ -152,9 +152,11 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   is no transition from signed/submitted back to quotable. Preserve that.
 - Firing is transactional: mark FIRING + cancel unsigned intents atomically,
   then position policy, then `fillRoster()` from the promotion queue (see
-  `apps/server/src/services/lifecycle.ts`). A fired trader returns only after a
-  funded buy observed after the firing (the `canReenter` rule); no timed
-  cooldowns. A stuck close freezes only its own chair.
+  `apps/server/src/services/lifecycle.ts`). A fired trader cannot be rehired
+  immediately: the block lifts when another trader is hired after the firing,
+  or after `COOLDOWN_HOURS` (default 3) with a roster chair still free. He keeps
+  his shadow record and passes the same promotion gates; manual activation obeys
+  the block too. A stuck close freezes only its own chair.
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.

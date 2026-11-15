@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
-import { canPromote, isRepeatOffender, usdToMicro } from '@zcode-bot/core';
+import { canPromote, canReenter, usdToMicro } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 
@@ -124,12 +124,17 @@ export class TraderLifecycle {
       promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
       cooldownHours: this.risk.COOLDOWN_HOURS,
     };
+    const freeChair = repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE;
     for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
+      const lastFiredAt = repo.lastFiredAt(this.db, wallet.candidateId);
       const decision = canPromote({
         aggregates: repo.shadowAggregates(this.db, wallet.candidateId),
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
-        lastFiredAt: repo.lastFiredAt(this.db, wallet.candidateId),
+        lastFiredAt,
         nowMs: Date.now(),
+        anotherHiredSinceFire:
+          lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, wallet.candidateId),
+        freeChair,
         config: promotionConfig,
       });
       if (!decision.ok) continue;
@@ -190,6 +195,28 @@ export class TraderLifecycle {
       return { ok: false, reason: 'NO_SLOT: the roster is full' };
     }
     if (!repo.getCandidate(this.db, candidateId)) return { ok: false, reason: 'unknown candidateId' };
+
+    // Re-entry block: a fired trader must not be rehired immediately. Another
+    // trader's hire after the firing lifts it; otherwise the cooldown must
+    // elapse while a roster chair is free. Applies to manual hires too.
+    const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
+    if (
+      lastFiredAt !== null &&
+      !canReenter({
+        lastFiredAt,
+        nowMs: Date.now(),
+        cooldownHours: this.risk.COOLDOWN_HOURS,
+        anotherHiredSinceFire: repo.hasHireSince(this.db, lastFiredAt, candidateId),
+        freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
+      })
+    ) {
+      return {
+        ok: false,
+        reason:
+          `REENTRY_BANNED: another trader must be hired first, or ` +
+          `${this.risk.COOLDOWN_HOURS}h must pass with a free chair`,
+      };
+    }
 
     // Day-trader pre-hire gate (operator decision, 2026-11-01): judge the
     // STORED copyable-trade reading, and require it to be fresh. A missing or
@@ -301,18 +328,22 @@ export class TraderLifecycle {
       cooldownHours: this.risk.COOLDOWN_HOURS,
     };
     /** A bench row is only a candidate while its record still passes the gates. */
-    const recordOk = (candidateId: string): boolean =>
-      canPromote({
+    const recordOk = (candidateId: string): boolean => {
+      const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
+      return canPromote({
         aggregates: repo.shadowAggregates(this.db, candidateId),
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
-        lastFiredAt: repo.lastFiredAt(this.db, candidateId),
+        lastFiredAt,
         nowMs: Date.now(),
+        anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, candidateId),
+        freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
         config: promotionConfig,
       }).ok;
+    };
     // The bench is the queue; hired leaders keep their shadow rows but are not
     // candidates for a free chair, and a bench wallet is only hired while its
-    // record still qualifies (a fired wallet is re-entry banned until a
-    // post-fire buy, a stale record is not a hire).
+    // record still qualifies (a fired wallet is blocked until another hire or
+    // the re-entry window, a stale record is not a hire).
     this.promoteQualifiedWatchers();
     const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
@@ -342,8 +373,8 @@ export class TraderLifecycle {
    * Atomic firing sequence:
    * 1. mark FIRING + cancel pending unsigned intents (one SQLite transaction)
    * 2. apply FIRE_POSITION_POLICY
-   * 3. finalize FIRED (no cooldown: re-entry needs a funded buy after the
-   *    firing — the canReenter rule)
+   * 3. finalize FIRED and move the watch row to cooling (re-entry needs
+   *    another hire, or the cooldown with a free chair — the canReenter rule)
    * 4. fill the freed chair from the bench (fillRoster)
    * Unknown close outcomes -> REQUIRES_RECONCILIATION (no retry, no handoff).
    */
@@ -412,9 +443,9 @@ export class TraderLifecycle {
       }
     }
 
-    // No cooldown registration: a fired trader returns only after a funded buy
-    // observed AFTER the firing (the canReenter rule, D4) — no timed cooldown
-    // exists. A manual activation from the dashboard overrides.
+    // The re-entry block is registered once the activation is FIRED (below):
+    // another hire after the firing, or the cooldown with a free chair, lifts
+    // it (the canReenter rule, D4). Manual activation obeys the same block.
 
     if (!handoffBlocked) {
       repo.updateActivation(this.db, activationId, {
@@ -444,38 +475,10 @@ export class TraderLifecycle {
 
     // Every firing path ends here (monitor idle/stall, dashboard, loss streak),
     // so the cooling hand-off belongs here too: a fired leader leaves the bench
-    // and may only return after a funded buy observed after this firing (D4
-    // canReenter). Without this the very fill below could re-hire him.
-    if (repo.getWatchWallet(this.db, activation.candidateId)) {
-      const windowMs = this.risk.REPEAT_FIRE_WINDOW_DAYS * 86_400_000;
-      const since = new Date(Date.now() - windowMs).toISOString();
-      const firedAt = repo
-        .listFiringEventsSince(this.db, since)
-        .filter((row) => row.candidateId === activation.candidateId)
-        .map((row) => Date.parse(row.firedAt));
-      const repeat = isRepeatOffender(
-        firedAt,
-        Date.now(),
-        this.risk.REPEAT_FIRE_WINDOW_DAYS,
-        this.risk.REPEAT_FIRE_LIMIT,
-      );
-      repo.setWatchStatus(
-        this.db,
-        activation.candidateId,
-        repeat ? 'archived' : 'cooling',
-        repeat
-          ? `fired ${firedAt.length} times within ${this.risk.REPEAT_FIRE_WINDOW_DAYS}d`
-          : `fired: ${reason}`,
-      );
-      repo.audit(
-        this.db,
-        'watch',
-        repeat ? 'watch archived: repeat firing' : `watch cooling: fired (${reason})`,
-        {
-          candidateId: activation.candidateId,
-        },
-      );
-    }
+    // and may only return after another trader is hired, or after the re-entry
+    // window with a free chair (D4 canReenter). Without this the very fill
+    // below could re-hire him.
+    this.markCooling(activation.candidateId, reason);
 
     // A fire frees exactly one chair. Auto mode fills it from the bench.
     // Agent mode, and an overrule, leave it empty and post the opening.
@@ -499,6 +502,16 @@ export class TraderLifecycle {
       });
     }
     return outcome;
+  }
+
+  /**
+   * Put a fired watch wallet into cooling before the freed chair is refilled.
+   * `canReenter` decides when the block lifts; the shadow record is kept.
+   */
+  private markCooling(candidateId: string, reason: string): void {
+    if (!repo.getWatchWallet(this.db, candidateId)) return;
+    repo.setWatchStatus(this.db, candidateId, 'cooling', `fired: ${reason}`);
+    repo.audit(this.db, 'watch', `watch cooling: fired (${reason})`, { candidateId });
   }
 
   // --- reconciliation retry (signature-less cases only) ----------------------
@@ -632,6 +645,11 @@ export class TraderLifecycle {
     repo.audit(this.db, 'firing', `blocked fire completed after reconciliation: ${activation.candidateId}`, {
       activationId,
     });
+    // The chair is free only now, so the cooling hand-off waits for this point.
+    this.markCooling(
+      activation.candidateId,
+      activation.firedReason ?? 'firing completed after reconciliation',
+    );
 
     const filled = await this.fillOrWait();
     this.notifySeat(activationId, activation.candidateId, 'reconciliation complete', filled.hired);

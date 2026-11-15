@@ -111,8 +111,6 @@ export class Runtime {
   watch: WatchService;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private rosterTimer: ReturnType<typeof setInterval> | null = null;
-  /** Last cooling rotation scan (folded into the watch clock, D4's 2h rotation). */
-  private lastCoolingScanAt = 0;
   private watchBootTimer: ReturnType<typeof setTimeout> | null = null;
   /** Read-only Dawn (Telegram) trader-lookup adapter; null until DAWN_BOT_USERNAME is set. */
   dawnLookup: DawnTraderLookupProvider | null = null;
@@ -644,18 +642,12 @@ export class Runtime {
     // The two INTENTIONAL monitoring clocks (D5): the watch list every
     // WATCH_POLL_MS and the roster on the monitor's ROSTER_POLL_MS.
     void bootCatchUp.finally(() => {
-      // The WATCH clock: the shadow record, the promotion/demotion sweep, the
-      // demand trigger, and — time-gated rather than on a timer of its own — the
-      // slow cooling rotation for fired traders (D4).
+      // The WATCH clock: cooling re-admission, the shadow record, the
+      // promotion/demotion sweep, and the demand trigger.
       this.watchTimer = setInterval(() => {
         void this.watch
           .tick()
           .then(() => this.maybeDemandDiscovery())
-          .then(() => {
-            if (Date.now() - this.lastCoolingScanAt < this.config.risk.COOLING_SCAN_MS) return;
-            this.lastCoolingScanAt = Date.now();
-            return this.watch.coolingTick();
-          })
           .catch((e: Error) => {
             repo.audit(this.db.db, 'watch', `watch tick failed (fail closed): ${e.message}`, {});
           });
@@ -673,7 +665,6 @@ export class Runtime {
       this.db.db,
       'watch',
       `watch list enabled (poll every ${Math.round(this.config.risk.WATCH_POLL_MS / 60_000)} min, ` +
-        `cooling every ${Math.round(this.config.risk.COOLING_SCAN_MS / 3_600_000)}h, ` +
         `roster every ${Math.round(this.config.risk.ROSTER_POLL_MS / 1000)}s)`,
     );
 
