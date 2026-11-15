@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '@zcode-bot/config';
+import * as repo from '@zcode-bot/db/repo.js';
 import { Runtime } from '../src/runtime.js';
 import { buildApp } from '../src/http/app.js';
 
@@ -85,6 +86,36 @@ describe('auth + CSRF + control API', () => {
     expect(state.mode).toBe('paper');
     expect(state.fictional).toBe(false);
     expect(state.badges).toContain('PAPER');
+  });
+
+  it('returns candidate rejection evidence with resolved handles', async () => {
+    repo.upsertCandidate(rt.db.db, {
+      candidateId: 'cand_http_rejection',
+      handle: 'rejected_tester',
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: null,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'test',
+      observedAt: new Date().toISOString(),
+    });
+    repo.recordCandidateRejection(rt.db.db, {
+      recommendationId: null,
+      candidateId: 'cand_http_rejection',
+      reason: 'ACTIVITY_STALE',
+      detail: 'activity reading is 90 min old',
+    });
+    const res = await app.request('/api/rejections', {
+      headers: { cookie: `zcode_session=${cookies['zcode_session']}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      candidateRejections: Array<{ candidateId: string; handle: string; reason: string }>;
+    };
+    const row = body.candidateRejections.find((r) => r.candidateId === 'cand_http_rejection');
+    expect(row?.handle).toBe('rejected_tester');
+    expect(row?.reason).toBe('ACTIVITY_STALE');
   });
 
   it('blocks mutations without CSRF and accepts them with it', async () => {

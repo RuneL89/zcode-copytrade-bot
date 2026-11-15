@@ -251,6 +251,25 @@ export class StateBuilder {
           : null;
       const markUsdMicro = fresh ? fresh.valueUsdMicro.toString() : null;
       const entrySpend = entrySpendByPosition.get(p.positionId) ?? null;
+      // Copytrader may tighten an exit plan in place; the dashboard shows the
+      // effective plan, not a guess. A malformed blob falls back to code defaults.
+      const exitPlan = (() => {
+        const raw = repo.kvGet(this.db, `exit.plan:${p.positionId}`);
+        if (!raw) return null;
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          const pick = (key: string) =>
+            typeof parsed[key] === 'number' ? (parsed[key] as number) : undefined;
+          const plan = {
+            stopLossBps: pick('stopLossBps'),
+            trailDistanceBps: pick('trailDistanceBps'),
+            maxHoldHours: pick('maxHoldHours'),
+          };
+          return Object.values(plan).some((value) => value !== undefined) ? plan : null;
+        } catch {
+          return null;
+        }
+      })();
       return {
         positionId: p.positionId,
         leaderHandle: this.handleForPosition(p.positionId),
@@ -266,6 +285,7 @@ export class StateBuilder {
         unrealizedPnlUsdMicro: fresh ? (fresh.valueUsdMicro - remainingCostBasis(p)).toString() : null,
         markAgeSeconds: fresh ? markAgeSeconds : null,
         openedIso: p.openedAt,
+        exitPlan,
         entries: this.openBuyEntries(p, fresh ? fresh.valueUsdMicro : null),
       };
     });
@@ -468,6 +488,24 @@ export class StateBuilder {
           return row?.activationId === a.activationId;
         });
         const unrealized = hirePositions.reduce((acc, p) => acc + BigInt(p.unrealizedPnlUsdMicro ?? '0'), 0n);
+        // A real tenure curve: cumulative realized PnL after each closed lot,
+        // ending at the current realized + unrealized mark. Downsampled to 48
+        // points for the seat sparkline; a hire with no closes still shows its
+        // open mark (never a fabricated history).
+        const seatLots = lots
+          .filter((l) => this.activationOfPosition(l.positionId) === a.activationId)
+          .sort((x, y) => Date.parse(x.closedAt) - Date.parse(y.closedAt));
+        let cumulative = 0n;
+        const rawSeries: bigint[] = [0n];
+        for (const lot of seatLots) {
+          cumulative += BigInt(lot.pnlUsdMicro);
+          rawSeries.push(cumulative);
+        }
+        rawSeries.push(cumulative + unrealized);
+        const series =
+          rawSeries.length <= 48
+            ? rawSeries
+            : Array.from({ length: 48 }, (_, i) => rawSeries[Math.round((i * (rawSeries.length - 1)) / 47)]!);
         return {
           activationId: a.activationId,
           candidateId: a.candidateId,
@@ -481,6 +519,7 @@ export class StateBuilder {
           streak: a.lossStreak,
           fireAfter: this.config.risk.FIRE_AFTER_CONSECUTIVE_LOSSES,
           sinceIso: a.startedAt,
+          series: series.map((value) => value.toString()),
         };
       }),
       pipeline,
@@ -566,6 +605,9 @@ export class StateBuilder {
         // A benched/hired/cooling/archived row is not "blocked" — the reason only
         // explains why a watching row cannot move.
         blockedReason: status === 'watching' ? decision.reason : null,
+        // The row's own note (admission, firing/eviction reason) is funnel
+        // evidence for the dashboard's dropouts lane.
+        reason: wallet.reason ?? null,
         source: 'SHADOW_LEDGER',
         lastEventAt: events[0]?.observedAt ?? null,
       };
@@ -723,6 +765,8 @@ export class StateBuilder {
       (a) => a.source === 'watch_promotion' && a.startedAt >= cutoff24h,
     ).length;
     const firings24h = repo.listFiringEventsSince(this.db, cutoff24h).length;
+    const dayStart = new Date(new Date(now).toISOString().slice(0, 10)).toISOString();
+    const hiresToday = activations.filter((a) => a.startedAt >= dayStart).length;
     // The fired lane: the newest firings, each with the chair's replacement
     // status. A fire refills its chair from the promotion queue within one watch
     // tick (D4, 5 minutes), so the pairing is bounded: a hire from hours later
@@ -814,6 +858,7 @@ export class StateBuilder {
         promotable: watchWallets.filter((w) => w.status === 'bench').length,
         benchTarget: risk.BENCH_TARGET,
       },
+      hiresToday,
       roster: seats,
       exits: { fired24h: firings24h, replacements24h, recent: firedLane },
       edges: [
@@ -880,6 +925,7 @@ export class StateBuilder {
         const base = {
           id: `obs-${ev.id}`,
           tIso,
+          leaderHandle: repo.getCandidate(this.db, ev.candidateId)?.handle ?? ev.candidateId,
           tokenShort: detail?.mint ? mintShort(detail.mint) : null,
           leaderUsdMicro:
             detail?.fundingMint === USDC_MINT || detail?.fundingMint === USDT_MINT
@@ -921,6 +967,7 @@ export class StateBuilder {
             id: `obs-${ev.id}`,
             tIso,
             kind: 'leader_sell',
+            leaderHandle: repo.getCandidate(this.db, ev.candidateId)?.handle ?? ev.candidateId,
             tokenShort: detail?.mint ? mintShort(detail.mint) : null,
             leaderUsdMicro: null,
             leaderSolBase: null,
@@ -938,6 +985,7 @@ export class StateBuilder {
           id: lot ? `lot-${lot.id}` : `obs-${ev.id}`,
           tIso,
           kind: 'exit',
+          leaderHandle: repo.getCandidate(this.db, ev.candidateId)?.handle ?? ev.candidateId,
           tokenShort: mintShort(pos.mint),
           leaderUsdMicro: null,
           leaderSolBase: null,

@@ -3,7 +3,16 @@ import { streamSSE } from 'hono/streaming';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { settingsPatchSchema, riskConfigSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
-import { DAILY_HARD_CAP, MONTH_ROSTER_ONLY, riskPatchDirection } from '@zcode-bot/core';
+import {
+  DAILY_HARD_CAP,
+  FREE_PLAN_CREDITS,
+  MONTH_AMBER,
+  MONTH_EXITS_ONLY,
+  MONTH_RED,
+  MONTH_ROSTER_ONLY,
+  PATH_BUDGETS,
+  riskPatchDirection,
+} from '@zcode-bot/core';
 import { parseManualCsv, parseManualJson } from '@zcode-bot/providers';
 import {
   applyCsrfCookie,
@@ -202,9 +211,16 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   app.get('/api/control-events', requireAuth(sessions), (c) =>
     c.json({ events: repo.listControlEvents(db, 100) }),
   );
-  app.get('/api/rejections', requireAuth(sessions), (c) =>
-    c.json({ rejections: repo.listRiskRejections(db, 300) }),
-  );
+  app.get('/api/rejections', requireAuth(sessions), (c) => {
+    // Risk rejections are the entry gates; candidate rejections are the hire /
+    // promotion gates. Both are read-only audit evidence for the funnel's
+    // dropouts lane (handles resolved here so the UI never guesses).
+    const candidateRejections = repo.listCandidateRejections(db, 100).map((row) => ({
+      ...row,
+      handle: repo.getCandidate(db, row.candidateId)?.handle ?? row.candidateId,
+    }));
+    return c.json({ rejections: repo.listRiskRejections(db, 300), candidateRejections });
+  });
   app.get('/api/reconciliation', requireAuth(sessions), (c) =>
     c.json({ cases: repo.openReconciliationCases(db) }),
   );
@@ -237,6 +253,12 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       },
       readiness: rt.readiness(),
       control: rt.control.flags,
+      hiring: {
+        mode: rt.config.env.HIRE_APPROVAL,
+        hiresToday: repo
+          .listActivations(db, 500)
+          .filter((a) => a.startedAt >= new Date(new Date().toISOString().slice(0, 10)).toISOString()).length,
+      },
       liveAckString: LIVE_ACK_STRING,
     });
   });
@@ -262,6 +284,14 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       byPath: snap.byPath,
       hardCap: DAILY_HARD_CAP,
       monthCeiling: MONTH_ROSTER_ONLY,
+      freePlan: FREE_PLAN_CREDITS,
+      paths: PATH_BUDGETS,
+      monthCaps: {
+        amber: MONTH_AMBER,
+        red: MONTH_RED,
+        rosterOnly: MONTH_ROSTER_ONLY,
+        exitsOnly: MONTH_EXITS_ONLY,
+      },
       admin,
       adminDetail:
         admin === 'ok'

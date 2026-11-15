@@ -94,7 +94,11 @@ export const api = {
   disarm: () => request<{ ok: boolean }>('/api/control/disarm', { method: 'POST', body: '{}' }),
   demoStart: () => request<{ ok: boolean }>('/api/demo/start', { method: 'POST', body: '{}' }),
   audit: () => request<{ events: Array<Record<string, unknown>> }>('/api/audit'),
-  rejections: () => request<{ rejections: Array<Record<string, unknown>> }>('/api/rejections'),
+  rejections: () =>
+    request<{
+      rejections: Array<Record<string, unknown>>;
+      candidateRejections?: Array<Record<string, unknown>>;
+    }>('/api/rejections'),
   candidates: () =>
     request<{ candidates: Array<Record<string, unknown>>; addresses: Array<Record<string, unknown>> }>(
       '/api/candidates',
@@ -115,7 +119,7 @@ export const api = {
   // D4 watch list actions. Promote is refused with the gate's reason; archive
   // and unarchive only move the membership status.
   watchPromote: (candidateId: string) =>
-    request<{ ok: boolean; outcome: string }>('/api/watch/promote', {
+    request<{ ok: boolean; reason: string }>('/api/watch/promote', {
       method: 'POST',
       body: JSON.stringify({ candidateId }),
     }),
