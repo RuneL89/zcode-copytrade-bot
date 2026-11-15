@@ -3,8 +3,8 @@
 ## Purpose
 
 Persistence: the Drizzle schema, SQL migrations, the SQLite connection (WAL),
-the single-worker lock, the seed script, and every repository function the
-server calls.
+the single-worker lock, read-only opening for replay tools, the seed script,
+and every repository function the server calls.
 
 ## Ownership
 
@@ -16,7 +16,8 @@ server calls.
   audit events, key/value.
 - `src/repo.ts` — all queries.
 - `src/connection.ts` — `openDatabase` (WAL, `synchronous=NORMAL`,
-  `foreign_keys=ON`, `busy_timeout=5000`) and the worker lock.
+  `foreign_keys=ON`, `busy_timeout=5000`), `openReadOnlyDatabase` (existing
+  file only, `query_only=ON`), and the worker lock.
 - `src/migrate.ts`, `drizzle/` — migrations and drizzle-kit metadata.
 - `src/seed.ts` — research dirs + optional example leaderboard import.
 
@@ -42,6 +43,10 @@ server calls.
   `process.cwd()`, because pnpm runs scripts inside this package folder.
 - **WAL backups need the side files.** When copying the database, include
   `-wal` and `-shm`, or stop the server first.
+- **Replay tools read a snapshot.** `pnpm sweep` uses SQLite's online backup
+  API to snapshot a live WAL DB (no side-file copy), then opens the snapshot
+  with `openReadOnlyDatabase`. Replay code never migrates, seeds or writes the
+  snapshot.
 
 ## Work Guidance
 

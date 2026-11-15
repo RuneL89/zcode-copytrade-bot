@@ -13,8 +13,8 @@ leaderboard/profile data out of the operator's desktop Chrome.
 - `ZCODE_AUTOMATION.md` — retirement note: the MCP + scheduled-research
   contract is gone with D6; admission is the deterministic D3/D4 path.
 - `RUNBOOK.md` — everyday startup, pause/resume, emergencies, restart recovery,
-  reconciliation, live arming, backups, troubleshooting, and provider plan
-  decisions.
+  reconciliation, live arming, backups, troubleshooting, provider plan
+  decisions, and the read-only counterfactual parameter sweep.
 - `GETTING_STARTED.md` — the short "what do I do now" onboarding.
 - `GROK-BOT.md` — the operator-facing account of Copytrader's role: the
   30-minute health and credit watch, hire review, tighten-only exits, the

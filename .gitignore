@@ -7,6 +7,7 @@ test-results/
 .env.*
 !.env.example
 data/
+reports/
 *.db
 *.db-shm
 *.db-wal

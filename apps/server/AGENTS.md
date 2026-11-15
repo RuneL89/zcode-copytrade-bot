@@ -20,7 +20,8 @@ operator CLIs.
 - Operator CLIs: `src/cli/` — `wallet-create`, `wallet-send`, `setup-token`,
   `demo`, `fomo-import`, `dawn-lookup`, `candidate-activity` (`--source
 public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
-  single-wallet check, read-only).
+  single-wallet check, read-only), `param-sweep` (`pnpm sweep`; snapshots a DB
+  copy, writes only reports, read-only).
 - Demo fixture generation: `scripts/generate-demo-fixtures.ts`.
 
 ## Local Contracts
@@ -63,7 +64,8 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
   argv, or path from the client.
 - CLIs are run from this folder with `pnpm exec tsx src/cli/<name>.ts`; they
   must be safe to run while the server is up (WAL mode, no exclusive locks
-  beyond what they need).
+  beyond what they need). Replay/report CLIs snapshot the DB and open it with
+  `openReadOnlyDatabase`; they never write trading state.
 - Keep `src/index.ts` cache rules intact: hashed `/assets/*` immutable,
   `index.html` always revalidated, missing `/assets/*` returns 404 (never the
   SPA document).
@@ -71,7 +73,7 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
 ## Verification
 
 - `pnpm --filter @zcode-bot/server test` — `auth-api`, `engine-flow`,
-  `daytrader`, `keys`, `ops`, `reports`, `withdraw` suites.
+  `daytrader`, `keys`, `ops`, `reports`, `withdraw`, `param-sweep` suites.
 - `pnpm --filter @zcode-bot/server typecheck`
 - End-to-end behavior: `pnpm e2e` (the Playwright config boots this server in
   demo mode with an isolated `DATA_DIR`).

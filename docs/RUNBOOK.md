@@ -363,6 +363,53 @@ HELIUS DOWN in the dashboard health row.
 - Restore: install anywhere, put the folder back, `pnpm db:migrate`, `pnpm start`.
 - Reset everything (destructive): delete `DATA_DIR` contents.
 
+## 8b. Counterfactual parameter sweep (read-only)
+
+Answers "would a different stop, sizing, hold time, promotion bar or hire
+ranking have made more money on the history we actually have?" It is a replay,
+not a forecast. It never applies a parameter or touches the running desk.
+
+From the live folder:
+
+```bash
+pnpm sweep                                  # data/zcode-bot.db -> reports/param-sweep-YYYYMMDD.{md,json}
+pnpm sweep --db data/zcode-bot.db --top 10  # explicit source, same output
+pnpm sweep --grid my-grid.json              # custom values / hiring / combinations
+pnpm sweep --risk-file my-risk.json         # baseline overrides (JSON object)
+```
+
+- The source DB is snapshotted with SQLite's online backup API and opened
+  read-only (`query_only=ON`); the live file is never written. It is safe while
+  the desk is running. No Helius/Jupiter/fomoapi calls.
+- A grid file is a JSON object:
+  `{"values":{"STOP_LOSS_BPS":[1500,2500,3500],"COPY_SCALE":[0.1,0.25,0.5]},`
+  `"hiring":["net","recent"],"combinations":[{"STOP_LOSS_BPS":2000,"COPY_SCALE":0.5}]}`.
+  Unknown keys are refused rather than silently ignored.
+- `--risk-file` takes the same shape as the risk settings (a JSON object of
+  overrides); it is validated against the real risk schema before replay.
+- Output is Markdown + JSON in `reports/` by default. `--out` and `--name`
+  choose another folder/base, e.g.
+  `pnpm sweep --db <backup.db> --out docs/samples --name param-sweep-sample`.
+- The default grid is ~60 one-factor runs plus hire-ranking alternatives, and
+  writes `reports/param-sweep-YYYYMMDD.{md,json}`. Every run is replayed in
+  full, train (first chronological half) and test (second half). The report
+  ranks by **test** net P&L and flags a run robust only when train and test
+  agree in sign and the test half has at least 3 trades.
+- Baseline is the code's `DEFAULT_RISK` unless `--risk-file` supplies the
+  operator's current values. The DB does not store the risk config that was
+  active at each historic fill, so a historic paper fill can legitimately
+  differ from the current baseline (for example an old $20 cap vs today's $10).
+- Data limits are stated in the report: no intra-trade marks (linear path), no
+  pool-depth model, exit slippage stays the paper assumption, and alternate
+  hires keep the real seat tenure. If the DB has no paper positions, the report
+  says the match is not applicable and does not invent a winner.
+- Samples: `docs/samples/param-sweep-sample.md` (current live DB copy; no paper
+  fills, thin-data case) and `docs/samples/param-sweep-sample-pre-reset.md`
+  (pre-reset copy with 2 real paper decisions; shows 1/2 entry match and the
+  $10-vs-$20 historic cap difference).
+- Never apply a winning row automatically. Review it with Copytrader, then make
+  any parameter change through the normal Settings/PIN or `.env` path.
+
 ## 9. Troubleshooting
 
 | Symptom                                     | Meaning / action                                                                                              |
