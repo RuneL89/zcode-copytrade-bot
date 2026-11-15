@@ -1,0 +1,21 @@
+%% Render: ~/.zcode/tools/mermaid-render/render.sh -i grok-bot-loop.mmd -o ../images/grok-bot-loop.png -b white -s 2 -w 1600
+flowchart TD
+    T["Every 30 minutes"] --> H{"Server, supervisor,<br/>credit guard and API healthy?"}
+    H -->|no| L["Read the logs,<br/>fix the obvious cause"]
+    L --> RS["Restart through<br/>copydesk-service.ps1"]
+    RS --> D
+    H -->|yes| D{"Credit projection over<br/>13.6k a day, or a 429 storm?"}
+    D -->|yes| STOP["Stop the worker, write<br/>ABORT_REASON.txt, tell Rune"]
+    D -->|no| S["Read the desk snapshot<br/>watch, seats, fills,<br/>positions, profit and loss"]
+    S --> M{"A mailbox brief<br/>is waiting?"}
+    M -->|no| LOG["Write one line to<br/>logs/pm-log.md"]
+    M -->|yes| Z["ZCode works on a branch<br/>in the dev checkout,<br/>then runs pnpm test"]
+    Z --> RV["Copytrader reviews the diff<br/>and the test result"]
+    RV --> PR["Push the branch,<br/>open a pull request"]
+    PR --> R{"Rune merges?"}
+    R -->|yes| DP["Back up the database,<br/>pull, install, build, restart"]
+    DP --> RM["Re-measure credits<br/>for 15 minutes"]
+    RM -->|over budget| RB["Roll back"]
+    RM -->|inside budget| LOG
+    R -->|no| LOG
+    LOG --> T

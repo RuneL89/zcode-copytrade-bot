@@ -16,6 +16,9 @@ leaderboard/profile data out of the operator's desktop Chrome.
   reconciliation, live arming, backups, troubleshooting, and provider plan
   decisions.
 - `GETTING_STARTED.md` — the short "what do I do now" onboarding.
+- `GROK-BOT.md` — the operator-facing account of Copytrader's role: the
+  30-minute health and credit watch, hire review, tighten-only exits, the
+  ZCode mailbox and model ladder, the deploy path, and the hard limits.
 - `research-sweep-automation.md` — retirement note: the 5-minute research
   tick and the 30-minute sweep are gone (D3/D6); discovery is demand-driven.
 
