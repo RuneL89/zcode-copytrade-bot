@@ -22,3 +22,4 @@ export * from './deskPolicy.js';
 export * from './swapPrograms.js';
 export * from './liveGate.js';
 export * from './riskDirection.js';
+export * from './weeklyReview.js';

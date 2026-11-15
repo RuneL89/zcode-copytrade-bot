@@ -30,6 +30,24 @@ export function openDatabase(dataDir: string, filename = 'zcode-bot.db'): DbHand
   };
 }
 
+/**
+ * Open an existing SQLite file read-only. Report generators and audits use
+ * this so they can never write trading state, even by accident. The file must
+ * exist; this never creates or migrates a database.
+ */
+export function openReadOnlyDatabase(dbPath: string): DbHandle {
+  const sqlite = new Database(dbPath, { readonly: true, fileMustExist: true });
+  sqlite.pragma('busy_timeout = 5000');
+  const db = drizzle(sqlite, { schema });
+  return {
+    db,
+    sqlite,
+    close() {
+      sqlite.close();
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Single-worker lock: an exclusive lockfile in the data directory. A second
 // worker process refuses to start instead of double-executing orders.
