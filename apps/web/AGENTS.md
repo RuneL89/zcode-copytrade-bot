@@ -7,12 +7,13 @@ top status header (mode badge, KPIs, provider dots), four screens —
 **Line** (funnel, arena, equity, succession, live feed), **Seats &
 positions**, **Credits**, and **Risk settings** — a desktop tab bar, a mobile
 bottom nav, seat/watch drawers, and a fire modal. Auth, the Ops console, the
-Audit log, and provider-key/import entry remain reachable.
+Audit log, provider-key/import entry, and the read-only weekly review remain
+reachable.
 
 ## Ownership
 
 - Routing and auth gating: `src/App.tsx` (four redesign routes plus legacy
-  `ops`, `audit`, `legacy-settings`), `src/pages/Auth.tsx`.
+  `ops`, `audit`, `weekly`, `legacy-settings`), `src/pages/Auth.tsx`.
 - Data transport: `src/api.ts` (the only fetch layer), `src/useDashboard.ts`
   (SSE subscription), `src/redesign/useRemote.ts` (read-only 30–60 s polling).
 - Redesign shell and screens: `src/redesign/` — `Redesign.tsx`, `Header.tsx`,
@@ -21,10 +22,10 @@ Audit log, and provider-key/import entry remain reachable.
   `format.ts`.
 - Redesign styles: `src/redesign.css` (scoped port of the approved mockup)
   and `src/redesign-extra.css`. Legacy/auth styling stays in `src/index.css`.
-- Legacy operator surfaces: `src/pages/Operations.tsx`, `Audit.tsx`, and
-  `Settings.tsx` (reached via `#/legacy-settings`; its Risk and Live tabs are
-  hidden, so keys/imports stay available without a second risk editor or an
-  arm-live control).
+- Legacy operator surfaces: `src/pages/Operations.tsx`, `Audit.tsx`,
+  `WeeklyReview.tsx`, and `Settings.tsx` (reached via `#/legacy-settings`; its
+  Risk and Live tabs are hidden, so keys/imports stay available without a
+  second risk editor or an arm-live control).
 - Screenshots: `docs/screenshots/redesign/` — committed desktop/mobile
   captures of every main screen plus the PIN, seat/watch drawer and fire-modal
   states.
@@ -61,9 +62,9 @@ Audit log, and provider-key/import entry remain reachable.
   the first frame after a connect as the full state; do not replay or invent
   events client-side. Mutations go through `api.ts` so CSRF and the cookie-
   session self-heal stay in one place.
-- **Legacy pages keep their old surface.** Ops, Audit, and the keys/imports
-  Settings view render with the legacy layout; the `.cdx` wrapper scopes the
-  redesign CSS so the two systems cannot collide.
+- **Legacy pages keep their old surface.** Ops, Audit, Weekly review, and the
+  keys/imports Settings view render with the legacy layout; the `.cdx` wrapper
+  scopes the redesign CSS so the two systems cannot collide.
 - **Accessibility and mobile first.** Interactive targets stay keyboard-
   reachable; the mobile bottom nav and drawer actions work at 390 px without
   page overflow. The redesign is dark-only, matching the approved mockup.
@@ -72,6 +73,9 @@ Audit log, and provider-key/import entry remain reachable.
 
 - Add a redesign screen as a component under `src/redesign/` and a route in
   `App.tsx`; reuse `model.ts`/`format.ts` before adding helpers.
+- `#/weekly` is the read-only weekly performance review. The Audit page links
+  to it; the page fetches `GET /api/reports/weekly` and renders the server's
+  markdown. It performs no client-side P&L math and sends no mutations.
 - Keep `src/types.ts` in lockstep with the server's `state.ts` payload. A
   contract change is one change across both apps.
 - Use the existing test ids (`desk-line`, `desk-seats`, `desk-credits`,

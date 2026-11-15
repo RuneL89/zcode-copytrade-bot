@@ -1,0 +1,962 @@
+{
+  "version": 1,
+  "week": {
+    "label": "2026-W46",
+    "startIso": "2026-11-08T22:00:00.000Z",
+    "endIso": "2026-11-15T22:00:00.000Z",
+    "timeZone": "Europe/Helsinki"
+  },
+  "generatedAt": "2026-11-15T16:06:45.728Z",
+  "mode": "paper",
+  "source": {
+    "dbPath": "C:\\Users\\atavi\\AppData\\Local\\Temp\\cdx-weekly\\live-copy.db",
+    "resetAt": "2026-11-15T07:54:00Z",
+    "resetBasis": "provided reset timestamp"
+  },
+  "summary": {
+    "seats": 9,
+    "copies": 0,
+    "openPositions": 0,
+    "realizedPnlUsdMicro": "0",
+    "feesUsdMicro": "0",
+    "unrealizedPnlUsdMicro": null,
+    "shadowClosedTrades": 206,
+    "shadowPnlUsdMicro": "513842556",
+    "shadowOpenTrades": 17,
+    "gapUsdMicro": null
+  },
+  "sinceReset": {
+    "fromIso": "2026-11-15T07:54:00Z",
+    "basis": "provided reset timestamp",
+    "seats": 4,
+    "copies": 0,
+    "openPositions": 0,
+    "realizedPnlUsdMicro": "0",
+    "feesUsdMicro": "0",
+    "shadowClosedTrades": 36,
+    "shadowOpenTrades": 17
+  },
+  "traders": [
+    {
+      "activationId": "act_91b62313-0483-4a64-a770-7cceac6f4b75",
+      "candidateId": "cand_vocalnavalpony",
+      "handle": "VocalNavalPony",
+      "startedAt": "2026-11-14T22:09:16.069Z",
+      "endedAt": "2026-11-15T06:10:31.021Z",
+      "endReason": "fired",
+      "seatedHours": 8.02082,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 14,
+          "netPnlUsdMicro": "36312513",
+          "wins": 13,
+          "losses": 1,
+          "flats": 0,
+          "winRatePct": 93,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "36312513",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-36312513",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": ["The watch list stops shadowing at hire, so no same-period shadow record exists."]
+    },
+    {
+      "activationId": "act_a0c87908-e5d6-4573-a5f5-84eb24e57f20",
+      "candidateId": "cand_jesusisthewaylove",
+      "handle": "JESUSISTHEWAYLOVE",
+      "startedAt": "2026-11-14T22:09:16.070Z",
+      "endedAt": "2026-11-15T06:10:31.105Z",
+      "endReason": "fired",
+      "seatedHours": 8.020843055555556,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 10,
+          "netPnlUsdMicro": "35459280",
+          "wins": 10,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": 100,
+          "openTrades": 1,
+          "openNotionalUsdMicro": "10000000"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "35459280",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-35459280",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": ["The watch list stops shadowing at hire, so no same-period shadow record exists."]
+    },
+    {
+      "activationId": "act_c16dda4b-2b60-45cd-b17a-00f2ba3151db",
+      "candidateId": "cand_aurafarmer_",
+      "handle": "aurafarmer_",
+      "startedAt": "2026-11-14T22:54:39.229Z",
+      "endedAt": "2026-11-14T22:59:41.560Z",
+      "endReason": "fired",
+      "seatedHours": 0.08398083333333334,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 9,
+          "netPnlUsdMicro": "128684546",
+          "wins": 3,
+          "losses": 5,
+          "flats": 1,
+          "winRatePct": 33,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "128684546",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-128684546",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": ["The watch list stops shadowing at hire, so no same-period shadow record exists."]
+    },
+    {
+      "activationId": "act_6f41adb3-6372-498e-8921-0e2c8ee0b349",
+      "candidateId": "cand_jmart0312",
+      "handle": "Jmart0312",
+      "startedAt": "2026-11-14T22:54:39.230Z",
+      "endedAt": "2026-11-14T22:59:41.717Z",
+      "endReason": "fired",
+      "seatedHours": 0.08402416666666666,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 11,
+          "netPnlUsdMicro": "89311095",
+          "wins": 4,
+          "losses": 6,
+          "flats": 1,
+          "winRatePct": 36,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "89311095",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-89311095",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": ["The watch list stops shadowing at hire, so no same-period shadow record exists."]
+    },
+    {
+      "activationId": "act_96ebedd5-3e4e-4f14-acbc-7103fd2612a1",
+      "candidateId": "cand_jaeescott20",
+      "handle": "jaeescott20",
+      "startedAt": "2026-11-14T22:54:39.231Z",
+      "endedAt": "2026-11-14T22:59:41.823Z",
+      "endReason": "fired",
+      "seatedHours": 0.08405333333333333,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 8,
+          "netPnlUsdMicro": "81176668",
+          "wins": 8,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": 100,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "81176668",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-81176668",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": ["The watch list stops shadowing at hire, so no same-period shadow record exists."]
+    },
+    {
+      "activationId": "act_4ac7458d-c07b-46a3-b1fa-8622d8b84c01",
+      "candidateId": "cand_loyalblankperch",
+      "handle": "LoyalBlankPerch",
+      "startedAt": "2026-11-15T02:10:58.992Z",
+      "endedAt": "2026-11-15T10:14:44.993Z",
+      "endReason": "fired",
+      "seatedHours": 8.062778055555556,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 12,
+          "netPnlUsdMicro": "16588246",
+          "wins": 8,
+          "losses": 4,
+          "flats": 0,
+          "winRatePct": 67,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "16588246",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-16588246",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": [
+        "The watch list stops shadowing at hire, so no same-period shadow record exists.",
+        "This seat spans the paper reset (2026-11-15T07:54:00Z); paper rows before it were deleted."
+      ]
+    },
+    {
+      "activationId": "act_5e08197a-c574-4c14-bec3-22c2dfdacc17",
+      "candidateId": "cand_vastpastviper",
+      "handle": "VastPastViper",
+      "startedAt": "2026-11-15T02:10:58.993Z",
+      "endedAt": "2026-11-15T10:14:45.124Z",
+      "endReason": "fired",
+      "seatedHours": 8.062814166666668,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 16,
+          "netPnlUsdMicro": "12319357",
+          "wins": 15,
+          "losses": 1,
+          "flats": 0,
+          "winRatePct": 94,
+          "openTrades": 3,
+          "openNotionalUsdMicro": "6000000"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "12319357",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-12319357",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": [
+        "The watch list stops shadowing at hire, so no same-period shadow record exists.",
+        "This seat spans the paper reset (2026-11-15T07:54:00Z); paper rows before it were deleted."
+      ]
+    },
+    {
+      "activationId": "act_4526aca9-8f36-4577-ba06-f151a47928e6",
+      "candidateId": "cand_waalow",
+      "handle": "waalow",
+      "startedAt": "2026-11-15T04:34:04.800Z",
+      "endedAt": "2026-11-15T12:34:45.192Z",
+      "endReason": "fired",
+      "seatedHours": 8.01122,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 12,
+          "netPnlUsdMicro": "4740640",
+          "wins": 9,
+          "losses": 3,
+          "flats": 0,
+          "winRatePct": 75,
+          "openTrades": 5,
+          "openNotionalUsdMicro": "11125000"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "4740640",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-4740640",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": [
+        "The watch list stops shadowing at hire, so no same-period shadow record exists.",
+        "This seat spans the paper reset (2026-11-15T07:54:00Z); paper rows before it were deleted."
+      ]
+    },
+    {
+      "activationId": "act_7f62360c-ca7e-4f39-a578-062bbf39855a",
+      "candidateId": "cand_coinpumper",
+      "handle": "coinpumper",
+      "startedAt": "2026-11-15T06:10:31.034Z",
+      "endedAt": "2026-11-15T14:14:45.299Z",
+      "endReason": "fired",
+      "seatedHours": 8.070629166666667,
+      "gapNote": "pre-reset paper rows deleted; actual unknown",
+      "promised": {
+        "preHireShadow": {
+          "closedTrades": 13,
+          "netPnlUsdMicro": "59611137",
+          "wins": 13,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": 100,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "duringSeatShadow": {
+          "closedTrades": 0,
+          "netPnlUsdMicro": "0",
+          "wins": 0,
+          "losses": 0,
+          "flats": 0,
+          "winRatePct": null,
+          "openTrades": 0,
+          "openNotionalUsdMicro": "0"
+        },
+        "note": "Promised is the pre-hire shadow record (the promotion evidence). The watch list does not shadow a wallet after it is hired."
+      },
+      "actual": {
+        "positions": 0,
+        "openPositions": 0,
+        "realizedPnlUsdMicro": "0",
+        "feesUsdMicro": "0",
+        "openInputUsdMicro": "0"
+      },
+      "gapUsdMicro": null,
+      "attribution": {
+        "promisedUsdMicro": "59611137",
+        "actualUsdMicro": "0",
+        "gapUsdMicro": "-59611137",
+        "components": [
+          {
+            "key": "copy_delay",
+            "label": "Copy fill delay",
+            "amountUsdMicro": null,
+            "detail": "no leader-to-fill timing pair was recorded"
+          },
+          {
+            "key": "entry_price",
+            "label": "Worse entry price",
+            "amountUsdMicro": null,
+            "detail": "leader entry price unavailable for the copied buys"
+          },
+          {
+            "key": "fees",
+            "label": "Fees (SOL, informational)",
+            "amountUsdMicro": "0",
+            "detail": "USDC PnL excludes fees by design; the fee figure is a separate SOL cost, not part of the gap"
+          },
+          {
+            "key": "skipped_buys",
+            "label": "Skipped copies",
+            "amountUsdMicro": null,
+            "detail": "0 skipped buy(s): none; missed PnL needs post-skip prices, which are not tracked"
+          },
+          {
+            "key": "exit_policy",
+            "label": "Exits not mirrored from the leader",
+            "amountUsdMicro": "0",
+            "detail": "realized PnL of positions closed by a code exit or firing; a same-mint leader comparison is not stored"
+          },
+          {
+            "key": "during_seat_shadow",
+            "label": "Shadow during the seat",
+            "amountUsdMicro": null,
+            "detail": "the watch list stops shadowing a wallet when it is hired, so no same-period shadow record exists"
+          }
+        ],
+        "unresolvedUsdMicro": null,
+        "note": "Components are evidence, not a reconciled bridge: fees are paid in SOL, skipped-buy PnL and post-exit prices are not tracked, so the gap is not fully attributable."
+      },
+      "dataGaps": [
+        "The watch list stops shadowing at hire, so no same-period shadow record exists.",
+        "This seat spans the paper reset (2026-11-15T07:54:00Z); paper rows before it were deleted."
+      ]
+    }
+  ],
+  "exitGroups": [],
+  "hiringRule": {
+    "correlation": null,
+    "sample": 0,
+    "verdict": "Insufficient sample (n=0); no promotion rule can be judged.",
+    "flags": [],
+    "rows": []
+  },
+  "firedTraders": [
+    {
+      "candidateId": "cand_aurafarmer_",
+      "handle": "aurafarmer_",
+      "firedAt": "2026-11-14T22:59:41.559Z",
+      "reason": "stall: leader inactive 10.9h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_jmart0312",
+      "handle": "Jmart0312",
+      "firedAt": "2026-11-14T22:59:41.716Z",
+      "reason": "stall: leader inactive 14.9h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_jaeescott20",
+      "handle": "jaeescott20",
+      "firedAt": "2026-11-14T22:59:41.822Z",
+      "reason": "stall: leader inactive 22.7h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_vocalnavalpony",
+      "handle": "VocalNavalPony",
+      "firedAt": "2026-11-15T06:10:31.019Z",
+      "reason": "stall: leader inactive 8.2h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_jesusisthewaylove",
+      "handle": "JESUSISTHEWAYLOVE",
+      "firedAt": "2026-11-15T06:10:31.104Z",
+      "reason": "idle: no open positions for 8.0h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_loyalblankperch",
+      "handle": "LoyalBlankPerch",
+      "firedAt": "2026-11-15T10:14:44.988Z",
+      "reason": "idle: no open positions for 8.1h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_vastpastviper",
+      "handle": "VastPastViper",
+      "firedAt": "2026-11-15T10:14:45.122Z",
+      "reason": "idle: no open positions for 8.1h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_waalow",
+      "handle": "waalow",
+      "firedAt": "2026-11-15T12:34:45.189Z",
+      "reason": "idle: no open positions for 8.0h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    },
+    {
+      "candidateId": "cand_coinpumper",
+      "handle": "coinpumper",
+      "firedAt": "2026-11-15T14:14:45.289Z",
+      "reason": "stall: leader inactive 9.6h",
+      "watchStatus": "cooling",
+      "shadowTrades": 0,
+      "pnlUsdMicro": null,
+      "status": "unknown",
+      "note": "The wallet is cooling; the watch list does not shadow it in that state, so post-firing P&L is unknown."
+    }
+  ],
+  "proposals": [
+    {
+      "direction": "NO CHANGE",
+      "parameter": "—",
+      "change": "No parameter change proposed.",
+      "evidence": "There are no closed paper copies in the period, so no rule has evidence to act on."
+    }
+  ],
+  "dataGaps": [
+    "Post-exit 1h/2h prices are unknown: the DB stores no historical marks and the report makes no external price calls.",
+    "Open-position unrealized P&L is not stored; only realized lots are reported.",
+    "The watch list stops shadowing a wallet when it is hired; the promised baseline is the pre-hire shadow record, not a same-period shadow ledger.",
+    "Fees are paid in SOL and are excluded from USDC PnL; they are shown as a separate cost.",
+    "Skipped-buy missed P&L and post-exit prices need marks the runtime does not persist; those components are marked unknown.",
+    "Fired wallets are not shadowed while cooling or hired; post-firing P&L is unknown unless the wallet was still watching.",
+    "Paper rows before the reset (2026-11-15T07:54:00Z) were deleted; pre-reset actual P&L is unavailable. Reset basis: provided reset timestamp."
+  ]
+}

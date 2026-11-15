@@ -21,7 +21,11 @@ operator CLIs.
   `demo`, `fomo-import`, `dawn-lookup`, `candidate-activity` (`--source
 public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
   single-wallet check, read-only), `param-sweep` (`pnpm sweep`; snapshots a DB
-  copy, writes only reports, read-only).
+  copy, writes only reports, read-only), `weekly-review` (read-only report).
+- Weekly performance review: `src/services/weeklyReview.ts` (DB reads, report
+  assembly, markdown/JSON, Monday 08:00 scheduler) and the read-only
+  `GET /api/reports/weekly` endpoint. The CLI writes `reports/` only; it
+  never touches trading state or adds provider calls.
 - Demo fixture generation: `scripts/generate-demo-fixtures.ts`.
 
 ## Local Contracts
@@ -46,6 +50,11 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
   evidence with a source and freshness label.
 - **Demo replay is in-memory** (`src/services/demo.ts`); it writes nothing to
   live trading tables.
+- **The weekly review is read-only.** `src/services/weeklyReview.ts` opens the
+  DB through read-only queries (the CLI uses `openReadOnlyDatabase`), writes
+  only `reports/weekly-review-*.{md,json}`, and makes no Helius, Jupiter
+  or other external calls. It reports post-exit prices as unknown because
+  historical marks are not persisted.
 - **Leader data import is operator-driven.** `fomo-import` and `dawn-lookup`
   follow `docs/FOMO_DAWN_FETCHING.md` exactly: clipboard-verified slugs, no
   guessed URLs, built-in pacing, WAL-safe writes while the server runs.
@@ -73,7 +82,8 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
 ## Verification
 
 - `pnpm --filter @zcode-bot/server test` — `auth-api`, `engine-flow`,
-  `daytrader`, `keys`, `ops`, `reports`, `withdraw`, `param-sweep` suites.
+  `daytrader`, `keys`, `ops`, `reports`, `withdraw`, `param-sweep`,
+  `weekly-review` suites.
 - `pnpm --filter @zcode-bot/server typecheck`
 - End-to-end behavior: `pnpm e2e` (the Playwright config boots this server in
   demo mode with an isolated `DATA_DIR`).

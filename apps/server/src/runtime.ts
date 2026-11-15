@@ -46,6 +46,7 @@ import { deliverSeatOpen, dueSeatTimeouts, type OpenSeat } from './services/agen
 import { browserSocket, HeliusRosterPush, SAFETY_POLL_MS } from './services/heliusStream.js';
 import { WatchService } from './services/watch.js';
 import { ReportsService, positionsText, reportText } from './services/reports.js';
+import { WeeklyReviewScheduler } from './services/weeklyReview.js';
 import { TelegramCommandService } from './services/telegram-commands.js';
 import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
@@ -136,6 +137,7 @@ export class Runtime {
   private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private lastFeeScanAt = 0;
   private solPriceUsdMicro: bigint | null = null;
+  private weeklyReview: WeeklyReviewScheduler | null = null;
 
   private equityStartUsdMicro: bigint;
 
@@ -580,6 +582,18 @@ export class Runtime {
 
     // Operator push reports (Telegram): anomalies every 10 min, daily PnL 09:00.
     this.reports.start();
+    // Weekly performance review: Monday 08:00 Helsinki, with a catch-up on
+    // boot if the last completed week's report is missing. Read-only queries.
+    this.weeklyReview = new WeeklyReviewScheduler({
+      sqlite: this.db.sqlite,
+      mode: this.config.mode,
+      dbPath: join(this.config.env.DATA_DIR, 'zcode-bot.db'),
+      reportDir: join(this.config.env.DATA_DIR, '..', 'reports'),
+      onAudit: (message, error) => repo.audit(this.db.db, 'weekly-review', message, error ? { error } : {}),
+    });
+    // Tests boot the runtime constantly; the scheduled catch-up write belongs
+    // to production. The on-demand endpoint still works under test.
+    if (process.env.NODE_ENV !== 'test') this.weeklyReview.start();
     if (this.telegramCommands) {
       this.telegramCommands.start();
       repo.audit(this.db.db, 'telegram', 'commands enabled (/status, /weekly, /positions, /help)', {});
@@ -922,6 +936,7 @@ export class Runtime {
     if (this.activityTimer) clearInterval(this.activityTimer);
     if (this.activityBootTimer) clearTimeout(this.activityBootTimer);
     this.reports.stop();
+    this.weeklyReview?.stop();
     this.telegramCommands?.stop();
     this.lock?.release();
     this.db.close();

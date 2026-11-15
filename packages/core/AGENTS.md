@@ -13,7 +13,7 @@ Pure functions that the server wires to real providers and persistence.
 `money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
 `events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
 `freshness`, `budget`, `backfill`, `exitGuard`, `callPattern`, `deskPolicy`,
-`swapPrograms`, `liveGate`, `paramSweep`.
+`swapPrograms`, `liveGate`, `paramSweep`, `weeklyReview`.
 Everything is re-exported from `src/index.ts`.
 
 ## Local Contracts
@@ -38,6 +38,11 @@ Everything is re-exported from `src/index.ts`.
 - **Fail closed by default.** Ambiguous events are skipped, an unpriced mint or
   a missing quote never invents a fill, and an unproven wallet is reported as
   blocked rather than promoted.
+- **Weekly review math is pure and read-only.** `weeklyReview` groups exits,
+  attributes the promised-vs-actual gap, correlates pre-hire shadow stats with
+  actual P&L, and resolves ISO weeks/schedules. Missing post-exit prices,
+  during-seat shadow records, or comparable actual P&L are reported as unknown,
+  never estimated.
 - **Helius spend goes through `CreditGovernor`.** Path caps, the 13,600/day
   hard cap, and the 600,000/month ceiling live in `budget.ts`. Roster and exit
   buckets are ring-fenced. `getTransactionsForAddress` is legal only on the
@@ -65,8 +70,8 @@ Everything is re-exported from `src/index.ts`.
 ## Verification
 
 - `pnpm --filter @zcode-bot/core test` — `sizing`, `swap`, `events`,
-  `activity`, `watch`, `positionAge`, `transfer`, `budget`, `paramSweep`
-  suites. The budget suite is the free-tier acceptance bar: nominal day at
+  `activity`, `watch`, `positionAge`, `transfer`, `budget`, `paramSweep`,
+  `weeklyReview` suites. The budget suite is the free-tier acceptance bar: nominal day at
   5,796, hard cap 13,600, month ceiling 600,000, dead-stream signature-first,
   watch cap, and the 429 storm. `paramSweep` proves the simulator with current
   defaults reproduces a real historic paper sizing decision and the stop /
