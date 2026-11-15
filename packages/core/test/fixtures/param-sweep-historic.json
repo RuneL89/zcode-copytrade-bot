@@ -1,0 +1,21 @@
+{
+  "note": "A real paper decision from the live DB copy taken before the 2026-11-15 paper reset (data/backups/zcode-bot-before-paper-reset-20261115-095433.db). The leader buy is observed_leader_events id 79; the paper position is pos_27b947a4-56a2-4336-bdb3-a5c8b0a3fccd. Current defaults (0.25x, $2 floor, $10 per-trade cap, $40 open per trader) size the $25 leader buy at exactly $6.25, matching the real fill's input and 5 bps fee. The real paper fill's token quantity is different because the paper executor used a Jupiter quote while the shadow uses the leader's own price.",
+  "leader": {
+    "candidateId": "cand_coinpumper",
+    "handle": "coinpumper",
+    "mint": "5GDX5fJTQns4arM1J94wjxdA8KXFsV5qW46MLFpHpump",
+    "decimals": 6,
+    "blockTimeIso": "2026-11-15T06:31:36.000Z",
+    "fundingUsdMicro": "25000000",
+    "tokenBase": "43650627043",
+    "entryPriceUsdMicro": "572"
+  },
+  "paper": {
+    "positionId": "pos_27b947a4-56a2-4336-bdb3-a5c8b0a3fccd",
+    "openedAtIso": "2026-11-15T06:31:36.543Z",
+    "inputUsdMicro": "6250000",
+    "copiedTokenBase": "11128250608",
+    "feesUsdMicro": "3125",
+    "status": "open"
+  }
+}
