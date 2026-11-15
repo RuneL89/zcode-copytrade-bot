@@ -271,6 +271,8 @@ describe('ring-fence, throttle storm, and the degrade ladder', () => {
 });
 
 describe('429 storm and rate lanes', () => {
+  // The storm simulates 12 hours of 429s and takes ~7s on a loaded Windows
+  // runner; the default 5s makes a deterministic assertion flaky.
   it('keeps every exit completed or queued and backs background traffic off', () => {
     const storm = run429Storm();
     expect(storm.hours).toBe(12);
@@ -281,7 +283,7 @@ describe('429 storm and rate lanes', () => {
     expect(storm.backgroundBackedOff).toBeGreaterThan(0);
     expect(storm.backgroundDeniedByBackoff).toBeGreaterThan(0);
     expect(storm.backgroundSent).toBeGreaterThan(0);
-  });
+  }, 20_000);
 
   it('does not put the exit lane into backoff denial', () => {
     const governor = new CreditGovernor();

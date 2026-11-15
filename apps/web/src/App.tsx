@@ -2,22 +2,13 @@ import { useEffect, useState } from 'react';
 import { api } from './api';
 import { useDashboard } from './useDashboard';
 import { LoginScreen, SetupScreen } from './pages/Auth';
-import { Dashboard } from './pages/Dashboard';
-import { SettingsPage } from './pages/Settings';
 import { AuditPage } from './pages/Audit';
 import { OperationsPage } from './pages/Operations';
-import { DeskPage } from './pages/Desk';
-import { ListIcon, PulseIcon, SlidersIcon, TerminalIcon } from './components/icons';
+import { SettingsPage } from './pages/Settings';
+import { Redesign } from './redesign/Redesign';
+import type { RedesignRoute } from './redesign/Header';
 
-type Route = 'dashboard' | 'desk' | 'settings' | 'audit' | 'ops';
-
-const NAV: Array<{ id: Route; label: string; icon: (props: { size?: number }) => React.JSX.Element }> = [
-  { id: 'dashboard', label: 'Trade', icon: PulseIcon },
-  { id: 'desk', label: 'Desk', icon: ListIcon },
-  { id: 'ops', label: 'Ops', icon: TerminalIcon },
-  { id: 'settings', label: 'Settings', icon: SlidersIcon },
-  { id: 'audit', label: 'Audit', icon: ListIcon },
-];
+type Route = RedesignRoute | 'ops' | 'audit' | 'legacy-settings';
 
 export function App() {
   const [authState, setAuthState] = useState<'checking' | 'needsSetup' | 'loggedOut' | 'loggedIn'>(
@@ -29,7 +20,6 @@ export function App() {
   useEffect(() => {
     // A valid session cookie must survive a reload: probe the state endpoint
     // first and only fall back to the setup/login decision when it is refused.
-    // (Bootstrap alone cannot tell "needs setup" from "already signed in".)
     void api.state().then(
       () => setAuthState('loggedIn'),
       () => {
@@ -54,7 +44,6 @@ export function App() {
 
   useEffect(() => {
     if (authState !== 'loggedIn') return;
-    // A successful state fetch confirms the session.
     void api.state().then(
       () => setAuthState('loggedIn'),
       () => setAuthState('loggedOut'),
@@ -71,55 +60,68 @@ export function App() {
     return <LoginScreen onDone={() => setAuthState('loggedIn')} />;
   }
 
+  // The ops console and audit log stay reachable from the redesign's footer,
+  // but they keep their legacy layout (they are operator tools, not the desk).
+  if (route === 'ops') {
+    return (
+      <div className="relative min-h-[100svh] w-full max-w-[1080px] mx-auto px-4">
+        <div className="aurora" aria-hidden="true">
+          <div className="blob-cyan" />
+          <div className="blob-violet" />
+        </div>
+        {state ? <OperationsPage state={state} onBack={() => go('line')} /> : <ConnectingSkeleton />}
+      </div>
+    );
+  }
+  if (route === 'audit') {
+    return (
+      <div className="relative min-h-[100svh] w-full max-w-[1080px] mx-auto px-4">
+        <div className="aurora" aria-hidden="true">
+          <div className="blob-cyan" />
+          <div className="blob-violet" />
+        </div>
+        <AuditPage onBack={() => go('line')} />
+      </div>
+    );
+  }
+  if (route === 'legacy-settings') {
+    // Provider keys and the manual leaderboard import stay reachable, but the
+    // legacy Risk and Live tabs are hidden: the redesign has one risk editor
+    // and no arm-live control.
+    return (
+      <div className="relative min-h-[100svh] w-full max-w-[1080px] mx-auto px-4">
+        <div className="aurora" aria-hidden="true">
+          <div className="blob-cyan" />
+          <div className="blob-violet" />
+        </div>
+        <SettingsPage onBack={() => go('line')} initialTab="keys" showRisk={false} showLive={false} />
+      </div>
+    );
+  }
+
+  if (!state) {
+    return (
+      <div className="cdx">
+        <ConnectingSkeleton />
+      </div>
+    );
+  }
+
   return (
-    <div className="relative min-h-[100svh] w-full max-w-[600px] min-[900px]:max-w-[1080px] mx-auto px-4">
-      <div className="aurora" aria-hidden="true">
-        <div className="blob-cyan" />
-        <div className="blob-violet" />
-      </div>
-
-      {route === 'dashboard' &&
-        (state ? (
-          <Dashboard
-            state={state}
-            connected={connected}
-            onDemoReplay={() => void api.demoStart().catch(() => undefined)}
-          />
-        ) : (
-          <ConnectingSkeleton />
-        ))}
-      {route === 'desk' && (state ? <DeskPage state={state} /> : <ConnectingSkeleton />)}
-      {route === 'ops' && <OperationsPage state={state} onBack={() => go('dashboard')} />}
-      {route === 'settings' && <SettingsPage onBack={() => go('dashboard')} />}
-      {route === 'audit' && <AuditPage onBack={() => go('dashboard')} />}
-
-      {/* Bounded by the layout viewport (inset-x-0 + max-w-full), never by vw:
-          at 200% zoom the bar scrolls inside itself instead of clipping. */}
-      <div className="fixed inset-x-0 bottom-3 z-40 flex justify-center px-4 pointer-events-none">
-        <nav className="card !bg-glassstrong !rounded-full px-1.5 py-1.5 flex gap-0.5 pb-[calc(6px+env(safe-area-inset-bottom))] max-w-full overflow-x-auto pointer-events-auto">
-          {NAV.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => go(id)}
-              aria-current={route === id ? 'page' : undefined}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[64px] min-h-[44px] rounded-full transition-colors cursor-pointer ${
-                route === id ? 'bg-accentdim text-accent' : 'text-muted hover:text-ink'
-              }`}
-            >
-              <Icon size={17} />
-              <span className="text-[9.5px] font-semibold tracking-wide">{label}</span>
-            </button>
-          ))}
-        </nav>
-      </div>
-    </div>
+    <Redesign
+      state={state}
+      connected={connected}
+      route={route}
+      onRoute={go}
+      onDemoReplay={() => void api.demoStart().catch(() => undefined)}
+    />
   );
 }
 
 /** Skeleton placeholders while the first SSE state is in flight. */
 function ConnectingSkeleton() {
   return (
-    <div aria-live="polite" aria-label="connecting" className="pt-6">
+    <div aria-live="polite" aria-label="connecting" className="pt-6 px-4">
       {[64, 120, 88, 100].map((h, i) => (
         <div key={i} className="card p-4 mb-3.5">
           <div className="skeleton rounded-lg bg-inset" style={{ height: h / 3 }} />
@@ -131,11 +133,18 @@ function ConnectingSkeleton() {
 }
 
 function parseRoute(): Route {
-  const h = window.location.hash.replace('#/', '');
-  return h === 'settings' || h === 'audit' || h === 'ops' || h === 'desk' ? h : 'dashboard';
+  const raw = window.location.hash.replace(/^#\/?/, '').replace(/\/$/, '');
+  if (raw === 'seats' || raw === 'desk') return 'seats';
+  if (raw === 'credits') return 'credits';
+  if (raw === 'risk' || raw === 'settings') return 'risk';
+  if (raw === 'ops') return 'ops';
+  if (raw === 'audit') return 'audit';
+  if (raw === 'legacy-settings' || raw === 'keys') return 'legacy-settings';
+  // Legacy #/dashboard and the empty hash both land on the funnel.
+  return 'line';
 }
 
 function go(route: Route) {
-  window.location.hash = `#/${route === 'dashboard' ? '' : route}`;
+  window.location.hash = `#/${route === 'line' ? '' : route}`;
   window.dispatchEvent(new Event('popstate'));
 }

@@ -40,6 +40,9 @@ export default defineConfig({
       // Each test signs in from a fresh context; the 5-per-10-min default
       // would rate-limit the suite itself.
       LOGIN_RATE_LIMIT_MAX: '200',
+      // Test-only PIN so the suite can exercise the redesign's risk-increase
+      // confirmation path end to end.
+      RISK_PIN: '4821',
     },
   },
 });

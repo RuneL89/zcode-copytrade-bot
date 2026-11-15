@@ -26,6 +26,8 @@ export interface WatchlistRow {
   ceilingExposureUsdMicro: string;
   /** Why promotion is blocked right now, or null when it is not. */
   blockedReason: string | null;
+  /** The watch-list row's own note (admission, firing reason, eviction). */
+  reason?: string | null;
   /** Where these numbers come from and how fresh they are. */
   source: 'SHADOW_LEDGER';
   lastEventAt: string | null;
@@ -119,6 +121,8 @@ export interface DashboardState {
     unrealizedPnlUsdMicro: string | null;
     markAgeSeconds: number | null;
     openedIso: string;
+    /** The effective per-position exit plan (Copytrader-tightened), or null for code defaults. */
+    exitPlan: { stopLossBps?: number; trailDistanceBps?: number; maxHoldHours?: number } | null;
     /**
      * Every confirmed copy buy still open inside this position, newest first.
      * A position aggregates the copies of one coin by one leader, so these are
@@ -146,6 +150,8 @@ export interface DashboardState {
     id: string;
     tIso: string;
     kind: 'copied' | 'exit' | 'skipped' | 'leader_sell';
+    /** The leader whose event this row describes. */
+    leaderHandle: string | null;
     tokenShort: string | null;
     /** Leader's input size: exact micro-USD when the funding leg was a stable. */
     leaderUsdMicro: string | null;
@@ -225,6 +231,8 @@ export interface DashboardState {
     streak: number;
     fireAfter: number;
     sinceIso: string;
+    /** Cumulative realized PnL (then live unrealized) since this hire, micro-USD. */
+    series: string[];
   }>;
   /**
    * Watch list (D4): the wallets under observation and their shadow-ledger
@@ -265,6 +273,8 @@ export interface DashboardState {
     };
     pool: { total: number; withWallet: number; fundedBuyers24h: number };
     watch: { watching: number; cooling: number; promotable: number; benchTarget: number };
+    /** Activations started on the current UTC day. */
+    hiresToday: number;
     roster: Array<{
       activationId: string;
       candidateId: string;

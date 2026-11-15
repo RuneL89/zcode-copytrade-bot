@@ -80,8 +80,18 @@ const RISK_FIELD_HELP: Partial<Record<RiskField, string>> = {
   SHADOW_BACKFILL_ON_ADMIT: 'Seed each new watch entry from the admission scan (observed trades only).',
 };
 
-export function SettingsPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState<SettingsTab>('controls');
+export function SettingsPage({
+  onBack,
+  initialTab = 'controls',
+  showRisk = true,
+  showLive = true,
+}: {
+  onBack: () => void;
+  initialTab?: SettingsTab;
+  showRisk?: boolean;
+  showLive?: boolean;
+}) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [view, setView] = useState<SettingsView | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [importText, setImportText] = useState('');
@@ -195,10 +205,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             label="Settings sections"
             tabs={[
               { id: 'controls', label: 'Controls' },
-              { id: 'risk', label: 'Risk' },
+              ...(showRisk ? [{ id: 'risk' as const, label: 'Risk' }] : []),
               { id: 'imports', label: 'Imports' },
               { id: 'keys', label: 'Keys' },
-              { id: 'live', label: 'Live' },
+              ...(showLive ? [{ id: 'live' as const, label: 'Live' }] : []),
             ]}
             active={tab}
             onChange={setTab}

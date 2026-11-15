@@ -53,6 +53,8 @@ export interface DashboardState {
     unrealizedPnlUsdMicro: string | null;
     markAgeSeconds: number | null;
     openedIso: string;
+    /** The effective per-position exit plan (Copytrader-tightened), or null. */
+    exitPlan?: { stopLossBps?: number; trailDistanceBps?: number; maxHoldHours?: number } | null;
     /** The individual copy buys still open inside this position, newest first. */
     entries: Array<{
       intentId: string;
@@ -70,6 +72,7 @@ export interface DashboardState {
     id: string;
     tIso: string;
     kind: 'copied' | 'exit' | 'skipped' | 'leader_sell';
+    leaderHandle: string | null;
     tokenShort: string | null;
     leaderUsdMicro: string | null;
     leaderSolBase: string | null;
@@ -130,6 +133,8 @@ export interface DashboardState {
     streak: number;
     fireAfter: number;
     sinceIso: string;
+    /** Cumulative realized (then live unrealized) PnL since this hire, micro-USD. */
+    series?: string[];
   }>;
   /** D4 watch list: the wallets under observation and their shadow record. */
   watchlist: {
@@ -151,6 +156,8 @@ export interface DashboardState {
       openNotionalUsdMicro: string;
       ceilingExposureUsdMicro: string;
       blockedReason: string | null;
+      /** The row's own note (admission, firing reason, eviction). */
+      reason?: string | null;
       source: 'SHADOW_LEDGER';
       lastEventAt: string | null;
     }>;
@@ -169,6 +176,8 @@ export interface DashboardState {
     };
     pool: { total: number; withWallet: number; fundedBuyers24h: number };
     watch: { watching: number; cooling: number; promotable: number; benchTarget: number };
+    /** Activations started on the current UTC day. */
+    hiresToday?: number;
     roster: Array<{
       activationId: string;
       candidateId: string;

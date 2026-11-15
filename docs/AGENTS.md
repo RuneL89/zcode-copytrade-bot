@@ -21,6 +21,10 @@ leaderboard/profile data out of the operator's desktop Chrome.
   ZCode mailbox and model ladder, the deploy path, and the hard limits.
 - `research-sweep-automation.md` — retirement note: the 5-minute research
   tick and the 30-minute sweep are gone (D3/D6); discovery is demand-driven.
+- `screenshots/redesign/` — committed mobile/desktop captures of the approved
+  dashboard redesign (Line, Seats, Credits, Risk, the PIN prompt, the seat/watch
+  drawers and the fire modal). Regenerate from a paper-mode dev server after a
+  UI change; these are review artifacts, not runtime data.
 
 ## Local Contracts
 

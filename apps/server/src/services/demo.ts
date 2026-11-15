@@ -184,6 +184,7 @@ export class DemoEngine {
       unrealizedPnlUsdMicro: null,
       markAgeSeconds: null,
       openedIso: isoAt(m.t),
+      exitPlan: null,
       entries: [
         {
           intentId: `demo-intent-${i}`,
@@ -203,6 +204,7 @@ export class DemoEngine {
           id: `demo-act-m${i}`,
           tIso: isoAt(m.t),
           kind: 'copied' as const,
+          leaderHandle: activeHandle,
           tokenShort: m.symbol.slice(0, 4),
           leaderUsdMicro: BigInt(Math.round(m.leaderUsd * 1e6)).toString(),
           leaderSolBase: null,
@@ -214,6 +216,7 @@ export class DemoEngine {
         id: `demo-act-c${i}`,
         tIso: isoAt(c.t),
         kind: 'exit' as const,
+        leaderHandle: activeHandle,
         tokenShort: c.symbol.slice(0, 4),
         leaderUsdMicro: null,
         leaderSolBase: null,
@@ -306,7 +309,7 @@ export class DemoEngine {
       // seat (the real roster is filled from the promotion queue).
       roster: [
         {
-          activationId: `demo_act_${activeHandle}`,
+          activationId: 'demo_act_seat1',
           candidateId: `demo_${activeHandle}`,
           handle: activeHandle,
           avatarUrl: null,
@@ -320,6 +323,7 @@ export class DemoEngine {
           streak,
           fireAfter: 2,
           sinceIso: new Date(Date.now() - Math.max(0, elapsed - traderStartT) * 1000).toISOString(),
+          series: ['0', (contribution.get(activeHandle) ?? 0n).toString()],
         },
       ],
       closes: closes.slice(-60).map((c, i) => ({
@@ -367,9 +371,10 @@ export class DemoEngine {
           fundedBuyers24h: tradersSeen,
         },
         watch: { watching: 0, cooling: 0, promotable: 0, benchTarget: DEFAULT_RISK.BENCH_TARGET },
+        hiresToday: 1 + swaps.length,
         roster: [
           {
-            activationId: `demo_act_${activeHandle}`,
+            activationId: 'demo_act_seat1',
             candidateId: `demo_${activeHandle}`,
             handle: activeHandle,
             status: gapActive ? 'IDLE' : openMirrors.size > 0 ? 'BUYING' : 'IDLE',

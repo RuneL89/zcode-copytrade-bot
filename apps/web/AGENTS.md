@@ -2,136 +2,94 @@
 
 ## Purpose
 
-The mobile-first operator dashboard in **dark + light parity**: context row,
-equity hero, the **pipeline spine** (Discovery → Pool → Watch → Roster →
-Exits with the Fired → Watch return lane), the five-seat roster grid where each
-seat expands to its open positions, the working area with the watch rail (watch
-list / activity / audit tabs), secondary detail (closes chart, candidates),
-status drawer, tabbed Operations and Settings consoles, and auth screens.
+The mobile-first operator dashboard, rebuilt to the approved dark mockup: a
+top status header (mode badge, KPIs, provider dots), four screens —
+**Line** (funnel, arena, equity, succession, live feed), **Seats &
+positions**, **Credits**, and **Risk settings** — a desktop tab bar, a mobile
+bottom nav, seat/watch drawers, and a fire modal. Auth, the Ops console, the
+Audit log, and provider-key/import entry remain reachable.
 
 ## Ownership
 
-- Routing and auth gating: `src/App.tsx` (bottom tab bar + skeleton loading),
-  `src/pages/Auth.tsx`.
-- Data transport: `src/api.ts` (the only fetch layer) and
-  `src/useDashboard.ts` (SSE subscription).
-- Presentation: `src/components/` (cards, charts, overlays, primitives) and
-  `src/pages/` (Dashboard, Settings, Audit, Operations).
-- Design tokens: `src/index.css` (Tailwind v4 `@theme` block — the single
-  source of both palettes; the light block re-tunes the same semantic names).
-- Theme: `src/theme.tsx` (`system | dark | light`, persisted, applied as
-  `data-theme` on `<html>`); `index.html` runs the same resolution pre-paint.
-- Brand: `public/favicon.svg` + `src/components/Logo.tsx` (keep both in sync;
-  the mark reads `--color-brand-*` tokens, no hex in the component).
+- Routing and auth gating: `src/App.tsx` (four redesign routes plus legacy
+  `ops`, `audit`, `legacy-settings`), `src/pages/Auth.tsx`.
+- Data transport: `src/api.ts` (the only fetch layer), `src/useDashboard.ts`
+  (SSE subscription), `src/redesign/useRemote.ts` (read-only 30–60 s polling).
+- Redesign shell and screens: `src/redesign/` — `Redesign.tsx`, `Header.tsx`,
+  `LinePage.tsx`, `SeatsPage.tsx`, `CreditsPage.tsx`, `RiskPage.tsx`,
+  `Funnel.tsx`, `Arena.tsx`, `Drawers.tsx`, `Charts.tsx`, `model.ts`,
+  `format.ts`.
+- Redesign styles: `src/redesign.css` (scoped port of the approved mockup)
+  and `src/redesign-extra.css`. Legacy/auth styling stays in `src/index.css`.
+- Legacy operator surfaces: `src/pages/Operations.tsx`, `Audit.tsx`, and
+  `Settings.tsx` (reached via `#/legacy-settings`; its Risk and Live tabs are
+  hidden, so keys/imports stay available without a second risk editor or an
+  arm-live control).
+- Screenshots: `docs/screenshots/redesign/` — committed desktop/mobile
+  captures of every main screen plus the PIN, seat/watch drawer and fire-modal
+  states.
 - Browser tests: `e2e/` (own contract).
 
 ## Local Contracts
 
 - **Presentation only.** No trading math, sizing, or eligibility logic here.
-  If a number needs deriving, it comes from the server; if a rule is needed,
-  it belongs in `packages/core`.
-- **Every figure is server-sourced and labeled.** Never synthesize,
-  round-trip, or extrapolate a value. Mode labels are strict: the demo banner
-  in demo, PAPER for simulated fills, LIVE only when the server reports
-  armed **and** healthy.
+  Derived display values live in `src/redesign/model.ts`; any rule belongs in
+  `packages/core` and any authoritative number comes from the server.
+- **Every figure is server-sourced.** Never synthesize, round-trip, or
+  extrapolate a value. Unavailable data gets an honest empty or "not tracked
+  yet" state — the Helius 7-day history, Jupiter lane rates, Fomo monthly cap
+  and fee-wallet balance are the current examples. The demo banner is the only
+  fictional-data banner; it appears only when the state is fictional, and the
+  mockup's "example data" banner must never ship.
+- **The redesign is the approved mockup**: dark palette, desktop shell up to
+  1680 px, desktop tabs and a four-item mobile bottom nav (Line / Seats /
+  Credits / Risk), no horizontal page overflow at phone width, and the same
+  funnel/arena/credits/risk information architecture.
+- **No fake controls.** The mockup's "Pause sim" and "Simulate firing" are not
+  shipped as simulators: the toolbar has the real Pause/Resume entries and
+  Fire a seat… actions. The hire-mode segment is read-only (`HIRE_APPROVAL`),
+  and there is **no** arm-live control in the redesign.
+- **One risk editor.** `RiskPage` is the only editable risk form. It sends the
+  existing validated `PATCH /api/settings` and shows the PIN prompt only when
+  the change increases risk; the server still enforces the PIN. The legacy
+  Settings risk/live tabs are not rendered.
+- **Read-only additions only.** The redesign adds no mutating endpoints. New
+  data is additive and read-only: `roster[].series`, `positions[].exitPlan`,
+  `pipeline.hiresToday`, `watchlist.rows[].reason`, `activity[].leaderHandle`,
+  and `candidateRejections` on `GET /api/rejections`.
 - **SSE is authoritative.** `useDashboard` reconnects with backoff and treats
   the first frame after a connect as the full state; do not replay or invent
-  events client-side.
-- **Mutations go through `api.ts`** so the CSRF double-submit header and the
-  cookie-session self-heal stay in one place. Never call `fetch` directly
-  from a component for a mutation.
-- **The OPS page sends an op id plus a confirmation word only.** It must
-  never construct a command, path, or argv.
-- **Tokens come from `index.css`.** Dark + light parity: charcoal base
-  (dark) / paper base (light), frosted glass (`.card`/`.panel`), cyan accent,
-  semantic pos/neg pair. Use the declared theme colors (`text-ink`, `text-pos`,
-  `bg-posdim`, `text-flow`, …); a component must not hardcode a hex — the
-  theme switch is one `data-theme` attribute, and every surface, border, text
-  tier and semantic color must follow it.
-- **Typography:** sentence-case labels (`.label`); uppercase mono (`.tag`) is
-  reserved for state badges/chips; `.mono` for numerics and log output. Body
-  text ≥ 11px. Do not reintroduce tiny 8px uppercase annotation text.
-- **Charts:** the closes chart uses recharts (operator-released the
-  dependency-free rule, 2026-10-31); the equity sparkline and avatars stay
-  hand-rolled in `charts.tsx`. Keep chart data derived from the server series
-  only.
-- **Mobile-first and accessible.** Layouts must work at phone width first:
-  the container is 600px below 900px and widens to 1080px at ≥900px (the hero
-  and text columns stay capped at 600px inside it). The pipeline is a
-  horizontal spine at ≥900px and a scrollable five-stage stepper below, with no
-  horizontal page overflow; interactive controls are ≥44px tall at phone width.
-  Respect `prefers-reduced-motion` (the Playwright suite asserts it) and keep
-  every stage, seat and action keyboard-reachable; the tab bar targets are 44px
-  high.
-- **The pipeline renders server numbers verbatim.** Every stage count, edge
-  volume and seat status comes from `DashboardState.pipeline` (built in
-  `apps/server/src/services/builder.ts`); the dashboard never derives, rounds or
-  extrapolates one.
-- **Danger actions use word-confirmation dialogs** (`ConfirmDialog` /
-  Operations' `ConfirmModal`), never native `confirm()`.
+  events client-side. Mutations go through `api.ts` so CSRF and the cookie-
+  session self-heal stay in one place.
+- **Legacy pages keep their old surface.** Ops, Audit, and the keys/imports
+  Settings view render with the legacy layout; the `.cdx` wrapper scopes the
+  redesign CSS so the two systems cannot collide.
+- **Accessibility and mobile first.** Interactive targets stay keyboard-
+  reachable; the mobile bottom nav and drawer actions work at 390 px without
+  page overflow. The redesign is dark-only, matching the approved mockup.
 
 ## Work Guidance
 
-- New screens: add a route in `App.tsx`, a page in `src/pages/`, and reuse
-  `src/components/` primitives before adding new ones. Internal sections use
-  `PageTabs`/`TabPanel`.
-- `#/desk` is the assembly-line screen: SOL balance is the headline, then USDC
-  available and unrealised P&L, a funnel of server stage counts, five seats
-  with per-trader trades, the credit meter (`GET /api/credits`), and a risk
-  form that reviews a change and sends `RISK_PIN` when the server requires it.
-  The Trade screen stays the default.
-- Keep types in `src/types.ts` in lockstep with the server's `state.ts`
-  payload. A contract change is one change across both apps.
-- `RosterPanel.tsx` renders the five-seat grid (one `RosterSeat` per chair from
-  `pipeline.roster`, joined with `roster` for the streak strip): handle, seat
-  status (BUYING / SELLING / IDLE / RECONCILING), realized and unrealized PnL,
-  open positions, last-signal age, streak, and a per-seat FIRE action that names
-  the activation; the API refuses an ambiguous fire when several leaders are
-  active. An empty chair is the dashed "Open seat" state — an accepted outcome.
-  A filled seat is itself a button whose accessible name carries its figures
-  (`@handle, STATUS, realized …`), with the visual layer `aria-hidden` and the
-  FIRE action a sibling button, so both stay keyboard-reachable.
-- A seat expands (collapsed by default, its own chevron) to its open positions
-  as individual transactions: coin, status, USDC in, unrealized PnL and the
-  time-exit countdown (`SeatPositionRow`, helpers in `position-view.ts`). The
-  standalone positions card is gone: the roster is the one place positions live,
-  its header carries the totals (`N open · $X deployed`), and positions whose
-  chair is no longer on the roster appear in an Unassigned group under the grid.
-  Expanding one seat does not close another.
-- The pipeline components live in `src/components/pipeline/`
-  (`PipelineFlow` + `StageNode` / `FlowEdge` / `CandidateChip`, with pure layout
-  math in `layout.ts` covered by `tests/pipeline-layout.test.ts`). Transitions
-  spawn one chip per grown edge (max 3 concurrent) and pulse the target node;
-  under `prefers-reduced-motion` neither happens — the counts still update.
-- `WatchRail.tsx` owns the working area's right column: watch list / activity /
-  audit tabs. Each tab renders its own card (the panels keep their own states
-  and test ids).
-- The candidates panel (`CandidatesPanel.tsx`) polls `GET /api/candidates`
-  (30s) and shows the pool with display-only screens (address verification,
-  activity/stamp freshness, funded-buy window). The screens are informational:
-  the promotion gate and the engine decide, and the UI must mirror the D4
-  thresholds (`PACKAGES/config/src/risk.ts`), never invent new ones.
-  The board rows carry direction chips from the wallet refresh — `BUY <age>`
-  (pos ≤ `ACTIVE_BUY_WINDOW_HOURS`, warn outside), sell-heavy `s>b` marker,
-  `0b · Ns`, and explicit unknown states (`CHECK FAILED`, `NO DATA` — unknown
-  is never rendered as "quiet"); the `BOARD n/m bought` pulse strip and the
-  buyer-first row sort mirror the watch list's funded-buy screen.
-- Formatting helpers (`usd`, `signedUsd`, `splitEquity`, `clockFromSeconds`,
-  `timeAgo`, `solFromBase`) live in `src/types.ts` and are covered by
-  `tests/format.test.ts`; add a test with any new formatter. They must not
-  use float math on micro-USD strings. Display-only chart values may convert
-  to numbers.
-- The header badges open `StatusDrawer` (system status, pause reason, health,
-  freshness); the footer is a one-line summary, not the status surface.
+- Add a redesign screen as a component under `src/redesign/` and a route in
+  `App.tsx`; reuse `model.ts`/`format.ts` before adding helpers.
+- Keep `src/types.ts` in lockstep with the server's `state.ts` payload. A
+  contract change is one change across both apps.
+- Use the existing test ids (`desk-line`, `desk-seats`, `desk-credits`,
+  `desk-risk`, `funnel-stage-*`, `seat-*`, `risk-*`, drawers/modals) for e2e.
+- Regenerate the committed screenshots from a paper-mode dev server after UI
+  changes; `e2e/pipeline-screens.spec.ts` captures the same routes into
+  `test-results/` for review.
+- The old `Dashboard.tsx`, `Desk.tsx`, `RosterPanel.tsx`, and pipeline-spine
+  components are legacy/not routed; do not extend them.
 
 ## Verification
 
-- `pnpm --filter @zcode-bot/web test` — Vitest unit tests (formatting,
-  watchlist helpers, pipeline layout math).
-- `pnpm --filter @zcode-bot/web typecheck` and `build` (build runs `tsc
---noEmit` before Vite).
-- `pnpm e2e` — Playwright against the server in demo mode; covers desktop and
-  Pixel 7 projects.
+- `pnpm --filter @zcode-bot/web test` — Vitest unit tests.
+- `pnpm --filter @zcode-bot/web typecheck` and `build` (build runs
+  `tsc --noEmit` before Vite).
+- `pnpm e2e` — Playwright against the server in demo mode; covers the Line,
+  Seats, Credits and Risk surfaces at desktop and phone widths, the PIN flow,
+  the seat drawer, the demo banner and the security invariants.
 - Root gate before closeout.
 
 ## Child DOX Index

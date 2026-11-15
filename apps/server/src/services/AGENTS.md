@@ -68,7 +68,12 @@ no LLM in the loop (D6).
 - **Nothing external writes trading state.** The retired research intake is gone (D6); the only writers are the worker's own services and the dashboard's authenticated, CSRF-guarded routes.
 - **`state.ts` is a public contract.** Every field it emits is consumed by the
   dashboard and must carry source + freshness. Do not emit an unlabeled
-  estimate.
+  estimate. The redesigned dashboard's additive read-only fields are
+  `roster[].series` (cumulative realized/live PnL), `positions[].exitPlan`
+  (the effective tightened plan, or null), `pipeline.hiresToday`,
+  `watchlist.rows[].reason` and `activity[].leaderHandle`; the `/api/rejections`
+  response also returns `candidateRejections` with handles resolved. These are
+  display evidence only — no trading behavior reads them.
 - **`ops.ts` accepts no command text.** Only an op id and a confirmation word
   from the client; everything else is a server constant. Runs are serialized
   by one mutex.
