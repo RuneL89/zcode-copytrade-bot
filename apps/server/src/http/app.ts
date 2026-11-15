@@ -1,9 +1,16 @@
 import { Hono, type Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { join } from 'node:path';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { settingsPatchSchema, riskConfigSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
-import { DAILY_HARD_CAP, MONTH_ROSTER_ONLY, riskPatchDirection } from '@zcode-bot/core';
+import {
+  DAILY_HARD_CAP,
+  MONTH_ROSTER_ONLY,
+  lastCompletedWeek,
+  riskPatchDirection,
+  weekRange,
+} from '@zcode-bot/core';
 import { parseManualCsv, parseManualJson } from '@zcode-bot/providers';
 import {
   applyCsrfCookie,
@@ -27,6 +34,7 @@ import { loadWalletSecret, walletPublicKey } from '../wallet.js';
 import { rememberWalletPassphrase } from '../wallet-unlock.js';
 import { LiveExecutor } from '../services/executors.js';
 import { adjustExit, decideHire, overruleSeat } from '../services/agentHooks.js';
+import { buildWeeklyReview, renderWeeklyReviewMarkdown, weeklyReviewJson } from '../services/weeklyReview.js';
 
 export function buildApp(rt: Runtime): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -272,6 +280,37 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
               : 'Helius Admin usage is unavailable. The figure on this screen is the in-app meter.')),
       reported,
     });
+  });
+
+  // Read-only weekly performance review. The generator only SELECTs from the
+  // DB; the JSON and markdown are returned for the dashboard view.
+  app.get('/api/reports/weekly', requireAuth(sessions), (c) => {
+    const timeZone = 'Europe/Helsinki';
+    const now = new Date();
+    const weekParam = c.req.query('week');
+    let week: ReturnType<typeof lastCompletedWeek>;
+    try {
+      week = weekParam ? weekRange(weekParam, timeZone) : lastCompletedWeek(now, timeZone);
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400);
+    }
+    try {
+      const report = buildWeeklyReview({
+        sqlite: rt.db.sqlite,
+        mode: rt.config.mode,
+        dbPath: join(rt.config.env.DATA_DIR, 'zcode-bot.db'),
+        week,
+        now,
+        timeZone,
+      });
+      return c.json({
+        week: week.label,
+        report: weeklyReviewJson(report),
+        markdown: renderWeeklyReviewMarkdown(report),
+      });
+    } catch (e) {
+      return c.json({ error: `weekly review failed: ${(e as Error).message}` }, 500);
+    }
   });
 
   app.patch('/api/settings', requireAuth(sessions), requireCsrf, async (c) => {
