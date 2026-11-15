@@ -1,5 +1,7 @@
-import type { JupiterProvider } from '@zcode-bot/providers';
+import { JUPITER_FALLBACK_TAKER, type JupiterProvider, type JupiterQuote } from '@zcode-bot/providers';
 import { usdToMicro } from '@zcode-bot/core';
+import type { SendResult } from './sendPath.js';
+import { assembleJupiterBuild, withSenderTip, type JupiterBuildBody } from './txBuild.js';
 
 /**
  * Execution boundary. Paper mode simulates fills with DOCUMENTED assumptions
@@ -118,6 +120,7 @@ export class PaperExecutor implements Executor {
           outputMint: spec.outputMint,
           amount: spec.inputAmountBase,
           slippageBps: spec.slippageBpsCap,
+          taker: spec.userPublicKey || JUPITER_FALLBACK_TAKER,
         });
         const priceImpactBps = Math.max(0, Math.round(Number(q.priceImpactPct ?? '0') * 10000));
         return {
@@ -146,6 +149,7 @@ export class PaperExecutor implements Executor {
           outputMint: spec.outputMint,
           amount: spec.inputAmountBase,
           slippageBps: spec.slippageBpsCap,
+          taker: spec.userPublicKey || JUPITER_FALLBACK_TAKER,
         });
         const feeUsdMicro = (BigInt(spec.inputUsdMicro) * BigInt(PAPER_ASSUMPTIONS.feeBps)) / 10000n;
         return {
@@ -213,6 +217,15 @@ export class LiveExecutor implements Executor {
     private publicKey: string,
     /** Test seam: supply a fake connection instead of a real RPC client. */
     private connectionFactory?: (rpcUrl: string) => LiveConnection,
+    /**
+     * Production send. Sender, then a metered staked send, then the public RPC.
+     * Absent in tests, which keep `connection.sendRawTransaction`.
+     */
+    private submit?: (args: {
+      signedBase64: string;
+      trySender: boolean;
+      path: 'exit' | 'wallet';
+    }) => Promise<SendResult>,
   ) {}
 
   private async conn(): Promise<LiveConnection> {
@@ -262,6 +275,7 @@ export class LiveExecutor implements Executor {
       outputMint: spec.outputMint,
       amount: spec.inputAmountBase,
       slippageBps: spec.slippageBpsCap,
+      taker: this.publicKey,
     });
     return {
       slippageBps: spec.slippageBpsCap,
@@ -284,14 +298,15 @@ export class LiveExecutor implements Executor {
         outputMint: spec.outputMint,
         amount: spec.inputAmountBase,
         slippageBps: spec.slippageBpsCap,
+        taker: this.publicKey,
       });
     } catch (e) {
       return { kind: 'failed', error: `quote failed before submission: ${(e as Error).message}` };
     }
 
-    let built: Awaited<ReturnType<JupiterProvider['buildSwap']>>;
+    let unsigned: string;
     try {
-      built = await this.jupiter.buildSwap({ quoteResponse, userPublicKey: this.publicKey });
+      unsigned = await this.unsignedTransaction(quoteResponse);
     } catch (e) {
       return { kind: 'failed', error: `swap build failed before submission: ${(e as Error).message}` };
     }
@@ -303,11 +318,30 @@ export class LiveExecutor implements Executor {
 
     let signature: string;
     try {
-      const { VersionedTransaction, PublicKey } = await import('@solana/web3.js');
-      const tx = VersionedTransaction.deserialize(Buffer.from(built.swapTransaction, 'base64'));
-      tx.sign([{ publicKey: new PublicKey(this.publicKey), secretKey: this.secretKey }]);
       const connection = await this.conn();
-      signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+      if (this.submit) {
+        const latest = await connection.getLatestBlockhash();
+        const tipped = withSenderTip(unsigned, this.publicKey, latest.blockhash);
+        const signed = await signSerialized(tipped ?? unsigned, this.publicKey, this.secretKey);
+        const sent = await this.submit({
+          signedBase64: signed,
+          trySender: tipped !== null,
+          path: spec.kind === 'entry' ? 'wallet' : 'exit',
+        });
+        if (sent.kind === 'unknown') return { kind: 'unknown', detail: sent.detail };
+        if (sent.kind === 'failed') {
+          if (isPreflightRejection(new Error(sent.error))) {
+            return { kind: 'failed', error: `preflight rejected (not submitted): ${sent.error}` };
+          }
+          return { kind: 'failed', error: `send rejected before a signature: ${sent.error}` };
+        }
+        signature = sent.signature;
+      } else {
+        const { VersionedTransaction, PublicKey } = await import('@solana/web3.js');
+        const tx = VersionedTransaction.deserialize(Buffer.from(unsigned, 'base64'));
+        tx.sign([{ publicKey: new PublicKey(this.publicKey), secretKey: this.secretKey }]);
+        signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+      }
     } catch (e) {
       if (isPreflightRejection(e)) {
         return { kind: 'failed', error: `preflight rejected (not submitted): ${(e as Error).message}` };
@@ -349,4 +383,27 @@ export class LiveExecutor implements Executor {
       };
     }
   }
+
+  /** Prefer the `/build` body. Fall back to `buildSwap` for the test seam. */
+  private async unsignedTransaction(quoteResponse: JupiterQuote): Promise<string> {
+    const body = quoteResponse as JupiterQuote & JupiterBuildBody;
+    const hasBuild =
+      Boolean(body.swapTransaction) ||
+      Boolean(body.swapInstruction) ||
+      (body.computeBudgetInstructions?.length ?? 0) > 0 ||
+      (body.setupInstructions?.length ?? 0) > 0;
+    if (this.submit && hasBuild) {
+      const latest = await (await this.conn()).getLatestBlockhash();
+      return assembleJupiterBuild(body, latest.blockhash, this.publicKey);
+    }
+    const built = await this.jupiter.buildSwap({ quoteResponse, userPublicKey: this.publicKey });
+    return built.swapTransaction;
+  }
+}
+
+async function signSerialized(serialized: string, publicKey: string, secretKey: Uint8Array): Promise<string> {
+  const { VersionedTransaction, PublicKey } = await import('@solana/web3.js');
+  const tx = VersionedTransaction.deserialize(Buffer.from(serialized, 'base64'));
+  tx.sign([{ publicKey: new PublicKey(publicKey), secretKey }]);
+  return Buffer.from(tx.serialize()).toString('base64');
 }

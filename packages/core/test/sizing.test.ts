@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { computeCopyNotional, capToHeadroom } from '../src/sizing.js';
+import { computeCopyNotional, capToHeadroom, sizeCopy } from '../src/sizing.js';
+import { bankrollHeadroom } from '../src/risk.js';
 import { usdToMicro, formatMicroUsd, ratioBps, applyBpsToBase, splitMicroUsd } from '../src/money.js';
 import { leaderSoldFraction, planCopiedExit, FULL_EXIT_DUST_BPS } from '../src/exits.js';
 import { applyCloseUnit, countsAsUnit } from '../src/streak.js';
@@ -206,5 +207,97 @@ describe('capToHeadroom (bankroll downsize-to-fit)', () => {
   });
   it('skips when there is no headroom at all', () => {
     expect(capToHeadroom(usdToMicro(10), 0n, usdToMicro(5)).action).toBe('skip_headroom');
+  });
+});
+
+const PAPER = {
+  scaleNumerator: 1n,
+  scaleDenominator: 4n,
+  minPerBuyUsdMicro: usdToMicro(2),
+  maxPerBuyUsdMicro: usdToMicro(10),
+  traderOpenUsdMicro: 0n,
+  maxOpenPerTraderUsdMicro: usdToMicro(40),
+  bankrollHeadroomUsdMicro: usdToMicro(80),
+};
+
+describe('paper sizing bounds ($2 floor, $10/trade, $40/trader, $80 deployed)', () => {
+  it('caps one trade at $10 and floors a small scale at $2', () => {
+    const capped = sizeCopy({ ...PAPER, leaderInputUsdMicro: usdToMicro(80) });
+    expect(capped).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(10), limitedBy: 'per_trade' });
+    const exact = sizeCopy({ ...PAPER, leaderInputUsdMicro: usdToMicro(40) });
+    expect(exact).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(10), limitedBy: 'none' });
+    const floored = sizeCopy({ ...PAPER, leaderInputUsdMicro: usdToMicro(4) });
+    expect(floored).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(2), limitedBy: 'floor' });
+  });
+
+  it('stops at the trader open cap and skips under a $2 remainder', () => {
+    const room = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      traderOpenUsdMicro: usdToMicro(32),
+    });
+    expect(room).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(8), limitedBy: 'per_trader' });
+    const exactFloor = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      traderOpenUsdMicro: usdToMicro(38),
+    });
+    expect(exactFloor).toMatchObject({
+      action: 'copy',
+      finalUsdMicro: usdToMicro(2),
+      limitedBy: 'per_trader',
+    });
+    const skip = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      traderOpenUsdMicro: usdToMicro(39),
+    });
+    expect(skip).toMatchObject({ action: 'skip_headroom', rule: 'MAX_OPEN_PER_TRADER_USD' });
+    const full = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      traderOpenUsdMicro: usdToMicro(40),
+    });
+    expect(full.action).toBe('skip_headroom');
+  });
+
+  it('caps five seats at 80% of a $100 bankroll even though 5 x $40 is $200', () => {
+    const bank = bankrollHeadroom({
+      equityStartUsdMicro: usdToMicro(100),
+      openEntriesUsdMicro: usdToMicro(78),
+      openFeesUsdMicro: 0n,
+      realizedNetUsdMicro: 0n,
+      maxDeployedPct: 80,
+    });
+    expect(bank.headroomUsdMicro).toBe(usdToMicro(2));
+    const fit = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      traderOpenUsdMicro: 0n,
+      bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
+    });
+    expect(fit).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(2), limitedBy: 'bankroll' });
+
+    const full = bankrollHeadroom({
+      equityStartUsdMicro: usdToMicro(100),
+      openEntriesUsdMicro: usdToMicro(80),
+      openFeesUsdMicro: 0n,
+      realizedNetUsdMicro: 0n,
+      maxDeployedPct: 80,
+    });
+    expect(full.headroomUsdMicro).toBe(0n);
+    const skipped = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      bankrollHeadroomUsdMicro: full.headroomUsdMicro,
+    });
+    expect(skipped).toMatchObject({ action: 'skip_headroom', rule: 'MAX_DEPLOYED_PCT' });
+
+    const oneUnder = sizeCopy({
+      ...PAPER,
+      leaderInputUsdMicro: usdToMicro(80),
+      bankrollHeadroomUsdMicro: usdToMicro(1),
+    });
+    expect(oneUnder.action).toBe('skip_headroom');
   });
 });

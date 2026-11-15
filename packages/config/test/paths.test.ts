@@ -17,7 +17,7 @@ describe('workspace path resolution', () => {
     expect(existsSync(join(root, 'apps', 'server'))).toBe(true);
     expect(existsSync(join(root, 'packages', 'db', 'drizzle'))).toBe(true);
     // The root is the repo itself, never a nested package folder.
-    expect(root.endsWith(sep + 'zcode-bot')).toBe(true);
+    expect(root.endsWith(sep + 'zcode-copytrade-bot')).toBe(true);
   });
 
   it('anchors a relative data dir at the workspace root, not the cwd', () => {

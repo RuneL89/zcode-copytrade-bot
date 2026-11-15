@@ -17,9 +17,10 @@ A self-hosted Solana copy-trading application ("Copydesk"):
 - A Node.js worker watches the qualified wallets' funded buys, proves them on a
   shadow ledger (our own exits, D4 gates), promotes the best onto a roster of up
   to five leaders sharing one budget pool, and copies their swaps at 0.25x
-  measured input notional (floored, D1). Exits mirror the leader or hit the
-  position-age ceiling; a chair may stay empty rather than hire something
-  unproven.
+  measured input notional, clamped to a $2 floor, a $10 per-trade ceiling, $40
+  open per trader, and 80% of the $100 bankroll. Exits mirror the leader or hit
+  the code day-trade rules (stop, trail, sell-on-green, 5h); a chair may stay
+  empty rather than hire something unproven.
 - An animated mobile-first React dashboard shows everything.
 
 **ZCode is not the trading runtime.** All time-sensitive work (monitoring,
@@ -135,10 +136,11 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Deterministic core logic lives in `packages/core` and is pure where
   possible; the server wires it with providers/persistence. Keep new trading
   rules pure + tested in core.
-- Helius polling uses `getTransactionsForAddress` (current documented method).
-  Enhanced Transactions is deprecated — do not reintroduce it.
-- Jupiter uses Swap API v1 (`/swap/v1/quote`, `/swap/v1/swap`) on
-  `api.jup.ag` (keyed) or `lite-api.jup.ag` (free, rate-limited).
+- Helius timer polling is signature-first (`getSignaturesForAddress`, then
+  `getTransaction` for an unseen signature). `getTransactionsForAddress` is
+  vetting-only. Enhanced Transactions is deprecated — do not reintroduce it.
+- Jupiter uses Swap API v2 `GET /swap/v2/build` on `api.jup.ag` (free key).
+  Paper quotes fall back to a cached price. Live assembly is not enabled.
 - Order-intent transitions are guarded (`packages/core/orderState.ts`); there
   is no transition from signed/submitted back to quotable. Preserve that.
 - Firing is transactional: mark FIRING + cancel unsigned intents atomically,

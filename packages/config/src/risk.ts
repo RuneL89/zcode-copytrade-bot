@@ -24,6 +24,13 @@ const nonNegativeInt = (name: string) =>
     .int(`${name} must be an integer`)
     .nonnegative(`${name} must not be negative`);
 
+const positiveNumber = (name: string) =>
+  z.number({ invalid_type_error: `${name} must be a number` }).positive(`${name} must be positive`);
+
+const boolish = z
+  .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+  .transform((v) => v === true || v === 'true' || v === '1');
+
 /**
  * Full risk configuration. Monetary limits are in whole USD (converted to
  * micro-USD integers by the core money module before any arithmetic).
@@ -33,6 +40,8 @@ export const riskConfigSchema = z
     COPY_SCALE: z.number().positive().max(1),
     MIN_PER_BUY_USD: positiveInt('MIN_PER_BUY_USD'),
     MAX_PER_BUY_USD: positiveInt('MAX_PER_BUY_USD'),
+    /** Max open exposure (entries + entry fees) for one hired trader. */
+    MAX_OPEN_PER_TRADER_USD: positiveInt('MAX_OPEN_PER_TRADER_USD'),
     /** Max share of capital (equity start + realized PnL) allowed in open positions, percent. */
     MAX_DEPLOYED_PCT: z
       .number({ invalid_type_error: 'MAX_DEPLOYED_PCT must be a number' })
@@ -40,10 +49,33 @@ export const riskConfigSchema = z
       .min(1, 'MAX_DEPLOYED_PCT must be at least 1')
       .max(100, 'MAX_DEPLOYED_PCT must be at most 100'),
     MAX_DAILY_REALIZED_LOSS_USD: positiveInt('MAX_DAILY_REALIZED_LOSS_USD'),
-    /** Day-trader discipline: force-close age window (hours). */
+    /** Day-trader discipline: max hold before the grace window (hours). */
     MAX_POSITION_AGE_HOURS: positiveInt('MAX_POSITION_AGE_HOURS'),
-    /** Grace window added on top before the unconditional close (hours). */
-    POSITION_GRACE_HOURS: positiveInt('POSITION_GRACE_HOURS'),
+    /** Grace window added on top before the unconditional close (hours). May be fractional. */
+    POSITION_GRACE_HOURS: positiveNumber('POSITION_GRACE_HOURS'),
+    /** Hard stop, basis points off entry. 2500 = sell at −25%. */
+    STOP_LOSS_BPS: positiveInt('STOP_LOSS_BPS'),
+    /** Trailing stop arms after this gain, basis points. */
+    TRAIL_ARM_BPS: positiveInt('TRAIL_ARM_BPS'),
+    /** Trailing stop distance below the peak, basis points. */
+    TRAIL_DISTANCE_BPS: positiveInt('TRAIL_DISTANCE_BPS'),
+    /** Partial take-profit gain, basis points. */
+    PARTIAL_TP_BPS: positiveInt('PARTIAL_TP_BPS'),
+    /** During grace, sell after a bounce of this many bps off the low. */
+    GRACE_BOUNCE_BPS: positiveInt('GRACE_BOUNCE_BPS'),
+    /** Sell as soon as a position is green at max hold or during grace. */
+    SELL_ON_GREEN: boolish,
+    /** Exit slippage ladder, attempt 0. */
+    EXIT_SLIPPAGE_BPS_1: positiveInt('EXIT_SLIPPAGE_BPS_1'),
+    EXIT_SLIPPAGE_BPS_2: positiveInt('EXIT_SLIPPAGE_BPS_2'),
+    /** Last exit slippage step. Further attempts reuse it. */
+    EXIT_SLIPPAGE_BPS_3: positiveInt('EXIT_SLIPPAGE_BPS_3'),
+    /** Hours after a firing before a funded buy can requalify the wallet. */
+    COOLDOWN_HOURS: positiveInt('COOLDOWN_HOURS'),
+    /** Agent hire decisions allowed per local day. */
+    MAX_HIRES_PER_DAY: positiveInt('MAX_HIRES_PER_DAY'),
+    REPEAT_FIRE_WINDOW_DAYS: positiveInt('REPEAT_FIRE_WINDOW_DAYS'),
+    REPEAT_FIRE_LIMIT: positiveInt('REPEAT_FIRE_LIMIT'),
     /** Fire the hire after this many hours with zero open positions. */
     IDLE_FIRE_HOURS: positiveInt('IDLE_FIRE_HOURS'),
     MAX_SLIPPAGE_BPS: positiveInt('MAX_SLIPPAGE_BPS'),
@@ -120,6 +152,25 @@ export const riskConfigSchema = z
           'the per-buy maximum cannot sit below the per-buy floor',
       });
     }
+    if (cfg.MAX_OPEN_PER_TRADER_USD < cfg.MAX_PER_BUY_USD) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAX_OPEN_PER_TRADER_USD'],
+        message:
+          `MAX_OPEN_PER_TRADER_USD (${cfg.MAX_OPEN_PER_TRADER_USD}) must be >= MAX_PER_BUY_USD (${cfg.MAX_PER_BUY_USD}): ` +
+          'one trade cannot be larger than the trader open cap',
+      });
+    }
+    if (
+      cfg.EXIT_SLIPPAGE_BPS_2 < cfg.EXIT_SLIPPAGE_BPS_1 ||
+      cfg.EXIT_SLIPPAGE_BPS_3 < cfg.EXIT_SLIPPAGE_BPS_2
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EXIT_SLIPPAGE_BPS_3'],
+        message: 'exit slippage ladder must be non-decreasing',
+      });
+    }
     // A bench target above the watch-list size can never be reached (D4).
     if (cfg.BENCH_TARGET > cfg.WATCH_LIST_SIZE) {
       ctx.addIssue({
@@ -136,15 +187,29 @@ export type RiskConfig = z.infer<typeof riskConfigSchema>;
 
 export const DEFAULT_RISK: RiskConfig = {
   COPY_SCALE: 0.25,
-  MIN_PER_BUY_USD: 10,
-  MAX_PER_BUY_USD: 250,
+  MIN_PER_BUY_USD: 2,
+  MAX_PER_BUY_USD: 10,
+  MAX_OPEN_PER_TRADER_USD: 40,
   MAX_DEPLOYED_PCT: 80,
-  MAX_DAILY_REALIZED_LOSS_USD: 100,
+  MAX_DAILY_REALIZED_LOSS_USD: 15,
   // D4's day-trader ceiling: force-close at 8h, +3h grace when the mark is not
   // positive. (D4's 8h+3h working assumption is the shipped default; a saved
   // .env value still wins for an installation that set one.)
-  MAX_POSITION_AGE_HOURS: 8,
-  POSITION_GRACE_HOURS: 3,
+  MAX_POSITION_AGE_HOURS: 5,
+  POSITION_GRACE_HOURS: 1.5,
+  STOP_LOSS_BPS: 2500,
+  TRAIL_ARM_BPS: 1500,
+  TRAIL_DISTANCE_BPS: 1000,
+  PARTIAL_TP_BPS: 4000,
+  GRACE_BOUNCE_BPS: 800,
+  SELL_ON_GREEN: true,
+  EXIT_SLIPPAGE_BPS_1: 300,
+  EXIT_SLIPPAGE_BPS_2: 600,
+  EXIT_SLIPPAGE_BPS_3: 1000,
+  COOLDOWN_HOURS: 36,
+  MAX_HIRES_PER_DAY: 3,
+  REPEAT_FIRE_WINDOW_DAYS: 7,
+  REPEAT_FIRE_LIMIT: 2,
   // D4's lifecycle rule: the idle clock runs from max(hire, last held position)
   // and fires at 8h.
   IDLE_FIRE_HOURS: 8,
@@ -192,10 +257,24 @@ const settingsPatchObjectSchema = z
   .object({
     MIN_PER_BUY_USD: z.number().int().positive().optional(),
     MAX_PER_BUY_USD: z.number().int().positive().optional(),
+    MAX_OPEN_PER_TRADER_USD: z.number().int().positive().optional(),
     MAX_DEPLOYED_PCT: z.number().int().min(1).max(100).optional(),
     MAX_DAILY_REALIZED_LOSS_USD: z.number().int().positive().optional(),
     MAX_POSITION_AGE_HOURS: z.number().int().positive().optional(),
-    POSITION_GRACE_HOURS: z.number().int().positive().optional(),
+    POSITION_GRACE_HOURS: z.number().positive().optional(),
+    STOP_LOSS_BPS: z.number().int().positive().optional(),
+    TRAIL_ARM_BPS: z.number().int().positive().optional(),
+    TRAIL_DISTANCE_BPS: z.number().int().positive().optional(),
+    PARTIAL_TP_BPS: z.number().int().positive().optional(),
+    GRACE_BOUNCE_BPS: z.number().int().positive().optional(),
+    SELL_ON_GREEN: boolish.optional(),
+    EXIT_SLIPPAGE_BPS_1: z.number().int().positive().optional(),
+    EXIT_SLIPPAGE_BPS_2: z.number().int().positive().optional(),
+    EXIT_SLIPPAGE_BPS_3: z.number().int().positive().optional(),
+    COOLDOWN_HOURS: z.number().int().positive().optional(),
+    MAX_HIRES_PER_DAY: z.number().int().positive().optional(),
+    REPEAT_FIRE_WINDOW_DAYS: z.number().int().positive().optional(),
+    REPEAT_FIRE_LIMIT: z.number().int().positive().optional(),
     IDLE_FIRE_HOURS: z.number().int().positive().optional(),
     MAX_SLIPPAGE_BPS: z.number().int().positive().optional(),
     MAX_PRICE_IMPACT_BPS: z.number().int().positive().optional(),

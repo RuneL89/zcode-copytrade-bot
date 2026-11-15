@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { canPromote, canReenter, ceilingAction, type PromotionConfig } from '../src/watch.js';
+import {
+  canPromote,
+  canReenter,
+  ceilingAction,
+  isRepeatOffender,
+  stallDecision,
+  type PromotionConfig,
+} from '../src/watch.js';
 import { isIdleOver } from '../src/positionAge.js';
 
 const HOUR = 3_600_000;
@@ -80,6 +87,34 @@ describe('canReenter — no timed cooldown, a post-fire buy (AC7)', () => {
 
   it('a funded buy observed after the fire lifts the ban', () => {
     expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 60_000) })).toBe(true);
+  });
+
+  it('holds the ban until the cooldown elapses, then accepts the post-fire buy', () => {
+    const firedAt = iso(NOW - 36 * HOUR);
+    const buyAt = iso(NOW - 60_000);
+    expect(
+      canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW - 60_000, cooldownHours: 36 }),
+    ).toBe(false);
+    expect(canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW, cooldownHours: 36 })).toBe(
+      true,
+    );
+    expect(
+      canReenter({
+        lastFiredAt: iso(NOW - 36 * HOUR + 1),
+        lastFundedBuyAt: buyAt,
+        nowMs: NOW,
+        cooldownHours: 36,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isRepeatOffender', () => {
+  it('archives the second firing inside 7 days and ignores an older one', () => {
+    const day = 86_400_000;
+    expect(isRepeatOffender([NOW - day, NOW], NOW)).toBe(true);
+    expect(isRepeatOffender([NOW], NOW)).toBe(false);
+    expect(isRepeatOffender([NOW - 8 * day, NOW], NOW)).toBe(false);
   });
 });
 
@@ -194,5 +229,48 @@ describe('operator scenarios (8h idle / 14h after a close / no old-record return
         lastFundedBuyAt: iso(NOW - 2 * HOUR),
       }),
     ).toEqual({ ok: true, reason: null });
+  });
+});
+
+describe('stallDecision — the same clock as promotion', () => {
+  const fresh = iso(NOW - 30 * 60_000);
+  const base = {
+    nowMs: NOW,
+    activityCheckedAt: fresh,
+    activityFreshMs: 6 * HOUR,
+    stallHours: 8,
+  };
+
+  it('does not fire a seat that has not yet sat for a full stall window', () => {
+    expect(
+      stallDecision({
+        ...base,
+        startedAtIso: iso(NOW - 5 * 60_000),
+        lastFundedBuyAt: iso(NOW - 45 * 60_000),
+        lastSwapAt: iso(NOW - 11 * HOUR),
+      }),
+    ).toEqual({ fire: false, silentHours: null });
+  });
+
+  it('trusts a funded buy that is newer than an old activity sample', () => {
+    const decision = stallDecision({
+      ...base,
+      startedAtIso: iso(NOW - 9 * HOUR),
+      lastFundedBuyAt: iso(NOW - 45 * 60_000),
+      lastSwapAt: iso(NOW - 11 * HOUR),
+    });
+    expect(decision.fire).toBe(false);
+    expect(decision.silentHours).toBeLessThan(1);
+  });
+
+  it('fires once the shared stamp and the seat are both older than the stall window', () => {
+    const decision = stallDecision({
+      ...base,
+      startedAtIso: iso(NOW - 9 * HOUR),
+      lastFundedBuyAt: iso(NOW - 10 * HOUR),
+      lastSwapAt: iso(NOW - 11 * HOUR),
+    });
+    expect(decision.fire).toBe(true);
+    expect(decision.silentHours).toBeGreaterThan(8);
   });
 });

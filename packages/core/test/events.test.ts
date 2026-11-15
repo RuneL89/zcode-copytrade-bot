@@ -182,6 +182,12 @@ describe('event ordering and dedupe', () => {
     expect(isEventTooOld(Math.floor(now / 1000) - 3600, now, 90)).toBe(true);
     expect(isEventTooOld(null, now, 90)).toBe(true);
     expect(isEventTooOld(Math.floor(now / 1000) - 5, now, 90)).toBe(false);
+    // A logsSubscribe notification resolved 2s after the leader block is copyable.
+    // The same buy first seen by the 300s safety poll is not.
+    const block = Math.floor(now / 1000) - 2;
+    expect(isEventTooOld(block, block * 1000 + 2_000, 90)).toBe(false);
+    expect(Math.round(2_000 / 1000)).toBe(2);
+    expect(isEventTooOld(block, block * 1000 + 300_000, 90)).toBe(true);
   });
 });
 
@@ -224,7 +230,7 @@ describe('activation + dashboard states', () => {
 
 describe('entry risk gate', () => {
   const baseInput = {
-    entryUsdMicro: usdToMicro(50),
+    entryUsdMicro: usdToMicro(10),
     realizedPnlTodayUsdMicro: 0n,
     eventAgeSeconds: 10,
     priceAgeSeconds: 5,
@@ -236,15 +242,24 @@ describe('entry risk gate', () => {
     expect(evaluateEntryRisk(DEFAULT_RISK, baseInput).allowed).toBe(true);
   });
   it('rejects each documented limit', () => {
-    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(5) }).rule).toBe(
+    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(1) }).rule).toBe(
       'MIN_PER_BUY_USD',
     );
-    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(300) }).rule).toBe(
+    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(2) }).allowed).toBe(
+      true,
+    );
+    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(10) }).allowed).toBe(
+      true,
+    );
+    expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(11) }).rule).toBe(
       'MAX_PER_BUY_USD',
     );
     expect(
-      evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, realizedPnlTodayUsdMicro: usdToMicro(-100) }).rule,
+      evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, realizedPnlTodayUsdMicro: -15_000_000n }).rule,
     ).toBe('MAX_DAILY_REALIZED_LOSS_USD');
+    expect(
+      evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, realizedPnlTodayUsdMicro: -14_999_999n }).allowed,
+    ).toBe(true);
     expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, eventAgeSeconds: 120 }).rule).toBe(
       'MAX_COPY_EVENT_AGE_SECONDS',
     );

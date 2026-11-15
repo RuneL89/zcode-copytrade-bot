@@ -69,7 +69,7 @@ export function applySessionCookie(c: Context, token: string, expiresAt: number)
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'Strict',
-    secure: secureCookies(),
+    secure: secureCookies(c),
     path: '/',
     expires: new Date(expiresAt),
   });
@@ -105,7 +105,7 @@ export function applyCsrfCookie(c: Context, token: string): void {
     // Must mirror applySessionCookie: a Secure CSRF cookie is dropped over
     // plain HTTP (e.g. phone access on the LAN), which would fail every
     // state-changing request.
-    secure: secureCookies(),
+    secure: secureCookies(c),
     // Persist for the session lifetime. Without an expiry this is a browser
     // -session cookie, which mobile browsers drop aggressively while the
     // 12h login cookie survives — leaving the user logged in but unable to
@@ -115,9 +115,38 @@ export function applyCsrfCookie(c: Context, token: string): void {
   });
 }
 
-/** Cookies are Secure in production unless the operator opts out for LAN HTTP. */
-function secureCookies(): boolean {
-  return process.env.NODE_ENV === 'production' && process.env.FORCE_INSECURE_COOKIE !== '1';
+/**
+ * Cookies are Secure in production. Plain HTTP on loopback or a Tailscale
+ * address (100.64.0.0/10) cannot store a Secure cookie, so those hosts stay
+ * insecure. `FORCE_INSECURE_COOKIE=1` covers any other HTTP bind, such as
+ * 0.0.0.0 reached by a name that is not itself a Tailscale IP.
+ */
+export function secureCookies(c?: Context): boolean {
+  if (process.env.FORCE_INSECURE_COOKIE === '1') return false;
+  if (process.env.NODE_ENV !== 'production') return false;
+  const requestHost = c?.req.header('host') ?? null;
+  if (isPlainHttpHost(requestHost) || isPlainHttpHost(process.env.HOST ?? null)) return false;
+  return true;
+}
+
+export function isPlainHttpHost(host: string | null | undefined): boolean {
+  if (!host) return false;
+  const name = hostnameOf(host);
+  if (name === 'localhost' || name === '127.0.0.1' || name === '::1') return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
+  if (!match) return false;
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+  return a === 100 && b >= 64 && b <= 127;
+}
+
+function hostnameOf(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    return end > 1 ? trimmed.slice(1, end) : trimmed;
+  }
+  return trimmed.split(':')[0] ?? trimmed;
 }
 
 /** Simple fixed-window rate limiter (per key). */

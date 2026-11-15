@@ -86,3 +86,75 @@ export function capToHeadroom(
   }
   return { action: 'skip_headroom', headroomUsdMicro };
 }
+
+export type CopyLimit = 'none' | 'floor' | 'per_trade' | 'per_trader' | 'bankroll';
+
+export interface SizeCopyInput {
+  leaderInputUsdMicro: MicroUsd;
+  scaleNumerator: bigint;
+  scaleDenominator: bigint;
+  minPerBuyUsdMicro: MicroUsd;
+  /** Hard ceiling on one copied buy. */
+  maxPerBuyUsdMicro: MicroUsd;
+  /** Open exposure already booked for this trader (entries + entry fees). */
+  traderOpenUsdMicro: MicroUsd;
+  /** Max open exposure for one hired trader. */
+  maxOpenPerTraderUsdMicro: MicroUsd;
+  /** Remaining room under the bankroll deployed-% cap. */
+  bankrollHeadroomUsdMicro: MicroUsd;
+}
+
+export type SizeCopyResult =
+  | { action: 'copy'; finalUsdMicro: MicroUsd; limitedBy: CopyLimit }
+  | { action: 'skip_invalid' }
+  | {
+      action: 'skip_headroom';
+      rule: 'MAX_OPEN_PER_TRADER_USD' | 'MAX_DEPLOYED_PCT';
+      headroomUsdMicro: MicroUsd;
+    };
+
+/**
+ * Copy size in the order the desk applies it:
+ * scale, then the per-trade ceiling and floor, then this trader's open-exposure
+ * room, then the shared bankroll headroom. A remainder below the floor is skipped.
+ */
+export function sizeCopy(input: SizeCopyInput): SizeCopyResult {
+  const scaled = computeCopyNotional({
+    leaderInputUsdMicro: input.leaderInputUsdMicro,
+    scaleNumerator: input.scaleNumerator,
+    scaleDenominator: input.scaleDenominator,
+    minPerBuyUsdMicro: input.minPerBuyUsdMicro,
+    maxPerBuyUsdMicro: input.maxPerBuyUsdMicro,
+  });
+  if (scaled.action !== 'copy' || scaled.finalUsdMicro === null) return { action: 'skip_invalid' };
+
+  let notional = scaled.finalUsdMicro;
+  let limitedBy: CopyLimit =
+    scaled.applied === 'capped_at_max'
+      ? 'per_trade'
+      : scaled.applied === 'rounded_up_to_min'
+        ? 'floor'
+        : 'none';
+
+  const traderRoom =
+    input.maxOpenPerTraderUsdMicro > input.traderOpenUsdMicro
+      ? input.maxOpenPerTraderUsdMicro - input.traderOpenUsdMicro
+      : 0n;
+  const trader = capToHeadroom(notional, traderRoom, input.minPerBuyUsdMicro);
+  if (trader.action === 'skip_headroom') {
+    return {
+      action: 'skip_headroom',
+      rule: 'MAX_OPEN_PER_TRADER_USD',
+      headroomUsdMicro: trader.headroomUsdMicro,
+    };
+  }
+  if (trader.downsized) limitedBy = 'per_trader';
+  notional = trader.finalUsdMicro;
+
+  const bank = capToHeadroom(notional, input.bankrollHeadroomUsdMicro, input.minPerBuyUsdMicro);
+  if (bank.action === 'skip_headroom') {
+    return { action: 'skip_headroom', rule: 'MAX_DEPLOYED_PCT', headroomUsdMicro: bank.headroomUsdMicro };
+  }
+  if (bank.downsized) limitedBy = 'bankroll';
+  return { action: 'copy', finalUsdMicro: bank.finalUsdMicro, limitedBy };
+}

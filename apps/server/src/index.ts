@@ -82,7 +82,7 @@ async function main() {
   // rejection is recorded (audit + console) and the process keeps running; a
   // genuine uncaught exception still exits, but leaves the reason behind.
   process.on('unhandledRejection', (reason) => {
-    const detail = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+    const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
     console.error(`[copydesk] unhandled rejection: ${detail}`);
     try {
       repo.audit(rt.db.db, 'system', `unhandled rejection (continuing): ${detail.slice(0, 300)}`, {});

@@ -53,6 +53,7 @@ export const api = {
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
   state: () => request<import('./types.js').DashboardState>('/api/state'),
   settings: () => request<Record<string, unknown>>('/api/settings'),
+  credits: () => request<Record<string, unknown>>('/api/credits'),
   patchSettings: (patch: Record<string, unknown>) =>
     request<{ ok: boolean; risk: Record<string, number | string> }>('/api/settings', {
       method: 'PATCH',

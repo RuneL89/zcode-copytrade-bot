@@ -19,6 +19,72 @@ What you end up with:
 
 The rest of this page shows how that works, twice: first at a glance, then in detail. If you just want to run it, skip to [Getting started](#getting-started).
 
+## Running paper mode
+
+Paper is the default. It watches public market data and simulates fills. It does not sign, and it does not need a wallet.
+
+```bash
+pnpm install
+cp .env.example .env
+# Set SESSION_SECRET to 32+ random characters. Leave every API key empty
+# to boot. Add HELIUS_API_KEY, JUPITER_API_KEY and FOMOAPI_KEY locally
+# when you want live leaderboard and chain reads. Never commit .env.
+pnpm build
+pnpm db:migrate
+pnpm dev:server    # http://127.0.0.1:8787  (or pnpm start after a build)
+```
+
+The first login uses the one-time setup token printed by the server (also in `data/setup-token.txt`).
+
+Paper defaults, all overridable in `.env` or Risk settings:
+
+| Limit                          | Default                                                        |
+| ------------------------------ | -------------------------------------------------------------- |
+| Bankroll                       | $100 (`EQUITY_START_USD`)                                      |
+| Per copied buy                 | $2 floor, $10 ceiling                                          |
+| Open exposure per hired trader | $40                                                            |
+| Deployed cap                   | 80% of bankroll, so $80 total even though 5 × $40 is $200      |
+| Daily realized loss stop       | $15                                                            |
+| Max hold                       | 5h, then 1.5h grace that sells on green                        |
+| Stop-loss / trail              | −25% from entry; trail arms at +15% and sells 10% off the peak |
+| Exit slippage ladder           | 300, then 600, then 1,000 bps                                  |
+
+Helius spend is metered. A designed day is 5,796 credits against a 13,600 hard cap. The roster poll is signature-first. `getTransactionsForAddress` is not on a timer. A hire backfill keeps at most 4 `getTransaction` calls inside a 3-minute window, and at most 6 of those Helius calls in any minute. The watch poll does not re-read signatures behind its cursor. Leave `HELIUS_API_KEY` empty until that budget is the one you intend to run.
+
+`HIRE_APPROVAL=auto` fills an empty seat from the bench. `agent` waits for `POST /api/agent/hire-decisions` (Bearer `AGENT_API_TOKEN`). Exit plans can only be tightened via `POST /api/agent/exit-adjustments`. A seat left empty POSTs to `AGENT_WEBHOOK_URL` when that is set. Telegram is not used.
+
+## Running as a service
+
+On a Linux box, build once and let systemd keep the process up. The unit is `deploy/copydesk.service`.
+
+```bash
+sudo mkdir -p /opt/copydesk
+sudo rsync -a --exclude data --exclude node_modules ./ /opt/copydesk/
+cd /opt/copydesk
+pnpm install --frozen-lockfile
+pnpm build
+# Write /opt/copydesk/.env locally. chmod 600. Do not commit it.
+pnpm db:migrate
+sudo cp deploy/copydesk.service /etc/systemd/system/copydesk.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now copydesk
+sudo journalctl -u copydesk -f
+```
+
+The process runs `node apps/server/dist/index.js` with the repo as its working directory. It restarts on failure. One process holds `data/worker.lock`.
+
+`LIVE_TRADING` defaults to false. `MODE=live` together with `LIVE_TRADING=true` re-runs the budget, 429, and exit-guard checks and exits instead of listening if any fail. The wallet file is `WALLET_FILE`, unlocked with `COPYDESK_WALLET_PASSPHRASE`. Raising a risk limit from the Desk risk tab needs `RISK_PIN`.
+
+The Desk screen is `#/desk`: funnel counts, five seats with per-trader open copies, the credit meter, and the risk form. SOL balance is the headline figure.
+
+## Still open
+
+- WebSocket bytes are metered. They have not been measured against a day of live traffic.
+- Sender uses the 0.000005 SOL SWQOS tip. The 0.001 SOL Sender Max tip is not the default.
+- Shadow lots still use 1% slippage when Jupiter does not return a quote.
+- Odds-of-profit, calibration, and the 4-hour review loop are not built. Hire, timeout, overrule, and tighten-only exits are.
+- `HIRE_APPROVAL` stays `auto` unless you set `agent`.
+
 ## Getting started
 
 **The double-click path.** Run `install.bat` from the project folder. It installs a portable Node if you do not have one, sets up pnpm, installs the dependencies, builds every package, creates `.env` from the example with a generated session secret, creates the SQLite database, offers to load example candidates, and adds Start Menu and Desktop shortcuts. An existing `.env` is never overwritten. At the end it asks whether to start the app.

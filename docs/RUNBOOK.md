@@ -72,9 +72,10 @@ itself. A non-elevated agent/shell cannot do it remotely.
 
 Notes:
 
-- Traffic is plain HTTP. Cookies are only marked `Secure` in production
-  (`NODE_ENV=production`); for LAN HTTP either leave `NODE_ENV` unset or set
-  `FORCE_INSECURE_COOKIE=1`.
+- Traffic is plain HTTP. In production, cookies are `Secure` except when the
+  browser's host is loopback or a Tailscale address (`100.64.0.0/10`): those
+  cannot store a Secure cookie. Set `FORCE_INSECURE_COOKIE=1` when you bind
+  `0.0.0.0` and open the desk by any other plain-HTTP name.
 - Anyone on that Wi-Fi can reach the login page, so use a strong dashboard
   password. **Never port-forward this port to the internet.**
 - To reverse it: set `HOST=127.0.0.1`, delete the "ZCode Bot LAN 8787"

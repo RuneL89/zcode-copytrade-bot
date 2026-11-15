@@ -96,6 +96,8 @@ export interface SpendRequest {
   units?: number;
   /** True when this Helius call is a fallback from a failed public RPC. */
   fallback?: boolean;
+  /** Optional per-wallet (or other) ceiling inside the path bucket. */
+  subBucket?: { key: string; cap: number };
 }
 
 export interface SpendDecision {
@@ -208,6 +210,7 @@ export class CreditGovernor {
   private ledger: LedgerRow[] = [];
   private dayTotals = new Map<string, number>();
   private monthTotals = new Map<string, number>();
+  private subTotals = new Map<string, number>();
   private reportedMonth: number | null = null;
   private backoffUntil = new Map<CreditPath, number>();
   private backoffDelay = new Map<CreditPath, number>();
@@ -298,6 +301,14 @@ export class CreditGovernor {
     const spent = this.daySpend(req.path, req.atMs);
     if (spent + credits > this.cap(req.path)) return this.denial(req, level, 'path_cap');
 
+    const subKey = req.subBucket
+      ? `${dayKey(req.atMs, this.offset())}:${req.path}:${req.subBucket.key}`
+      : null;
+    if (req.subBucket && subKey) {
+      const used = this.subTotals.get(subKey) ?? 0;
+      if (used + credits > req.subBucket.cap) return this.denial(req, level, 'path_cap');
+    }
+
     // A non-exempt spend that would push the trusted month figure over the
     // exits-only line is refused. Exempt paths keep their own daily caps.
     if (!PATH_BUDGETS[req.path].exempt && this.monthUsed(req.atMs) >= MONTH_EXITS_ONLY) {
@@ -309,6 +320,7 @@ export class CreditGovernor {
     const day = `${dayKey(req.atMs, this.offset())}:${req.path}`;
     this.dayTotals.set(day, (this.dayTotals.get(day) ?? 0) + credits);
     this.monthTotals.set(cycle, (this.monthTotals.get(cycle) ?? 0) + credits);
+    if (subKey) this.subTotals.set(subKey, (this.subTotals.get(subKey) ?? 0) + credits);
     this.ledger.push({
       ts: req.atMs,
       path: req.path,

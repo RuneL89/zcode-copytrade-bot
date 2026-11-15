@@ -1,8 +1,9 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { settingsPatchSchema, riskConfigSchema, LIVE_ACK_STRING } from '@zcode-bot/config';
+import { DAILY_HARD_CAP, MONTH_ROSTER_ONLY, riskPatchDirection } from '@zcode-bot/core';
 import { parseManualCsv, parseManualJson } from '@zcode-bot/providers';
 import {
   applyCsrfCookie,
@@ -25,13 +26,52 @@ import { PAPER_ASSUMPTIONS } from '../services/executors.js';
 import { loadWalletSecret, walletPublicKey } from '../wallet.js';
 import { rememberWalletPassphrase } from '../wallet-unlock.js';
 import { LiveExecutor } from '../services/executors.js';
+import { adjustExit, decideHire, overruleSeat } from '../services/agentHooks.js';
 
 export function buildApp(rt: Runtime): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const sessions = new SessionManager(rt.config.env.SESSION_SECRET);
   const db: AppDatabase = rt.db.db;
 
+  // ---- local agent hooks (no session; a separate token; no order or arm routes)
+  const agentDenied = (c: Context<AppEnv>) => {
+    const expected = rt.config.env.AGENT_API_TOKEN;
+    if (!expected) return c.json({ error: 'agent api disabled' }, 404);
+    if (c.req.header('authorization') !== `Bearer ${expected}`) return c.json({ error: 'unauthorized' }, 401);
+    return null;
+  };
+
+  app.post('/api/agent/hire-decisions', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await decideHire(
+      db,
+      rt.config.risk,
+      rt.lifecycle,
+      (body ?? {}) as Record<string, unknown>,
+    );
+    return c.json(result.body, result.status as 200);
+  });
+
+  app.post('/api/agent/overrule', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await overruleSeat(db, rt.lifecycle, (body ?? {}) as Record<string, unknown>);
+    return c.json(result.body, result.status as 200);
+  });
+
+  app.post('/api/agent/exit-adjustments', async (c) => {
+    const denied = agentDenied(c);
+    if (denied) return denied;
+    const body = await c.req.json().catch(() => null);
+    const result = await adjustExit(db, rt.config.risk, rt.engine, (body ?? {}) as Record<string, unknown>);
+    return c.json(result.body, result.status as 200);
+  });
+
   // ---- public bootstrap -----------------------------------------------------
+
   app.get('/api/bootstrap', (c) => {
     const needsSetup = repo.countUsers(db) === 0;
     const state = rt.store.get();
@@ -201,9 +241,45 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     });
   });
 
+  app.get('/api/credits', requireAuth(sessions), (c) => {
+    const snap = rt.creditGovernor.snapshot(Date.now());
+    const raw = repo.kvGet(db, 'helius.usage');
+    let reported: unknown = null;
+    if (raw) {
+      try {
+        reported = JSON.parse(raw);
+      } catch {
+        reported = null;
+      }
+    }
+    const reportedRecord =
+      reported && typeof reported === 'object' ? (reported as { admin?: string; detail?: string }) : null;
+    const admin = !rt.config.env.HELIUS_PROJECT_ID ? 'unset' : (reportedRecord?.admin ?? 'unknown');
+    return c.json({
+      dayTotal: snap.dayTotal,
+      month: snap.month,
+      level: snap.level,
+      byPath: snap.byPath,
+      hardCap: DAILY_HARD_CAP,
+      monthCeiling: MONTH_ROSTER_ONLY,
+      admin,
+      adminDetail:
+        admin === 'ok'
+          ? null
+          : (reportedRecord?.detail ??
+            (admin === 'unset'
+              ? 'HELIUS_PROJECT_ID is not set. The figure on this screen is the in-app meter.'
+              : 'Helius Admin usage is unavailable. The figure on this screen is the in-app meter.')),
+      reported,
+    });
+  });
+
   app.patch('/api/settings', requireAuth(sessions), requireCsrf, async (c) => {
-    const body = await c.req.json().catch(() => null);
-    const parsed = settingsPatchSchema.safeParse(body);
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const pin = typeof body?.pin === 'string' ? body.pin : '';
+    const patchBody = { ...(body ?? {}) };
+    delete patchBody.pin;
+    const parsed = settingsPatchSchema.safeParse(patchBody);
     if (!parsed.success) {
       return c.json(
         {
@@ -226,6 +302,16 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         },
         400,
       );
+    }
+    const direction = riskPatchDirection(
+      rt.config.risk as unknown as Record<string, unknown>,
+      parsed.data as unknown as Record<string, unknown>,
+    );
+    if (direction === 'increase') {
+      const expected = rt.config.env.RISK_PIN;
+      if (!expected || pin !== expected) {
+        return c.json({ error: 'raising risk needs the PIN' }, 403);
+      }
     }
     rt.applySettings(parsed.data);
     repo.audit(db, 'settings', 'risk settings updated', redact(parsed.data));
@@ -786,6 +872,9 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     if (!readiness.ready) {
       return c.json({ error: 'readiness blockers remain', readiness }, 400);
     }
+    if (!rt.config.env.LIVE_TRADING) {
+      return c.json({ error: 'LIVE_TRADING is false; signing is disabled' }, 409);
+    }
     const body = (await c.req.json().catch(() => ({}))) as { ack?: string; walletSecret?: string };
     if (body.ack !== LIVE_ACK_STRING) {
       return c.json(
@@ -795,7 +884,11 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     let secret: Uint8Array;
     try {
-      secret = loadWalletSecret(rt.config.env.DATA_DIR, body.walletSecret ?? '');
+      secret = loadWalletSecret(
+        rt.config.env.DATA_DIR,
+        rt.config.env.COPYDESK_WALLET_PASSPHRASE || (body.walletSecret ?? ''),
+        rt.config.env.WALLET_FILE,
+      );
     } catch (e) {
       return c.json({ error: `wallet unlock failed: ${(e as Error).message}` }, 400);
     }
@@ -817,8 +910,10 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         error: (e as Error).message,
       });
     }
-    const pk = walletPublicKey(rt.config.env.DATA_DIR)!;
-    rt.mountLiveExecutor(new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk));
+    const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)!;
+    rt.mountLiveExecutor(
+      new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk, undefined, rt.liveSubmit()),
+    );
     rt.control.armLive();
     rt.rebuildState();
     return c.json({

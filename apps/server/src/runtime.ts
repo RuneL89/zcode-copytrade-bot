@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from 'node:
 import { join } from 'node:path';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { settingsPatchSchema, SETTINGS_PATCH_KEYS, type AppConfig } from '@zcode-bot/config';
+import { CreditGovernor, evaluateP1Acceptance, liveStartDecision, reconcileUsage } from '@zcode-bot/core';
 import { openDatabase, acquireWorkerLock, type DbHandle, type WorkerLock } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import {
@@ -13,8 +14,11 @@ import {
   FomoApiClient,
   FomoWebLeaderboardProvider,
   HeliusProvider,
+  fetchHeliusProjectUsage,
+  HeliusUsageError,
   JupiterProvider,
   JupiterPriceProvider,
+  JUPITER_FALLBACK_TAKER,
   PublicSolanaProvider,
   isTelegramNotifier,
   notifierFromEnv,
@@ -38,12 +42,21 @@ import { readinessReport } from './services/readiness.js';
 import { DemoEngine, defaultFixturesPath } from './services/demo.js';
 import { OpsRunner } from './services/ops.js';
 import { DiscoveryService, discoveryDecision } from './services/discovery.js';
+import { deliverSeatOpen, dueSeatTimeouts, type OpenSeat } from './services/agentHooks.js';
+import { browserSocket, HeliusRosterPush, SAFETY_POLL_MS } from './services/heliusStream.js';
 import { WatchService } from './services/watch.js';
 import { ReportsService, positionsText, reportText } from './services/reports.js';
 import { TelegramCommandService } from './services/telegram-commands.js';
 import { FeeLedgerService } from './services/fee-ledger.js';
 import { TokenMetaService } from './services/token-meta.js';
 import { PaperExecutor, LiveExecutor } from './services/executors.js';
+import { sendSignedTransaction } from './services/sendPath.js';
+import {
+  HIRE_BACKFILL_PER_MINUTE,
+  MinuteCeiling,
+  selectHireBackfill,
+  type BackfillSignature,
+} from '@zcode-bot/core';
 import { loadWalletSecret, walletPublicKey } from './wallet.js';
 import { readRememberedPassphrase } from './wallet-unlock.js';
 import { REPO_ROOT, migrationsFolder } from './bootstrap.js';
@@ -109,6 +122,14 @@ export class Runtime {
   private baseExecutor: PaperExecutor;
   private liveExecutor: LiveExecutor | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private usageTimer: ReturnType<typeof setInterval> | null = null;
+  private seatTimer: ReturnType<typeof setInterval> | null = null;
+  private seatRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  readonly creditGovernor = new CreditGovernor();
+  private rosterPush: HeliusRosterPush | null = null;
+  /** Caps Helius getTransaction during a hire or reconnect backfill. */
+  private backfillCeiling = new MinuteCeiling(HIRE_BACKFILL_PER_MINUTE);
+  private rosterPollMs = 0;
   /** Set by stop(): async probes must not touch the closed database after that. */
   private stopping = false;
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
@@ -174,6 +195,11 @@ export class Runtime {
         ? new StaticPriceProvider(new Map([['So11111111111111111111111111111111111111112', 180_000_000n]]))
         : new JupiterPriceProvider(this.jupiter, config.risk.PRICE_MAX_AGE_SECONDS * 1000);
     this.priceProvider = prices;
+    const taker = walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE);
+    if (taker) {
+      this.jupiter.setTaker(taker);
+      if (this.priceProvider instanceof JupiterPriceProvider) this.priceProvider.setTaker(taker);
+    }
 
     this.baseExecutor = new PaperExecutor(this.jupiter, async (mint, decimals) => {
       const p = await (
@@ -201,6 +227,7 @@ export class Runtime {
           });
         },
         onStateChanged: () => {
+          this.subscribeNewSeats();
           this.rebuildState();
           // A new position lands here first: resolve its ticker off the hot
           // path so the dashboard shows a symbol instead of a mint fragment.
@@ -216,6 +243,12 @@ export class Runtime {
     );
 
     this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
+    this.lifecycle.hireApproval = config.env.HIRE_APPROVAL;
+    this.lifecycle.onSeatOpen = (event) => {
+      this.rememberOpenSeat(event);
+      deliverSeatOpen(config.env.AGENT_WEBHOOK_URL, event);
+    };
+    this.helius.setGovernor(this.creditGovernor);
     this.engineCallbacks();
 
     this.builder = new StateBuilder(
@@ -399,17 +432,23 @@ export class Runtime {
   }
 
   private async restoreLiveArming(): Promise<void> {
-    if (this.config.mode !== 'live') return;
+    if (this.config.mode !== 'live' || !this.config.env.LIVE_TRADING) return;
     if (!this.control.flags.armed) return; // explicit disarm — nothing to restore
     try {
       const passphrase = readRememberedPassphrase(this.config.env.DATA_DIR);
       if (!passphrase) {
         throw new Error('no sealed wallet passphrase on disk — arm once from the dashboard');
       }
-      const secret = loadWalletSecret(this.config.env.DATA_DIR, passphrase);
-      const publicKey = walletPublicKey(this.config.env.DATA_DIR);
+      const secret = loadWalletSecret(
+        this.config.env.DATA_DIR,
+        this.config.env.COPYDESK_WALLET_PASSPHRASE || passphrase,
+        this.config.env.WALLET_FILE,
+      );
+      const publicKey = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
       if (!publicKey) throw new Error('wallet public key missing');
-      this.mountLiveExecutor(new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey));
+      this.mountLiveExecutor(
+        new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey, undefined, this.liveSubmit()),
+      );
       repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
       void this.notifier
         .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
@@ -438,6 +477,15 @@ export class Runtime {
    * free. Demo mode returns earlier and never reaches any of it.
    */
   async start(): Promise<void> {
+    const signingRequested = this.config.mode === 'live' && this.config.env.LIVE_TRADING;
+    const acceptance = signingRequested ? evaluateP1Acceptance() : { ok: true, failures: [] as string[] };
+    const decision = liveStartDecision({
+      mode: this.config.mode,
+      liveTrading: this.config.env.LIVE_TRADING,
+      acceptanceOk: acceptance.ok,
+      failures: acceptance.failures,
+    });
+    if (!decision.start) throw new Error(`live start refused: ${decision.reason}`);
     this.lock = acquireWorkerLock(this.config.env.DATA_DIR);
     repo.audit(this.db.db, 'system', `runtime starting (mode=${this.config.mode})`);
 
@@ -500,7 +548,7 @@ export class Runtime {
     (this.builder as unknown as { monitor: LeaderMonitor | null }).monitor = this.monitor;
 
     // Provider health sampler (housekeeping).
-    this.healthTimer = setInterval(() => void this.sampleHealth(), 60_000);
+    this.healthTimer = setInterval(() => void this.sampleHealth(), 15 * 60_000);
     void this.sampleHealth();
 
     // Fee ledger scan cadence (housekeeping): wallet history is a billed call,
@@ -599,11 +647,13 @@ export class Runtime {
           });
       }, this.config.risk.WATCH_POLL_MS);
       // The ROSTER clock: every hired wallet, every ROSTER_POLL_MS.
-      this.rosterTimer = setInterval(() => {
-        void this.monitor?.tick().catch((e: Error) => {
-          repo.audit(this.db.db, 'monitor', `roster tick failed (fail closed): ${e.message}`, {});
-        });
-      }, this.config.risk.ROSTER_POLL_MS);
+      this.armRosterClock(this.config.risk.ROSTER_POLL_MS);
+      if (this.helius.configured) this.startRosterPush();
+      this.seatTimer = setInterval(() => this.pingSeatTimeouts(), 60_000);
+      if (this.config.env.HELIUS_PROJECT_ID && this.config.env.HELIUS_API_KEY) {
+        this.usageTimer = setInterval(() => void this.reconcileHeliusUsage(), 30 * 60_000);
+        void this.reconcileHeliusUsage();
+      }
     });
     repo.audit(
       this.db.db,
@@ -616,6 +666,243 @@ export class Runtime {
     this.rebuildState();
   }
 
+  private rememberOpenSeat(event: { activationId: string; candidateId: string; reason: string }): void {
+    const opens = this.readOpenSeats();
+    opens.push({ ...event, atMs: Date.now(), pinged: false });
+    repo.kvSet(this.db.db, 'seat.opens', JSON.stringify(opens));
+  }
+
+  private readOpenSeats(): OpenSeat[] {
+    const raw = repo.kvGet(this.db.db, 'seat.opens');
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as OpenSeat[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Agent mode only. A seat with no decision after 15 minutes is pinged and left empty. */
+  private pingSeatTimeouts(): void {
+    if (this.config.env.HIRE_APPROVAL !== 'agent' || this.stopping) return;
+    const opens = this.readOpenSeats();
+    const due = dueSeatTimeouts(opens, Date.now());
+    if (due.length === 0) return;
+    const dueIds = new Set(due.map((seat) => seat.activationId));
+    for (const seat of due) {
+      deliverSeatOpen(this.config.env.AGENT_WEBHOOK_URL, {
+        activationId: seat.activationId,
+        candidateId: seat.candidateId,
+        reason: seat.reason,
+        timedOut: true,
+      });
+      repo.audit(this.db.db, 'agent', 'seat left empty after 15 minutes', {
+        activationId: seat.activationId,
+      });
+    }
+    repo.kvSet(
+      this.db.db,
+      'seat.opens',
+      JSON.stringify(opens.map((seat) => (dueIds.has(seat.activationId) ? { ...seat, pinged: true } : seat))),
+    );
+  }
+
+  private armRosterClock(ms: number): void {
+    if (this.rosterTimer && this.rosterPollMs === ms) return;
+    this.rosterPollMs = ms;
+    if (this.rosterTimer) clearInterval(this.rosterTimer);
+    this.rosterTimer = setInterval(() => {
+      void this.monitor?.tick().catch((e: Error) => {
+        repo.audit(this.db.db, 'monitor', `roster tick failed (fail closed): ${e.message}`, {});
+      });
+    }, ms);
+  }
+
+  private startRosterPush(): void {
+    this.rosterPush = new HeliusRosterPush({
+      apiKey: this.config.env.HELIUS_API_KEY,
+      governor: this.creditGovernor,
+      seats: () => this.streamSeats(),
+      onSwap: (address, signature) => {
+        void this.ingestLeaderSignature(address, signature, 'push').catch((e: Error) => {
+          repo.audit(this.db.db, 'monitor', `stream swap failed: ${e.message}`, { address });
+        });
+      },
+      gapFill: (address) => this.gapFillSeat(address),
+      openSocket: browserSocket,
+      onMode: (mode, pollMs) => {
+        this.helius.setSpendPath(mode === 'outage' ? 'outage' : 'roster');
+        this.armRosterClock(pollMs);
+        repo.audit(this.db.db, 'monitor', `roster stream ${mode}; poll ${Math.round(pollMs / 1000)}s`, {});
+      },
+    });
+    this.rosterPush.start();
+    this.armRosterClock(SAFETY_POLL_MS);
+    if (this.seatRefreshTimer) clearInterval(this.seatRefreshTimer);
+    this.seatRefreshTimer = setInterval(() => this.subscribeNewSeats(), 15_000);
+  }
+
+  /** Put a hire on the socket without waiting for the safety poll. */
+  private subscribeNewSeats(): void {
+    const added = this.rosterPush?.refreshSeats() ?? [];
+    for (const address of added) {
+      void this.gapFillSeat(address).catch((e: Error) => {
+        repo.audit(this.db.db, 'monitor', `seat subscribe gap-fill failed: ${e.message}`, { address });
+      });
+    }
+  }
+
+  private streamSeats(): string[] {
+    const out: string[] = [];
+    for (const act of repo.listActiveActivations(this.db.db)) {
+      if (act.state !== 'ACTIVE') continue;
+      const address = repo
+        .listCandidateAddresses(this.db.db, act.candidateId)
+        .find((row) => row.chain === 'solana')?.address;
+      if (!address) continue;
+      out.push(address);
+      if (out.length >= 5) break;
+    }
+    return out;
+  }
+
+  private async gapFillSeat(address: string): Promise<void> {
+    const saved = repo.getCursor(this.db.db, address);
+    const now = Date.now();
+    let page: BackfillSignature[] | null = null;
+    if (this.publicSolana.configured) {
+      try {
+        const rows = await this.publicSolana.recentSignatures(address, 25);
+        page = rows.map((row) => ({ signature: row.signature, blockTime: row.blockTime, err: false }));
+      } catch {
+        page = null;
+      }
+    }
+    if (page === null) {
+      const sigs = await this.helius.signaturesSince(
+        address,
+        {
+          lastSignature: saved?.lastSignature ?? '',
+          lastSlot: saved?.lastSlot ?? 0,
+          lastTransactionIndex: saved?.lastTransactionIndex ?? 0,
+          lastBlockTime: saved?.lastBlockTime ?? null,
+        },
+        25,
+      );
+      page = sigs.map((sig) => ({
+        signature: sig.signature,
+        blockTime: sig.blockTime,
+        err: sig.err,
+      }));
+    }
+    if (!page) return;
+    const picked = selectHireBackfill({
+      signatures: page,
+      nowMs: now,
+      cursorSignature: saved?.lastSignature,
+    });
+    for (const sig of picked) {
+      await this.ingestLeaderSignature(address, sig.signature, 'backfill');
+    }
+  }
+
+  /**
+   * A pushed swap has a 2s public attempt, then one roster-bucket
+   * getTransaction. Backfill may spend that Helius call only inside the
+   * per-minute ceiling. Either way the buy is resolved while it is still
+   * inside the 90s copy window, not on the 300s safety poll.
+   */
+  private async ingestLeaderSignature(
+    address: string,
+    signature: string,
+    source: 'push' | 'backfill',
+  ): Promise<void> {
+    let summary = null;
+    if (this.publicSolana.configured) {
+      try {
+        summary = await this.publicSolana.transactionSummary(address, signature, {
+          timeoutMs: 2_000,
+          attempts: 1,
+        });
+      } catch {
+        summary = null;
+      }
+    }
+    if (!summary) {
+      if (source === 'backfill' && !this.backfillCeiling.allow(Date.now())) return;
+      summary = await this.helius.transactionSummary(address, signature, 'roster').catch(() => null);
+    }
+    if (!summary) return;
+    const act = repo.listActiveActivations(this.db.db).find((row) => {
+      if (row.state !== 'ACTIVE') return false;
+      return repo
+        .listCandidateAddresses(this.db.db, row.candidateId)
+        .some((item) => item.address === address);
+    });
+    if (!act) return;
+    await this.engine.handleLeaderTx(act.activationId, act.candidateId, summary);
+    const saved = repo.getCursor(this.db.db, address);
+    if (saved && saved.activationId === act.activationId && saved.lastSlot > summary.slot) return;
+    repo.setCursor(this.db.db, {
+      address,
+      chain: 'solana',
+      activationId: act.activationId,
+      lastSignature: summary.signature,
+      lastSlot: summary.slot,
+      lastTransactionIndex: summary.transactionIndex,
+      lastBlockTime: summary.blockTime,
+    });
+  }
+
+  private async reconcileHeliusUsage(): Promise<void> {
+    const projectId = this.config.env.HELIUS_PROJECT_ID;
+    const apiKey = this.config.env.HELIUS_API_KEY;
+    if (!projectId || !apiKey || this.stopping) return;
+    try {
+      const report = await fetchHeliusProjectUsage({ projectId, apiKey });
+      const metered = this.creditGovernor.monthMetered(Date.now());
+      const reconciled = reconcileUsage(metered, report.creditsUsed);
+      this.creditGovernor.setReportedUsage(reconciled.used);
+      repo.kvSet(
+        this.db.db,
+        'helius.usage',
+        JSON.stringify({
+          ...report,
+          admin: 'ok',
+          metered,
+          driftAlert: reconciled.alert,
+          at: new Date().toISOString(),
+        }),
+      );
+      if (reconciled.alert) {
+        repo.audit(
+          this.db.db,
+          'credits',
+          `helius usage drift ${((reconciled.driftPct ?? 0) * 100).toFixed(1)}% (meter ${metered}, reported ${report.creditsUsed})`,
+          {},
+        );
+      }
+    } catch (e) {
+      if (this.stopping) return;
+      const unavailable = e instanceof HeliusUsageError && e.unavailable;
+      const detail = unavailable
+        ? 'Helius Admin usage rejected this API key. The figure on this screen is the in-app meter.'
+        : `helius usage read failed: ${(e as Error).message}`;
+      repo.kvSet(
+        this.db.db,
+        'helius.usage',
+        JSON.stringify({
+          admin: unavailable ? 'unavailable' : 'error',
+          status: e instanceof HeliusUsageError ? e.status : null,
+          detail,
+          at: new Date().toISOString(),
+        }),
+      );
+      repo.audit(this.db.db, 'credits', detail, {});
+    }
+  }
+
   stop(): void {
     this.stopping = true;
     this.monitor?.stop();
@@ -625,6 +912,10 @@ export class Runtime {
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.watchTimer) clearInterval(this.watchTimer);
     if (this.rosterTimer) clearInterval(this.rosterTimer);
+    if (this.usageTimer) clearInterval(this.usageTimer);
+    if (this.seatTimer) clearInterval(this.seatTimer);
+    if (this.seatRefreshTimer) clearInterval(this.seatRefreshTimer);
+    this.rosterPush?.stop();
     if (this.watchBootTimer) clearTimeout(this.watchBootTimer);
     void this.fomoWeb?.close();
     void this.dawnLookup?.close();
@@ -669,7 +960,10 @@ export class Runtime {
       await this.refreshMarks().catch(() => undefined);
       // Fee wallet runway: SOL pays every network fee, so surface its balance.
       const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
-      const solLamports = feeAddress ? await this.helius.solBalanceLamports(feeAddress) : null;
+      let solLamports = feeAddress
+        ? await this.publicSolana.getBalanceLamports(feeAddress).catch(() => null)
+        : null;
+      if (solLamports === null && feeAddress) solLamports = await this.helius.solBalanceLamports(feeAddress);
       let solPriceUsdMicro: bigint | null = null;
       try {
         solPriceUsdMicro = (await this.priceProvider.priceOf(SOL_MINT, 9)).priceUsdMicro;
@@ -688,7 +982,11 @@ export class Runtime {
       const ledger = this.feeLedger.snapshot();
       this.builder.setFeeLedger({ totals: ledger.totals, tx: ledger.tx, solUsdMicro: solPriceUsdMicro });
       // USDC wallet balance: the withdrawable-cap cross-check for the OPS card.
-      const usdcBase = feeAddress ? await this.helius.tokenBalanceBase(USDC_MINT, feeAddress) : null;
+      let usdcBase = feeAddress
+        ? await this.publicSolana.tokenBalanceBase(USDC_MINT, feeAddress).catch(() => null)
+        : null;
+      if (usdcBase === null && feeAddress)
+        usdcBase = await this.helius.tokenBalanceBase(USDC_MINT, feeAddress);
       this.builder.setWalletUsdc(usdcBase);
       // Symbols can appear later (a token gains metadata after launch), so keep
       // retrying the ones still missing on the health cadence.
@@ -772,6 +1070,8 @@ export class Runtime {
           outputMint: USDC_MINT,
           amount: p.remainingTokenBase,
           slippageBps: 1000,
+          taker:
+            walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE) ?? JUPITER_FALLBACK_TAKER,
         });
         this.builder.setMark(p.positionId, BigInt(quote.outAmount), Date.now());
       } catch {
@@ -919,6 +1219,24 @@ export class Runtime {
 
   heliusRpcUrl(): string {
     return `https://mainnet.helius-rpc.com/?api-key=${this.config.env.HELIUS_API_KEY}`;
+  }
+
+  /** Sender, then a governor-metered staked send, then the public RPC. */
+  liveSubmit() {
+    return (args: { signedBase64: string; trySender: boolean; path: 'exit' | 'wallet' }) =>
+      sendSignedTransaction({
+        signedBase64: args.signedBase64,
+        trySender: args.trySender,
+        heliusRpcUrl: this.heliusRpcUrl(),
+        publicRpcUrl: this.config.env.PUBLIC_SOLANA_RPC_URL,
+        apiKey: this.config.env.HELIUS_API_KEY,
+        allowStaked: () =>
+          this.creditGovernor.spend({
+            path: args.path,
+            method: 'sendTransaction',
+            atMs: Date.now(),
+          }).ok,
+      });
   }
 
   /**

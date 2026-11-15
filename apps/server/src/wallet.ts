@@ -72,8 +72,12 @@ export function generateWalletFile(
   return { publicKey, file: path };
 }
 
-export function loadWalletSecret(dataDir: string, encryptionSecret: string): Uint8Array {
-  const path = join(dataDir, 'wallet', 'zcode-bot-wallet.json');
+export function walletFilePath(dataDir: string, walletFile?: string): string {
+  const explicit = walletFile?.trim();
+  return explicit ? explicit : join(dataDir, 'wallet', 'zcode-bot-wallet.json');
+}
+
+export function loadWalletSecretFromFile(path: string, encryptionSecret: string): Uint8Array {
   if (!existsSync(path)) throw new Error('no wallet file; run `pnpm wallet:create` first');
   const file = JSON.parse(readFileSync(path, 'utf8')) as EncryptedWalletFile;
   const key = scryptSync(encryptionSecret, b64.decode(file.salt), 32, { N: 16384, r: 8, p: 1 });
@@ -91,12 +95,16 @@ export function loadWalletSecret(dataDir: string, encryptionSecret: string): Uin
   }
 }
 
-export function walletExists(dataDir: string): boolean {
-  return existsSync(join(dataDir, 'wallet', 'zcode-bot-wallet.json'));
+export function loadWalletSecret(dataDir: string, encryptionSecret: string, walletFile?: string): Uint8Array {
+  return loadWalletSecretFromFile(walletFilePath(dataDir, walletFile), encryptionSecret);
 }
 
-export function walletPublicKey(dataDir: string): string | null {
-  const path = join(dataDir, 'wallet', 'zcode-bot-wallet.json');
+export function walletExists(dataDir: string, walletFile?: string): boolean {
+  return existsSync(walletFilePath(dataDir, walletFile));
+}
+
+export function walletPublicKey(dataDir: string, walletFile?: string): string | null {
+  const path = walletFilePath(dataDir, walletFile);
   if (!existsSync(path)) return null;
   const file = JSON.parse(readFileSync(path, 'utf8')) as EncryptedWalletFile;
   return file.publicKey;

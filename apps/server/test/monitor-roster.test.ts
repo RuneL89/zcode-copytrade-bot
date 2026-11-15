@@ -91,19 +91,18 @@ function harness(): Harness {
       lastTransactionIndex: 0,
       lastBlockTime: null,
     }),
-    transactionsSince: async (address: string) => {
+    signaturesSince: async (address: string) => {
       if (failFor.has(address)) throw new Error(`provider down for ${address}`);
       return [
         {
           signature: `sig_${address}`,
           slot: 1,
-          transactionIndex: 0,
           blockTime: Math.floor(Date.now() / 1000),
           err: false,
-          raw: txFor(address, `sig_${address}`, 40_000_000n),
         },
       ];
     },
+    transactionSummary: async (address: string, signature: string) => txFor(address, signature, 40_000_000n),
   } as unknown as Parameters<(typeof LeaderMonitor.prototype)['constructor']>[1];
 
   const monitor = new LeaderMonitor(
@@ -189,6 +188,54 @@ afterAll(() => {
 });
 
 describe('roster monitor (AC8/AC9)', () => {
+  it('does not fetch a signature the 300s poll already knows is outside the copy window', async () => {
+    reset();
+    seedChair('stalebuy');
+    let fetched = 0;
+    const helius = {
+      latestCursor: async () => ({
+        lastSignature: 'tip',
+        lastSlot: 1,
+        lastTransactionIndex: 0,
+        lastBlockTime: Math.floor(Date.now() / 1000),
+      }),
+      signaturesSince: async () => [
+        {
+          signature: 'old-buy',
+          slot: 2,
+          blockTime: Math.floor(Date.now() / 1000) - 300,
+          err: false,
+        },
+      ],
+      transactionSummary: async () => {
+        fetched++;
+        return null;
+      },
+    };
+    const monitor = new LeaderMonitor(
+      handle.db,
+      helius as never,
+      { handleLeaderTx: async () => undefined, closePosition: async () => 'closed' } as never,
+      risk,
+      { fire: async () => ({ status: 'NO_REPLACEMENT', skipped: [] }) } as never,
+      () => undefined,
+      300_000,
+      () => null,
+    );
+    await monitor.tick();
+    repo.setCursor(handle.db, {
+      address: 'MonWalletstalebuy',
+      chain: 'solana',
+      activationId: repo.listActiveActivations(handle.db)[0]!.activationId,
+      lastSignature: 'tip',
+      lastSlot: 1,
+      lastTransactionIndex: 0,
+      lastBlockTime: Math.floor(Date.now() / 1000) - 400,
+    });
+    await monitor.tick();
+    expect(fetched).toBe(0);
+  });
+
   it('polls every chair in one tick', async () => {
     reset();
     const a1 = seedChair('alpha');

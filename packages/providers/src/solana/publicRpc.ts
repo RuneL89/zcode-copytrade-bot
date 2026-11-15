@@ -27,6 +27,13 @@ import { HeliusProvider, signatureOf, type FetchedLeaderTx } from './helius.js';
  */
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Highest transaction version the public node should return. `0` rejects
+ * version 1, which current Jupiter swaps use, and the node answers
+ * "Transaction version (1) is not supported". 255 is what this client used
+ * before that regression and what the public node accepts.
+ */
+const MAX_TX_VERSION = 255;
 const DEFAULT_MAX_TX_SCANS = 100;
 const DEFAULT_MAX_PRICE_MINTS = 5;
 const PAGE_SLEEP_MS = 300;
@@ -100,11 +107,43 @@ export class PublicSolanaProvider {
     return this.endpoint.trim().length > 0;
   }
 
+  /** Native SOL balance. Null on any failure so the caller can try a paid fallback. */
+  async getBalanceLamports(address: string): Promise<number | null> {
+    try {
+      const result = await this.rpc<{ value: number }>('getBalance', [address]);
+      return typeof result?.value === 'number' ? result.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Sum of token accounts for one mint. Null on failure. */
+  async tokenBalanceBase(mint: string, owner: string): Promise<bigint | null> {
+    try {
+      const result = await this.rpc<{
+        value: Array<{ account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }>;
+      }>('getTokenAccountsByOwner', [owner, { mint }, { encoding: 'jsonParsed' }]);
+      let total = 0n;
+      for (const account of result?.value ?? []) {
+        total += BigInt(account.account.data.parsed.info.tokenAmount.amount);
+      }
+      return total;
+    } catch {
+      return null;
+    }
+  }
+
   /** JSON-RPC with a hard per-request timeout and bounded retry on transient failures. */
-  private async rpc<T>(method: string, params: unknown): Promise<T> {
+  private async rpc<T>(
+    method: string,
+    params: unknown,
+    opts?: { timeoutMs?: number; attempts?: number },
+  ): Promise<T> {
     if (!this.configured) throw new Error('public-solana: endpoint not configured');
+    const timeoutMs = opts?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    const attempts = opts?.attempts ?? this.maxAttempts;
     let lastError: Error = new Error('public-solana: request failed');
-    for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) await sleep(1500 * attempt);
       let res: Response;
       try {
@@ -113,7 +152,7 @@ export class PublicSolanaProvider {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: ++this.rpcId, method, params }),
           // Without this a stalled connection blocked the whole refresh forever.
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (e) {
         lastError = new Error('public-solana: ' + (e as Error).message);
@@ -175,11 +214,19 @@ export class PublicSolanaProvider {
    * One signature's detail, signer-attributed, through the free node. Null
    * when the transaction is unreadable or was not signed by the address.
    */
-  async transactionSummary(address: string, signature: string): Promise<LeaderTxSummary | null> {
-    const tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
-      signature,
-      { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
-    ]);
+  async transactionSummary(
+    address: string,
+    signature: string,
+    opts?: { timeoutMs?: number; attempts?: number },
+  ): Promise<LeaderTxSummary | null> {
+    const tx = await this.rpc<Record<string, unknown> | null>(
+      'getTransaction',
+      [
+        signature,
+        { encoding: 'jsonParsed', maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed' },
+      ],
+      opts,
+    );
     if (!tx) return null;
     const meta = tx.meta as { err?: unknown } | undefined;
     return HeliusProvider.toSignerTxSummary(address, {
@@ -216,65 +263,9 @@ export class PublicSolanaProvider {
     try {
       const cutoffSec = Math.floor(nowMs / 1000) - lookbackHours * 3600;
 
-      // Preferred path: batch transaction fetch (Helius). Deep, cheap, and it
-      // does not fight the public node's per-call rate limit.
-      if (this.txFetcher?.configured) {
-        const summaries: LeaderTxSummary[] = [];
-        const decimalsByMint = new Map<string, number>();
-        const deadline = Date.now() + (opts.fetchBudgetMs ?? DEFAULT_FETCH_BUDGET_MS);
-        let before: string | undefined;
-        let fetched = 0;
-        let failedTxs = 0;
-        for (let page = 0; page < 3 && summaries.length < maxTxScans; page++) {
-          if (Date.now() > deadline) break;
-          let rows: Awaited<ReturnType<NonNullable<typeof this.txFetcher>['recentTransactions']>>;
-          try {
-            rows = await this.txFetcher.recentTransactions(address, {
-              limit: Math.min(100, maxTxScans - summaries.length),
-              ...(before ? { before } : {}),
-            });
-          } catch {
-            failedTxs++;
-            break;
-          }
-          if (rows.length === 0) break;
-          let sawOlder = false;
-          for (const row of rows) {
-            if (row.blockTime === null || row.blockTime < cutoffSec) {
-              sawOlder = true;
-              continue;
-            }
-            fetched++;
-            const summary = HeliusProvider.toSignerTxSummary(address, row as unknown as FetchedLeaderTx);
-            if (!summary) continue;
-            summaries.push(summary);
-            const meta = (row.raw as { meta?: { preTokenBalances?: []; postTokenBalances?: [] } }).meta;
-            const collect = (
-              list: Array<{ mint: string; uiTokenAmount?: { decimals?: number } }> | undefined,
-            ) => {
-              for (const b of list ?? []) {
-                if (typeof b.uiTokenAmount?.decimals === 'number')
-                  decimalsByMint.set(b.mint, b.uiTokenAmount.decimals);
-              }
-            };
-            collect(meta?.preTokenBalances);
-            collect(meta?.postTokenBalances);
-          }
-          before = rows[rows.length - 1]!.signature;
-          if (sawOlder || rows.length < 100) break;
-        }
-        if (fetched === 0 && failedTxs > 0) return { ok: false, reason: 'transaction fetch failed' };
-        return this.sample(
-          summaries,
-          decimalsByMint,
-          opts,
-          lookbackHours,
-          maxPriceMints,
-          minTradeUsdMicro,
-          maxTxScans,
-        );
-      }
-
+      // Public signatures and getTransaction only. A Helius full-history page
+      // is not a fallback: that call is reserved for one-off vetting.
+      void this.txFetcher;
       const signatures: Array<{ signature: string; slot: number; blockTime: number }> = [];
       let before: string | undefined;
       for (let page = 0; page < 5; page++) {
@@ -329,7 +320,11 @@ export class PublicSolanaProvider {
         try {
           tx = await this.rpc<Record<string, unknown> | null>('getTransaction', [
             row.signature,
-            { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' },
+            {
+              encoding: 'jsonParsed',
+              maxSupportedTransactionVersion: MAX_TX_VERSION,
+              commitment: 'confirmed',
+            },
           ]);
         } catch {
           failedTxs++;

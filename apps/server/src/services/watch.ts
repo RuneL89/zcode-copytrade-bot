@@ -4,10 +4,13 @@ import type { RiskConfig } from '@zcode-bot/config';
 import {
   canPromote,
   canReenter,
-  ceilingAction,
+  dayTradeExitDecision,
   classifyFundedSwap,
   computeCopyNotional,
   usdToMicro,
+  MinuteCeiling,
+  signaturesAfterCursor,
+  WATCH_DETAIL_PER_MINUTE,
   type FundedSwap,
   type PromotionBlockReason,
 } from '@zcode-bot/core';
@@ -97,10 +100,17 @@ export interface WatchServiceDeps {
 const WATCH_TX_SCAN_LIMIT = 25;
 /** Candidates scanned for admission per tick (bounded spend). */
 export const ADMISSION_SCAN_PER_TICK = 3;
+/** A candidate measured inside this window is not read again on the next tick. */
+const ADMISSION_RESCAN_MS = 30 * 60_000;
+
+/** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
+class DetailDeferred extends Error {}
 /** Admission reads look back 24h (D4's window). */
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
+  private detailCeiling = new MinuteCeiling(WATCH_DETAIL_PER_MINUTE);
+
   constructor(private deps: WatchServiceDeps) {}
 
   private get db(): AppDatabase {
@@ -132,13 +142,15 @@ export class WatchService {
   private async txSummary(address: string, signature: string) {
     if (this.deps.publicSolana.configured) {
       try {
-        const summary = await this.deps.publicSolana.transactionSummary(address, signature);
-        if (summary) return summary;
+        // Null is an answer: the node read the transaction and it was not this
+        // signer, or it had nothing to classify. Paying Helius to repeat that
+        // read is what pushed a quiet day to ~12k credits.
+        return await this.deps.publicSolana.transactionSummary(address, signature);
       } catch {
-        // Fall through to Helius.
+        if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
       }
     }
-    return this.deps.helius.transactionSummary(address, signature).catch(() => null);
+    return this.deps.helius.transactionSummary(address, signature, 'watch').catch(() => null);
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -191,6 +203,11 @@ export class WatchService {
       .find((a) => a.chain === 'solana')?.address;
     if (!address) return { ok: false, reason: 'NO_WALLET' };
 
+    const already = repo.listWatchWallets(this.db, 'watching').some((row) => row.candidateId === candidateId);
+    if (!already && repo.listWatchWallets(this.db, 'watching').length >= risk.WATCH_LIST_SIZE) {
+      throw new Error(`watch list is full (${risk.WATCH_LIST_SIZE})`);
+    }
+
     repo.upsertWatchWallet(this.db, {
       candidateId,
       userId: candidate.userId,
@@ -242,7 +259,13 @@ export class WatchService {
 
     const events: FundedSwap[] = [];
     for (const row of inWindow.slice(0, WATCH_TX_SCAN_LIMIT)) {
-      const summary = await this.txSummary(address, row.signature);
+      let summary;
+      try {
+        summary = await this.txSummary(address, row.signature);
+      } catch (error) {
+        if (error instanceof DetailDeferred) break;
+        throw error;
+      }
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -418,20 +441,29 @@ export class WatchService {
         mark = null; // no quote: retry next tick, never invent a price
       }
       const entry = BigInt(lot.entryPriceUsdMicro);
-      const decision = ceilingAction({
-        openedAt: lot.openedAt,
+      const decision = dayTradeExitDecision({
+        openedAtIso: lot.openedAt,
         nowMs: Date.now(),
         maxAgeHours: this.risk.MAX_POSITION_AGE_HOURS,
         graceHours: this.risk.POSITION_GRACE_HOURS,
-        markUsdMicro: mark,
         entryUsdMicro: entry,
+        markUsdMicro: mark,
+        peakUsdMicro: mark,
+        lowSinceMaxHoldUsdMicro: null,
+        stopLossBps: this.risk.STOP_LOSS_BPS,
+        trailArmBps: this.risk.TRAIL_ARM_BPS,
+        trailDistanceBps: this.risk.TRAIL_DISTANCE_BPS,
+        partialTpBps: 0,
+        partialTaken: false,
+        graceBounceBps: this.risk.GRACE_BOUNCE_BPS,
+        sellOnGreen: this.risk.SELL_ON_GREEN,
       });
-      if (decision !== 'close_now' || mark === null) continue;
+      if (decision === 'none' || decision === 'partial_take_profit' || mark === null) continue;
       const notional = BigInt(lot.notionalUsdMicro);
       const pnl = shadowPnlUsdMicro(notional, entry, mark);
       repo.closeShadowTrade(this.db, lot.id, {
         closedAt: new Date().toISOString(),
-        exitReason: 'ceiling',
+        exitReason: decision,
         exitPriceUsdMicro: mark.toString(),
         pnlUsdMicro: pnl.toString(),
       });
@@ -466,14 +498,10 @@ export class WatchService {
 
     result.ceilingsClosed = await this.closeDueCeilings();
 
-    // Watching, benched AND hired: D4 keeps the shadow record running on the
-    // bench (and while the leader holds a chair) as the would-have-copied
-    // baseline.
-    for (const wallet of [
-      ...repo.listWatchWallets(this.db, 'watching'),
-      ...repo.listWatchWallets(this.db, 'bench'),
-      ...repo.listWatchWallets(this.db, 'hired'),
-    ]) {
+    // Watching only. Hired seats are covered by the roster stream and its
+    // safety poll, so this pass does not pay for them a second time. Bench
+    // rows keep the record they already earned; a fresh check is the hire path.
+    for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
       try {
         result.newEvents += await this.pollWallet(wallet.candidateId, wallet.address);
         result.polled++;
@@ -495,24 +523,36 @@ export class WatchService {
   private async pollWallet(candidateId: string, address: string): Promise<number> {
     const cursor = repo.getWatchCursor(this.db, address);
     const rows = await this.signaturePage(address, WATCH_TX_SCAN_LIMIT);
-    const fresh = rows.filter((r) => r.signature.length > 0 && r.signature !== cursor?.lastSignature);
+    const fresh = signaturesAfterCursor(rows, cursor?.lastSignature);
     if (fresh.length === 0) return 0;
 
     // Newest-first from the RPC; apply oldest-first so FIFO stays honest.
+    // A deferred detail stops the cursor in front of that signature so the
+    // next tick retries it instead of paying for the whole page again.
     let applied = 0;
+    let advancedTo = cursor?.lastSignature ?? '';
     for (const row of [...fresh].reverse()) {
-      const summary = await this.txSummary(address, row.signature);
+      let summary;
+      try {
+        summary = await this.txSummary(address, row.signature);
+      } catch (error) {
+        if (error instanceof DetailDeferred) break;
+        throw error;
+      }
+      advancedTo = row.signature;
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap && (await this.applyFundedSwap(candidateId, address, swap))) applied++;
     }
-    repo.setWatchCursor(this.db, {
-      address,
-      candidateId,
-      lastSignature: rows[0]!.signature,
-      lastSlot: cursor?.lastSlot ?? 0,
-      lastTransactionIndex: 0,
-    });
+    if (advancedTo && advancedTo !== cursor?.lastSignature) {
+      repo.setWatchCursor(this.db, {
+        address,
+        candidateId,
+        lastSignature: advancedTo,
+        lastSlot: cursor?.lastSlot ?? 0,
+        lastTransactionIndex: 0,
+      });
+    }
     return applied;
   }
 
@@ -539,6 +579,8 @@ export class WatchService {
     // to the back of the queue for the next tick.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
+      const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
+      if (checkedAt !== null && Date.now() - checkedAt < ADMISSION_RESCAN_MS) continue;
       const address = repo
         .listCandidateAddresses(this.db, candidate.candidateId)
         .find((a) => a.chain === 'solana')?.address;
@@ -683,6 +725,7 @@ export class WatchService {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
         promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+        cooldownHours: this.risk.COOLDOWN_HOURS,
       },
     };
   }
@@ -701,7 +744,14 @@ export class WatchService {
     for (const wallet of repo.listWatchWallets(this.db, 'cooling')) {
       const firedAt = repo.lastFiredAt(this.db, wallet.candidateId);
       const lastBuy = repo.lastFundedBuyAt(this.db, wallet.candidateId);
-      if (canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: lastBuy })) {
+      if (
+        canReenter({
+          lastFiredAt: firedAt,
+          lastFundedBuyAt: lastBuy,
+          nowMs: Date.now(),
+          cooldownHours: this.risk.COOLDOWN_HOURS,
+        })
+      ) {
         repo.setWatchStatus(this.db, wallet.candidateId, 'watching', 'funded buy observed after the firing');
         repo.audit(this.db, 'watch', 're-entry observed: funded buy after the firing', {
           candidateId: wallet.candidateId,

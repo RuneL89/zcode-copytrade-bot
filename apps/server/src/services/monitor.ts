@@ -1,16 +1,22 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
-import { HeliusProvider as HeliusStatic } from '@zcode-bot/providers';
-import { isIdleOver, timeExitDecision, ACTIVITY_FRESH_MS } from '@zcode-bot/core';
+import {
+  isIdleOver,
+  dayTradeExitDecision,
+  isEventTooOld,
+  stallDecision,
+  ACTIVITY_FRESH_MS,
+} from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import { remainingCostBasis } from './builder.js';
 import type { TraderLifecycle } from './lifecycle.js';
 import type { RiskConfig } from '@zcode-bot/config';
 
 /**
- * Leader monitor: baseline polling over the documented Helius
- * getTransactionsForAddress method. On first activation the latest confirmed
+ * Leader monitor. Each tick is signature-first: `getSignaturesForAddress`,
+ * then `getTransaction` for signatures the cursor has not seen. Full history
+ * polling is not used here. On first activation the latest confirmed
  * signature becomes the cursor — activity before activation is NEVER copied.
  * After restart, reconciliation resumes forward from the saved cursor.
  *
@@ -155,25 +161,18 @@ export class LeaderMonitor {
         });
       }
     }
-    // Day-trader discipline sweep, at most hourly PER SEAT: time exits + stall
-    // watcher. Only a plainly ACTIVE activation qualifies (FIRING/reconciliation
-    // are in progress and close their own positions).
-    if (
-      activation.state === 'ACTIVE' &&
-      now.getTime() - (this.lastSweepCheckAt.get(activation.activationId) ?? 0) >= 3600_000
-    ) {
+    // Day-trader exits run on every tick. A stuck token must not wait an hour
+    // for its stop. Only a plainly ACTIVE activation qualifies.
+    if (activation.state === 'ACTIVE') {
       this.lastSweepCheckAt.set(activation.activationId, now.getTime());
       await this.sweep(activation.activationId, now);
     }
   }
 
   /**
-   * Day-trader discipline, at most hourly: (a) force-close positions past
-   * their time window — positive PnL (excl. fees) sells at
-   * MAX_POSITION_AGE_HOURS, everything still open at MAX_POSITION_AGE_HOURS +
-   * POSITION_GRACE_HOURS sells regardless; (b) the stall watcher. The idle
-   * fire is NOT here — it runs on every tick (checkIdle) so it lands when the
-   * dashboard countdown reaches zero.
+   * Code exits on every tick: stop, trail, partial take-profit, sell-on-green,
+   * and the grace deadline. The idle fire is NOT here — it runs on every tick
+   * (checkIdle) so it lands when the dashboard countdown reaches zero.
    */
   private async sweep(activationId: string, now: Date): Promise<void> {
     const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
@@ -182,48 +181,99 @@ export class LeaderMonitor {
     for (const p of open) {
       if (p.status === 'requires_reconciliation') continue; // unknown outcome — operator resolves
       const mark = this.peekMark(p.positionId);
-      const unrealized = mark ? mark.valueUsdMicro - remainingCostBasis(p) : null;
+      const entry = remainingCostBasis(p);
+      const markValue = mark ? mark.valueUsdMicro : null;
+      const peakKey = `exit.peak:${p.positionId}`;
+      const lowKey = `exit.low:${p.positionId}`;
+      const partialKey = `exit.partial:${p.positionId}`;
       const graceKey = `timeexit.grace:${p.positionId}`;
+      const storedPeak = repo.kvGet(this.db, peakKey);
+      const storedLow = repo.kvGet(this.db, lowKey);
+      let peak = storedPeak ? BigInt(storedPeak) : null;
+      let low = storedLow ? BigInt(storedLow) : null;
+      if (markValue !== null) {
+        peak = peak === null || markValue > peak ? markValue : peak;
+        repo.kvSet(this.db, peakKey, peak.toString());
+        const pastMax = nowMs - Date.parse(p.openedAt) >= this.risk.MAX_POSITION_AGE_HOURS * 3_600_000;
+        if (pastMax) {
+          low = low === null || markValue < low ? markValue : low;
+          repo.kvSet(this.db, lowKey, low.toString());
+        }
+      }
       const graceEntered = repo.kvGet(this.db, graceKey) === '1';
-      const decision = timeExitDecision({
+      const storedPlan = repo.kvGet(this.db, `exit.plan:${p.positionId}`);
+      let plan: { stopLossBps?: number; trailDistanceBps?: number; maxHoldHours?: number } = {};
+      if (storedPlan) {
+        try {
+          plan = JSON.parse(storedPlan) as typeof plan;
+        } catch {
+          plan = {};
+        }
+      }
+      const decision = dayTradeExitDecision({
         openedAtIso: p.openedAt,
         nowMs,
-        maxAgeHours: this.risk.MAX_POSITION_AGE_HOURS,
+        maxAgeHours: plan.maxHoldHours ?? this.risk.MAX_POSITION_AGE_HOURS,
         graceHours: this.risk.POSITION_GRACE_HOURS,
-        unrealizedExclFeesUsdMicro: unrealized,
+        entryUsdMicro: entry > 0n ? entry : 1n,
+        markUsdMicro: markValue,
+        peakUsdMicro: peak,
+        lowSinceMaxHoldUsdMicro: low,
+        stopLossBps: plan.stopLossBps ?? this.risk.STOP_LOSS_BPS,
+        trailArmBps: this.risk.TRAIL_ARM_BPS,
+        trailDistanceBps: plan.trailDistanceBps ?? this.risk.TRAIL_DISTANCE_BPS,
+        partialTpBps: this.risk.PARTIAL_TP_BPS,
+        partialTaken: repo.kvGet(this.db, partialKey) === '1',
+        graceBounceBps: this.risk.GRACE_BOUNCE_BPS,
+        sellOnGreen: this.risk.SELL_ON_GREEN,
         graceEntered,
       });
       if (decision === 'none') {
-        // Crossed maxAge with non-positive PnL -> ride grace to the deadline.
-        if (!graceEntered && nowMs - Date.parse(p.openedAt) >= this.risk.MAX_POSITION_AGE_HOURS * 3_600_000) {
+        if (
+          !this.risk.SELL_ON_GREEN &&
+          !graceEntered &&
+          nowMs - Date.parse(p.openedAt) >= this.risk.MAX_POSITION_AGE_HOURS * 3_600_000
+        ) {
           repo.kvSet(this.db, graceKey, '1');
         }
         continue;
       }
       const ageH = ((nowMs - Date.parse(p.openedAt)) / 3_600_000).toFixed(1);
-      repo.audit(this.db, 'monitor', `time exit: ${p.mint} held ${ageH}h (${decision}) — closing`, {});
-      await this.engine.closePosition(p.positionId, 'time_exit').catch((e: Error) => {
-        repo.audit(this.db, 'monitor', `time exit failed: ${e.message}`, {});
-      });
-      repo.kvSet(this.db, graceKey, ''); // cleanup
+      repo.audit(this.db, 'monitor', `code exit: ${p.mint} held ${ageH}h (${decision})`, {});
+      if (decision === 'partial_take_profit') {
+        const result = await this.engine
+          .closeShare(p.positionId, 5_000, 'partial_take_profit')
+          .catch((e: Error) => {
+            repo.audit(this.db, 'monitor', `partial exit failed: ${e.message}`, {});
+            return 'failed' as const;
+          });
+        if (result === 'partial' || result === 'closed') repo.kvSet(this.db, partialKey, '1');
+      } else {
+        await this.engine.closePosition(p.positionId, 'time_exit').catch((e: Error) => {
+          repo.audit(this.db, 'monitor', `code exit failed: ${e.message}`, {});
+        });
+        repo.kvSet(this.db, graceKey, '');
+      }
       this.onStateChange();
     }
 
-    // Stall watcher: a hired leader whose wallet goes silent for
-    // LEADER_STALL_FIRE_HOURS while we hold is fired and replaced — regardless
-    // of open-position winners. Judged only on fresh evidence: if the last
-    // Helius check itself is stale, we do not know the leader stalled.
+    // Stall watcher. The clock is the newer of the shadow funded buy (what
+    // promotion used) and a fresh activity sample. A seat younger than the
+    // stall window is in its hire grace and is not fired on pre-hire history.
     const activation = repo.getActivation(this.db, activationId);
     const candidate = activation ? repo.getCandidate(this.db, activation.candidateId) : null;
-    if (
-      candidate?.activityCheckedAt &&
-      candidate.lastSwapAt &&
-      nowMs - Date.parse(candidate.activityCheckedAt) <= ACTIVITY_FRESH_MS
-    ) {
-      const silentMs = nowMs - Date.parse(candidate.lastSwapAt);
-      const fireMs = this.risk.LEADER_STALL_FIRE_HOURS * 3_600_000;
-      if (silentMs > fireMs) {
-        const hours = (silentMs / 3_600_000).toFixed(1);
+    if (activation && candidate) {
+      const decision = stallDecision({
+        nowMs,
+        startedAtIso: activation.startedAt,
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidate.candidateId),
+        lastSwapAt: candidate.lastSwapAt,
+        activityCheckedAt: candidate.activityCheckedAt,
+        activityFreshMs: ACTIVITY_FRESH_MS,
+        stallHours: this.risk.LEADER_STALL_FIRE_HOURS,
+      });
+      if (decision.fire) {
+        const hours = (decision.silentHours ?? 0).toFixed(1);
         repo.audit(this.db, 'monitor', `stall watcher: leader wallet silent ${hours}h — firing`, {
           activationId,
           candidateId: candidate.candidateId,
@@ -301,31 +351,32 @@ export class LeaderMonitor {
       return;
     }
 
-    const txs = await this.helius.transactionsSince(
-      address,
-      {
-        lastSignature: cursor.lastSignature,
-        lastSlot: cursor.lastSlot,
-        lastTransactionIndex: cursor.lastTransactionIndex,
-        lastBlockTime: cursor.lastBlockTime,
-      },
-      25,
-    );
+    const sigs = await this.helius.signaturesSince(address, {
+      lastSignature: cursor.lastSignature,
+      lastSlot: cursor.lastSlot,
+      lastTransactionIndex: cursor.lastTransactionIndex,
+      lastBlockTime: cursor.lastBlockTime,
+    });
 
-    for (const tx of txs) {
-      const summary = HeliusStatic.toLeaderTxSummary(address, tx);
-      await this.engine.handleLeaderTx(activationId, candidateId, summary);
+    for (const sig of sigs) {
+      if (sig.err) continue;
+      // The 5-minute safety poll is a backstop. A buy already outside the copy
+      // window is not fetched: that getTransaction cannot become a fill, and
+      // the push path is what copies a buy while it is still fresh.
+      if (isEventTooOld(sig.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) continue;
+      const summary = await this.helius.transactionSummary(address, sig.signature);
+      if (summary) await this.engine.handleLeaderTx(activationId, candidateId, summary);
     }
 
-    if (txs.length > 0) {
-      const newest = txs[txs.length - 1]!;
+    if (sigs.length > 0) {
+      const newest = sigs[sigs.length - 1]!;
       repo.setCursor(this.db, {
         address,
         chain: 'solana',
         activationId,
         lastSignature: newest.signature,
         lastSlot: newest.slot,
-        lastTransactionIndex: newest.transactionIndex,
+        lastTransactionIndex: 0,
         lastBlockTime: newest.blockTime,
       });
     }

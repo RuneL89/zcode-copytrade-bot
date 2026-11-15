@@ -20,6 +20,11 @@ export interface PromotionConfig {
   promotionMinNetUsdMicro: bigint;
   /** The operator's tighter recency rule: the last funded buy must be within this. */
   promotionMaxLastBuyHours: number;
+  /**
+   * Minimum hours after a firing before a new funded buy can requalify the
+   * wallet. Omitted or 0 keeps the older "buy after the fire is enough" rule.
+   */
+  cooldownHours?: number;
 }
 
 export interface PromotionInput {
@@ -54,22 +59,113 @@ export function canPromote(input: PromotionInput): PromotionDecision {
   if (lastBuyMs === null || !Number.isFinite(lastBuyMs) || input.nowMs - lastBuyMs > recencyMs) {
     return { ok: false, reason: 'LAST_BUY_TOO_OLD' };
   }
-  if (!canReenter({ lastFiredAt: input.lastFiredAt, lastFundedBuyAt: input.lastFundedBuyAt })) {
+  if (
+    !canReenter({
+      lastFiredAt: input.lastFiredAt,
+      lastFundedBuyAt: input.lastFundedBuyAt,
+      nowMs: input.nowMs,
+      cooldownHours: input.config.cooldownHours,
+    })
+  ) {
     return { ok: false, reason: 'REENTRY_BANNED' };
   }
   return { ok: true, reason: null };
 }
 
 /**
- * D4 re-entry: a fired trader may only return once a funded buy was observed
- * after the fire. There is no timed cooldown. Both timestamps are local
- * (`firing_events.fired_at` and `watch_events.observed_at`), so comparing them
- * as strings needs no clock-skew handling.
+ * Re-entry: a fired trader needs a funded buy observed after the fire, and,
+ * when `cooldownHours` is set, that buy is not enough until the cooldown has
+ * elapsed. Timestamps are local ISO strings.
  */
-export function canReenter(input: { lastFiredAt: string | null; lastFundedBuyAt: string | null }): boolean {
+export function canReenter(input: {
+  lastFiredAt: string | null;
+  lastFundedBuyAt: string | null;
+  nowMs?: number;
+  cooldownHours?: number;
+}): boolean {
   if (input.lastFiredAt === null) return true;
   if (input.lastFundedBuyAt === null) return false;
-  return input.lastFundedBuyAt > input.lastFiredAt;
+  if (input.lastFundedBuyAt <= input.lastFiredAt) return false;
+  const cooldownMs = (input.cooldownHours ?? 0) * 3_600_000;
+  if (cooldownMs > 0) {
+    const firedMs = Date.parse(input.lastFiredAt);
+    if (!Number.isFinite(firedMs) || input.nowMs === undefined) return false;
+    if (input.nowMs - firedMs < cooldownMs) return false;
+  }
+  return true;
+}
+
+/**
+ * Fired at least `limit` times inside the window (the firing just recorded
+ * counts). Those wallets are archived instead of returning to the bench.
+ */
+/**
+ * Newest usable activity stamp. Promotion hires on the shadow ledger's last
+ * funded buy; the activity sample's last trade can be hours older when that
+ * sample missed the buy. The stall watcher uses this same later stamp.
+ */
+export function latestActivityMs(stamps: Array<string | null | undefined>): number | null {
+  let best: number | null = null;
+  for (const stamp of stamps) {
+    if (!stamp) continue;
+    const ms = Date.parse(stamp);
+    if (!Number.isFinite(ms)) continue;
+    if (best === null || ms > best) best = ms;
+  }
+  return best;
+}
+
+export interface StallInput {
+  nowMs: number;
+  startedAtIso: string;
+  /** Shadow-ledger funded buy. This is the promotion clock. */
+  lastFundedBuyAt: string | null;
+  /** Activity-sample last copyable trade. */
+  lastSwapAt: string | null;
+  activityCheckedAt: string | null;
+  activityFreshMs: number;
+  stallHours: number;
+}
+
+/**
+ * Fire only after the seat has been held for a full stall window, and only
+ * when the shared activity stamp (the newer of the funded buy and the
+ * activity sample) is older than that window. A sample that is itself stale
+ * is ignored, so an old `lastSwapAt` cannot outvote a fresh funded buy.
+ */
+export function stallDecision(input: StallInput): { fire: boolean; silentHours: number | null } {
+  const startedMs = Date.parse(input.startedAtIso);
+  const stallMs = input.stallHours * 3_600_000;
+  if (!Number.isFinite(startedMs) || input.nowMs - startedMs < stallMs) {
+    return { fire: false, silentHours: null };
+  }
+  const fundedMs = input.lastFundedBuyAt ? Date.parse(input.lastFundedBuyAt) : NaN;
+  const sampledMs = input.lastSwapAt ? Date.parse(input.lastSwapAt) : NaN;
+  const fundedOk = Number.isFinite(fundedMs);
+  const sampledOk = Number.isFinite(sampledMs);
+  const checkedMs = input.activityCheckedAt ? Date.parse(input.activityCheckedAt) : NaN;
+  const sampleFresh = Number.isFinite(checkedMs) && input.nowMs - checkedMs <= input.activityFreshMs;
+  let activityMs: number | null = null;
+  if (fundedOk && sampledOk && sampleFresh) activityMs = Math.max(fundedMs, sampledMs);
+  else if (fundedOk) activityMs = fundedMs;
+  else if (sampledOk && sampleFresh) activityMs = sampledMs;
+  if (activityMs === null) return { fire: false, silentHours: null };
+  const silentHours = (input.nowMs - activityMs) / 3_600_000;
+  return { fire: input.nowMs - activityMs > stallMs, silentHours };
+}
+
+export function isRepeatOffender(
+  firedAtMs: readonly number[],
+  nowMs: number,
+  windowDays = 7,
+  limit = 2,
+): boolean {
+  const cutoff = nowMs - windowDays * 86_400_000;
+  let count = 0;
+  for (const firedAt of firedAtMs) {
+    if (firedAt >= cutoff && firedAt <= nowMs) count++;
+  }
+  return count >= limit;
 }
 
 export type CeilingDecision = 'none' | 'close_now' | 'close_at_grace';

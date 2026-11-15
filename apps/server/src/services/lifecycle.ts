@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
-import { canPromote, usdToMicro } from '@zcode-bot/core';
+import { canPromote, isRepeatOffender, usdToMicro } from '@zcode-bot/core';
 import type { CopyEngine } from './engine.js';
 import type { HeliusProvider } from '@zcode-bot/providers';
 
@@ -102,6 +102,49 @@ export type HandoffOutcome =
 
 export class TraderLifecycle {
   private helius: HeliusProvider | null = null;
+  /** `agent` leaves a freed seat empty until POST /api/agent/hire-decisions. */
+  hireApproval: 'auto' | 'agent' = 'auto';
+  /** Outbound notice when a seat is left empty. Must not throw into the fire. */
+  onSeatOpen: ((event: { activationId: string; candidateId: string; reason: string }) => void) | null = null;
+
+  private async fillOrWait(holdEmpty = false): Promise<{ hired: string[]; reason: string }> {
+    // Qualified watchers join the bench before anyone is hired, so a fire can
+    // refill from the watching pool. Agent mode still leaves the seat empty.
+    this.promoteQualifiedWatchers();
+    if (holdEmpty) return { hired: [], reason: 'seat held empty' };
+    if (this.hireApproval === 'agent') return { hired: [], reason: 'waiting for agent hire decision' };
+    return this.fillRoster();
+  }
+
+  /** Move a watching wallet onto the bench when it already passes promotion. */
+  private promoteQualifiedWatchers(): void {
+    const promotionConfig = {
+      promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
+      promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
+      promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+      cooldownHours: this.risk.COOLDOWN_HOURS,
+    };
+    for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
+      const decision = canPromote({
+        aggregates: repo.shadowAggregates(this.db, wallet.candidateId),
+        lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
+        lastFiredAt: repo.lastFiredAt(this.db, wallet.candidateId),
+        nowMs: Date.now(),
+        config: promotionConfig,
+      });
+      if (!decision.ok) continue;
+      repo.setWatchStatus(this.db, wallet.candidateId, 'bench', 'bench: record passes');
+    }
+  }
+
+  private notifySeat(activationId: string, candidateId: string, reason: string, hired: string[]): void {
+    if (hired.length > 0 || !this.onSeatOpen) return;
+    try {
+      this.onSeatOpen({ activationId, candidateId, reason });
+    } catch {
+      // Delivery is best-effort. The seat stays empty either way.
+    }
+  }
 
   constructor(
     private db: AppDatabase,
@@ -255,6 +298,7 @@ export class TraderLifecycle {
       promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
       promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
       promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+      cooldownHours: this.risk.COOLDOWN_HOURS,
     };
     /** A bench row is only a candidate while its record still passes the gates. */
     const recordOk = (candidateId: string): boolean =>
@@ -269,6 +313,7 @@ export class TraderLifecycle {
     // candidates for a free chair, and a bench wallet is only hired while its
     // record still qualifies (a fired wallet is re-entry banned until a
     // post-fire buy, a stale record is not a hire).
+    this.promoteQualifiedWatchers();
     const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
     const ranked = repo
       .listWatchWallets(this.db, 'bench')
@@ -305,7 +350,7 @@ export class TraderLifecycle {
   async fire(
     activationId: string,
     reason: string,
-    opts: { requireFlat?: boolean } = {},
+    opts: { requireFlat?: boolean; holdEmpty?: boolean } = {},
   ): Promise<HandoffOutcome> {
     const activation = repo.getActivation(this.db, activationId);
     if (!activation || activation.state === 'FIRED') {
@@ -402,15 +447,40 @@ export class TraderLifecycle {
     // and may only return after a funded buy observed after this firing (D4
     // canReenter). Without this the very fill below could re-hire him.
     if (repo.getWatchWallet(this.db, activation.candidateId)) {
-      repo.setWatchStatus(this.db, activation.candidateId, 'cooling', `fired: ${reason}`);
-      repo.audit(this.db, 'watch', `watch cooling: fired (${reason})`, {
-        candidateId: activation.candidateId,
-      });
+      const windowMs = this.risk.REPEAT_FIRE_WINDOW_DAYS * 86_400_000;
+      const since = new Date(Date.now() - windowMs).toISOString();
+      const firedAt = repo
+        .listFiringEventsSince(this.db, since)
+        .filter((row) => row.candidateId === activation.candidateId)
+        .map((row) => Date.parse(row.firedAt));
+      const repeat = isRepeatOffender(
+        firedAt,
+        Date.now(),
+        this.risk.REPEAT_FIRE_WINDOW_DAYS,
+        this.risk.REPEAT_FIRE_LIMIT,
+      );
+      repo.setWatchStatus(
+        this.db,
+        activation.candidateId,
+        repeat ? 'archived' : 'cooling',
+        repeat
+          ? `fired ${firedAt.length} times within ${this.risk.REPEAT_FIRE_WINDOW_DAYS}d`
+          : `fired: ${reason}`,
+      );
+      repo.audit(
+        this.db,
+        'watch',
+        repeat ? 'watch archived: repeat firing' : `watch cooling: fired (${reason})`,
+        {
+          candidateId: activation.candidateId,
+        },
+      );
     }
 
-    // A fire frees exactly one chair; the bench fills it immediately (plan 05).
-    // The research replacement path is retired with D6.
-    const filled = await this.fillRoster();
+    // A fire frees exactly one chair. Auto mode fills it from the bench.
+    // Agent mode, and an overrule, leave it empty and post the opening.
+    const filled = await this.fillOrWait(opts.holdEmpty === true);
+    this.notifySeat(activationId, activation.candidateId, reason, filled.hired);
     const outcome: HandoffOutcome =
       filled.hired.length > 0
         ? { status: 'ACTIVATED', candidateId: filled.hired[0]!, source: 'watch_promotion' }
@@ -563,7 +633,8 @@ export class TraderLifecycle {
       activationId,
     });
 
-    const filled = await this.fillRoster();
+    const filled = await this.fillOrWait();
+    this.notifySeat(activationId, activation.candidateId, 'reconciliation complete', filled.hired);
     const outcome: HandoffOutcome =
       filled.hired.length > 0
         ? { status: 'ACTIVATED', candidateId: filled.hired[0]!, source: 'watch_promotion' }

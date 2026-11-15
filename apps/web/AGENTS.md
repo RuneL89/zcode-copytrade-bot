@@ -75,6 +75,11 @@ status drawer, tabbed Operations and Settings consoles, and auth screens.
 - New screens: add a route in `App.tsx`, a page in `src/pages/`, and reuse
   `src/components/` primitives before adding new ones. Internal sections use
   `PageTabs`/`TabPanel`.
+- `#/desk` is the assembly-line screen: SOL balance is the headline, then USDC
+  available and unrealised P&L, a funnel of server stage counts, five seats
+  with per-trader trades, the credit meter (`GET /api/credits`), and a risk
+  form that reviews a change and sends `RISK_PIN` when the server requires it.
+  The Trade screen stays the default.
 - Keep types in `src/types.ts` in lockstep with the server's `state.ts`
   payload. A contract change is one change across both apps.
 - `RosterPanel.tsx` renders the five-seat grid (one `RosterSeat` per chair from
