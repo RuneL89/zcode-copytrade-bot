@@ -14,7 +14,8 @@ leaderboard/profile data out of the operator's desktop Chrome.
   contract is gone with D6; admission is the deterministic D3/D4 path.
 - `RUNBOOK.md` — everyday startup, pause/resume, emergencies, restart recovery,
   reconciliation, live arming, backups, troubleshooting, provider plan
-  decisions, and the read-only counterfactual parameter sweep.
+  decisions, the read-only counterfactual parameter sweep, and the weekly
+  performance review.
 - `GETTING_STARTED.md` — the short "what do I do now" onboarding.
 - `GROK-BOT.md` — the operator-facing account of Copytrader's role: the
   30-minute health and credit watch, hire review, tighten-only exits, the
@@ -25,6 +26,10 @@ leaderboard/profile data out of the operator's desktop Chrome.
   dashboard redesign (Line, Seats, Credits, Risk, the PIN prompt, the seat/watch
   drawers and the fire modal). Regenerate from a paper-mode dev server after a
   UI change; these are review artifacts, not runtime data.
+- `samples/weekly-review-sample.md` (and `.json`) — a sample weekly performance
+  review generated from a read-only copy of the live DB. It demonstrates the
+  empty/partial-data wording; regenerate it with `src/cli/weekly-review.ts` and
+  never treat it as live performance evidence.
 
 ## Local Contracts
 

@@ -31,9 +31,10 @@ export function openDatabase(dataDir: string, filename = 'zcode-bot.db'): DbHand
 }
 
 /**
- * Open an existing SQLite file read-only. Used by replay/report tools that must
- * not write trading state: the connection itself refuses writes and the caller
- * never migrates or seeds. The file must exist; there is no create fallback.
+ * Open an existing SQLite file read-only. Used by report generators, replay
+ * and audit tools that must never write trading state: the connection itself
+ * refuses writes, and the caller never migrates or seeds. The file must exist;
+ * there is no create fallback.
  */
 export function openReadOnlyDatabase(filename: string): DbHandle {
   if (!existsSync(filename)) {

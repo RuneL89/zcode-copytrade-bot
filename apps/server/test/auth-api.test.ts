@@ -118,6 +118,18 @@ describe('auth + CSRF + control API', () => {
     expect(row?.reason).toBe('ACTIVITY_STALE');
   });
 
+  it('serves the read-only weekly review with a session and refuses without one', async () => {
+    expect((await app.request('/api/reports/weekly')).status).toBe(401);
+    const res = await app.request('/api/reports/weekly?week=2026-W46', {
+      headers: { cookie: `zcode_session=${cookies['zcode_session']}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { week: string; report: unknown; markdown: string };
+    expect(body.week).toBe('2026-W46');
+    expect(body.markdown).toContain('# Copydesk weekly review');
+    expect(body.markdown).toContain('No closed paper positions');
+  });
+
   it('blocks mutations without CSRF and accepts them with it', async () => {
     const cookie = `zcode_session=${cookies['zcode_session']}; zcode_csrf=${csrf}`;
     const noCsrf = await app.request('/api/control/pause', {

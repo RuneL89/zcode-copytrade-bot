@@ -12,7 +12,8 @@ editor, the seat drawer, the demo banner and the security invariants.
 - Specs: `dashboard.spec.ts` (setup, tabs/routes, risk editor + PIN, CSRF/auth),
   `desk.spec.ts` (phone layout and four tabs), `mobile.spec.ts` (375 px fit),
   `pipeline.spec.ts` (Line structure, seat drawer, pause/resume, demo banner),
-  `pipeline-screens.spec.ts` (review captures at 390/1280).
+  `pipeline-screens.spec.ts` (review captures at 390/1280), `weekly.spec.ts`
+  (the read-only weekly report page and the Audit link).
 - Harness: `playwright.config.ts`, `global-setup.ts`, `helpers.ts`, `paths.ts`.
 
 ## Local Contracts

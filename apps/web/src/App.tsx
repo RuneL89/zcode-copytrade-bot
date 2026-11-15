@@ -5,10 +5,11 @@ import { LoginScreen, SetupScreen } from './pages/Auth';
 import { AuditPage } from './pages/Audit';
 import { OperationsPage } from './pages/Operations';
 import { SettingsPage } from './pages/Settings';
+import { WeeklyReviewPage } from './pages/WeeklyReview';
 import { Redesign } from './redesign/Redesign';
 import type { RedesignRoute } from './redesign/Header';
 
-type Route = RedesignRoute | 'ops' | 'audit' | 'legacy-settings';
+type Route = RedesignRoute | 'ops' | 'audit' | 'legacy-settings' | 'weekly';
 
 export function App() {
   const [authState, setAuthState] = useState<'checking' | 'needsSetup' | 'loggedOut' | 'loggedIn'>(
@@ -98,6 +99,19 @@ export function App() {
       </div>
     );
   }
+  if (route === 'weekly') {
+    // Read-only operator report. It keeps the legacy page shell like Audit and
+    // Ops, is reached from the audit log, and returns there.
+    return (
+      <div className="relative min-h-[100svh] w-full max-w-[1080px] mx-auto px-4">
+        <div className="aurora" aria-hidden="true">
+          <div className="blob-cyan" />
+          <div className="blob-violet" />
+        </div>
+        <WeeklyReviewPage onBack={() => go('audit')} />
+      </div>
+    );
+  }
 
   if (!state) {
     return (
@@ -139,6 +153,7 @@ function parseRoute(): Route {
   if (raw === 'risk' || raw === 'settings') return 'risk';
   if (raw === 'ops') return 'ops';
   if (raw === 'audit') return 'audit';
+  if (raw === 'weekly') return 'weekly';
   if (raw === 'legacy-settings' || raw === 'keys') return 'legacy-settings';
   // Legacy #/dashboard and the empty hash both land on the funnel.
   return 'line';

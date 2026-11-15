@@ -69,6 +69,7 @@ pnpm start                  # production start (serves web/dist + API + worker)
 pnpm wallet:create          # generate + encrypt the dedicated Solana wallet
 pnpm user:token             # reprint the one-time setup token
 pnpm sweep                  # read-only counterfactual parameter sweep (DB copy)
+pnpm weekly-review          # read-only weekly report (last completed ISO week)
 pnpm e2e                    # Playwright browser tests (chromium)
 pnpm e2e:install            # playwright install chromium
 ```

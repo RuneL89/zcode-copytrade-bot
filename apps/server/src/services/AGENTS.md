@@ -26,6 +26,7 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | `readiness.ts`         | The live-readiness checklist.                                                                                                                                                                                                                                   |
 | `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                                                                       |
 | `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                       |
+| `weeklyReview.ts`      | Read-only weekly "promised vs actual" report: DB queries, gap attribution, exit groups, hiring-rule/fired-trader checks, markdown/JSON, and the Monday 08:00 scheduler. Never writes trading state or calls providers.                                          |
 | `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`.                                                      |
 | `withdraw.ts`          | Wallet withdrawal flow and its guards.                                                                                                                                                                                                                          |
 | `paramSweep.ts`        | Read-only counterfactual replay: maps a DB copy to signals/hire windows, runs the real sizing/risk/exit/promotion rules with alternate parameters, splits train/test, and renders Markdown/JSON. Never applies a parameter.                                     |
@@ -33,7 +34,8 @@ the whole set is constructed and scheduled by `runtime.ts`.
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
-(health, fee ledger, activity refresh, reports, the Telegram command poll).
+(health, fee ledger, activity refresh, Telegram reports, the weekly review
+Monday 08:00, the Telegram command poll).
 Discovery is demand-driven, not scheduled. Dawn and the native board capture are
 manual fallbacks only.
 `engine.ts` is called, it does not schedule itself.
