@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findRepoRoot, resolveDataDir } from '../src/paths.js';
 
 /**
@@ -11,13 +12,17 @@ import { findRepoRoot, resolveDataDir } from '../src/paths.js';
  */
 describe('workspace path resolution', () => {
   const root = findRepoRoot(import.meta.url);
+  // This test file lives at <root>/packages/config/test, whatever the
+  // checkout folder happens to be called.
+  const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
   it('finds the workspace root from a nested package file', () => {
     expect(existsSync(join(root, 'pnpm-workspace.yaml'))).toBe(true);
     expect(existsSync(join(root, 'apps', 'server'))).toBe(true);
     expect(existsSync(join(root, 'packages', 'db', 'drizzle'))).toBe(true);
-    // The root is the repo itself, never a nested package folder.
-    expect(root.endsWith(sep + 'zcode-copytrade-bot')).toBe(true);
+    // The root is the repo itself, never a nested package folder: the package
+    // must sit at packages/config directly under it.
+    expect(relative(root, packageDir)).toBe(join('packages', 'config'));
   });
 
   it('anchors a relative data dir at the workspace root, not the cwd', () => {
