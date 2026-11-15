@@ -125,7 +125,8 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Integration tests cover the engine lifecycle, firing + roster refill, the
   discovery inlet, the watch list/shadow ledger, auth/CSRF (`apps/server/test`).
 - Browser tests (`pnpm e2e`) run against the built app served by the server in
-  demo mode — the roster, watch-list and settings surfaces.
+  demo mode — the Line/funnel and arena, the Seats, Credits and Risk surfaces,
+  and the PIN-gated risk editor.
 - Provider tests use fixtures/mocks; none require or use a real key, wallet
   secret, or submit a transaction.
 - If a test fails, fix the code or the test's expectation — never delete or
