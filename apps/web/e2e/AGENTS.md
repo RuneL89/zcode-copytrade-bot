@@ -8,7 +8,8 @@ through Playwright and assert what a phone/desktop operator would see.
 ## Ownership
 
 - Specs: `dashboard.spec.ts`, `mobile.spec.ts`, `pipeline.spec.ts` (the plan-07
-  spine: order, counts vs the API payload, themes, reduced motion, states).
+  spine: order, counts vs the API payload, themes, reduced motion, states),
+  `weekly.spec.ts` (the read-only weekly report page and the Audit link).
 - Harness: `playwright.config.ts` (repo root of the app), `global-setup.ts`,
   `helpers.ts`, `paths.ts`.
 

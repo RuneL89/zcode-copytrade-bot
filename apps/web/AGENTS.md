@@ -7,7 +7,8 @@ equity hero, the **pipeline spine** (Discovery → Pool → Watch → Roster →
 Exits with the Fired → Watch return lane), the five-seat roster grid where each
 seat expands to its open positions, the working area with the watch rail (watch
 list / activity / audit tabs), secondary detail (closes chart, candidates),
-status drawer, tabbed Operations and Settings consoles, and auth screens.
+status drawer, tabbed Operations and Settings consoles, the read-only weekly
+performance-review viewer, and auth screens.
 
 ## Ownership
 
@@ -16,7 +17,7 @@ status drawer, tabbed Operations and Settings consoles, and auth screens.
 - Data transport: `src/api.ts` (the only fetch layer) and
   `src/useDashboard.ts` (SSE subscription).
 - Presentation: `src/components/` (cards, charts, overlays, primitives) and
-  `src/pages/` (Dashboard, Settings, Audit, Operations).
+  `src/pages/` (Dashboard, Settings, Audit, Operations, WeeklyReview).
 - Design tokens: `src/index.css` (Tailwind v4 `@theme` block — the single
   source of both palettes; the light block re-tunes the same semantic names).
 - Theme: `src/theme.tsx` (`system | dark | light`, persisted, applied as
@@ -75,6 +76,9 @@ status drawer, tabbed Operations and Settings consoles, and auth screens.
 - New screens: add a route in `App.tsx`, a page in `src/pages/`, and reuse
   `src/components/` primitives before adding new ones. Internal sections use
   `PageTabs`/`TabPanel`.
+- `#/weekly` is the read-only weekly performance review. The Audit page links to
+  it; the page fetches `GET /api/reports/weekly` and renders the server's
+  markdown. It performs no client-side P&L math and sends no mutations.
 - `#/desk` is the assembly-line screen: SOL balance is the headline, then USDC
   available and unrealised P&L, a funnel of server stage counts, five seats
   with per-trader trades, the credit meter (`GET /api/credits`), and a risk

@@ -21,6 +21,10 @@ leaderboard/profile data out of the operator's desktop Chrome.
   ZCode mailbox and model ladder, the deploy path, and the hard limits.
 - `research-sweep-automation.md` — retirement note: the 5-minute research
   tick and the 30-minute sweep are gone (D3/D6); discovery is demand-driven.
+- `samples/weekly-review-sample.md` (and `.json`) — a sample weekly performance
+  review generated from a read-only copy of the live DB. It demonstrates the
+  empty/partial-data wording; regenerate it with `src/cli/weekly-review.ts` and
+  never treat it as live performance evidence.
 
 ## Local Contracts
 

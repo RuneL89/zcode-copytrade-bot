@@ -227,6 +227,37 @@ best record takes a freed chair.
 - **Poll cadence.** Every hired wallet is polled every `ROSTER_POLL_MS`
   (default 45 s); the watch list keeps its own 5-minute clock.
 
+## 2c. Weekly performance review
+
+The server writes a read-only review of the **last completed ISO week**
+(Monday–Sunday, Europe/Helsinki) every **Monday 08:00**, and catches up on boot
+if that week's file is missing.
+
+- **Files:** `data/reports/weekly-review-YYYY-Www.md` and `.json` (runtime
+  artifacts, gitignored).
+- **On demand:** `pnpm weekly-review` (last completed week). For a specific
+  week, run from the repo root:
+  `pnpm --filter @zcode-bot/server exec tsx src/cli/weekly-review.ts --db ../../data/zcode-bot.db --out ../../data/reports --week 2026-W46`.
+- **Dashboard:** **Audit → weekly review** (or `#/weekly`). The endpoint is
+  `GET /api/reports/weekly?week=YYYY-Www`; both the page and the endpoint use
+  the normal session.
+- **What it reports:** promised vs actual per seat, gap attribution, exit
+  groups, the pre-hire hiring-rule correlation, fired-trader post-firing shadow
+  P&L, and concrete proposals labelled TIGHTENS / LOOSENS (never applied).
+- **No new provider spend:** the generator makes no Helius or external price
+  calls. Post-exit 1h/2h prices are shown as unknown because historical marks
+  are not stored.
+- **Promised baseline:** the watch list stops shadowing a wallet when it is
+  hired, so the baseline is the wallet's pre-hire shadow record. The report says
+  this on every seat.
+- **Paper reset:** the generator uses `kv paper.reset_at` when present, else the
+  latest `data/backups/zcode-bot-before-paper-reset-*` filename, else the
+  earliest retained paper row or last paper-mode start. If a reset is performed
+  manually, record the ISO timestamp in `kv.paper.reset_at` so the since-reset
+  totals stay exact.
+- **Read-only:** the generator only SELECTs. It never changes trading state,
+  risk limits, exits, or live mode.
+
 ## 3. Pause / resume
 
 - **Pause new entries** (Settings → CONTROLS): no new copied entries; leader

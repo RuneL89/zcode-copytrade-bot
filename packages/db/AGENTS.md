@@ -16,7 +16,8 @@ server calls.
   audit events, key/value.
 - `src/repo.ts` — all queries.
 - `src/connection.ts` — `openDatabase` (WAL, `synchronous=NORMAL`,
-  `foreign_keys=ON`, `busy_timeout=5000`) and the worker lock.
+  `foreign_keys=ON`, `busy_timeout=5000`), `openReadOnlyDatabase` (existing
+  file only, `readonly: true`, no migration) and the worker lock.
 - `src/migrate.ts`, `drizzle/` — migrations and drizzle-kit metadata.
 - `src/seed.ts` — research dirs + optional example leaderboard import.
 
@@ -31,6 +32,9 @@ server calls.
   amount.
 - **No business logic here.** Repositories read and write; decisions belong in
   `packages/core` and the server services.
+- **Read-only consumers use `openReadOnlyDatabase`.** The weekly report, audits
+  and ad-hoc inspections must never open the live file read-write, create it, or
+  migrate it.
 - **The worker lock is exclusive** (`data/worker.lock`). Do not add a second
   locking mechanism; the server refuses to start when the lock is held by a
   live PID.

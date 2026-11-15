@@ -12,7 +12,7 @@ functions that the server wires to real providers and persistence.
 `money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
 `events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
 `freshness`, `budget`, `backfill`, `exitGuard`, `callPattern`, `deskPolicy`,
-`swapPrograms`, `liveGate`.
+`swapPrograms`, `liveGate`, `weeklyReview`.
 Everything is re-exported from `src/index.ts`.
 
 ## Local Contracts
@@ -37,6 +37,11 @@ Everything is re-exported from `src/index.ts`.
 - **Fail closed by default.** Ambiguous events are skipped, an unpriced mint or
   a missing quote never invents a fill, and an unproven wallet is reported as
   blocked rather than promoted.
+- **Weekly review math is pure and read-only.** `weeklyReview` groups exits,
+  attributes the promised-vs-actual gap, correlates pre-hire shadow stats with
+  actual P&L, and resolves ISO weeks/schedules. Missing post-exit prices,
+  during-seat shadow records, or comparable actual P&L are reported as unknown,
+  never estimated.
 - **Helius spend goes through `CreditGovernor`.** Path caps, the 13,600/day
   hard cap, and the 600,000/month ceiling live in `budget.ts`. Roster and exit
   buckets are ring-fenced. `getTransactionsForAddress` is legal only on the
