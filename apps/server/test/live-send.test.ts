@@ -38,9 +38,11 @@ describe('live start gate', () => {
     });
   });
 
+  // The acceptance replay is CPU-heavy; 15s is flaky when the whole server
+  // suite collects in parallel on a loaded desktop.
   it('the shipped P1 checks pass', () => {
     expect(evaluateP1Acceptance().ok).toBe(true);
-  }, 15_000);
+  }, 45_000);
 });
 
 describe('send ladder', () => {

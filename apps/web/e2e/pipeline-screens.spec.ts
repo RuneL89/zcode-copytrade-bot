@@ -2,28 +2,46 @@ import { test } from '@playwright/test';
 import { completeSetup } from './helpers';
 
 /**
- * Captures the four plan-07 review screenshots (390×844 and 1280×800, dark and
- * light) into `test-results/pipeline-screens/` so the verifier — and anyone
- * reviewing the design — inspects the same artifacts the suite renders. The
- * theme is forced through localStorage before first paint (the same key the
- * pre-paint script in index.html reads).
+ * Captures the redesigned Line / Seats / Credits / Risk screens at mobile and
+ * desktop widths into `test-results/pipeline-screens/`. These are review
+ * artifacts for the same demo state the suite asserts; the committed set lives
+ * in `docs/screenshots/redesign/`.
  */
-test('capture the four review screenshots (390/1280 × dark/light)', async ({ browser }) => {
-  const shots: Array<[number, number, 'dark' | 'light']> = [
-    [390, 844, 'dark'],
-    [390, 844, 'light'],
-    [1280, 800, 'dark'],
-    [1280, 800, 'light'],
-  ];
-  for (const [width, height, theme] of shots) {
+test('capture the redesigned screens (390 and 1280)', async ({ browser }) => {
+  for (const [width, height] of [
+    [390, 844],
+    [1280, 800],
+  ] as const) {
     const context = await browser.newContext({ viewport: { width, height } });
     const page = await context.newPage();
-    await page.addInitScript((t) => localStorage.setItem('zcode-theme', t), theme);
     await completeSetup(page);
-    await page.screenshot({
-      path: `test-results/pipeline-screens/${width}x${height}-${theme}.png`,
-      fullPage: true,
-    });
+    for (const [route, name] of [
+      ['line', 'line'],
+      ['seats', 'seats'],
+      ['credits', 'credits'],
+      ['risk', 'risk'],
+    ] as const) {
+      if (route !== 'line') {
+        await page
+          .getByRole('tab', { name: name === 'seats' ? 'Seats' : name, exact: false })
+          .first()
+          .click();
+        await page.waitForTimeout(300);
+      }
+      // Keep the 28s demo story alive for every capture.
+      const replay = page.getByRole('button', { name: /Replay/ });
+      if ((await replay.count()) > 0) {
+        await replay
+          .first()
+          .click()
+          .catch(() => undefined);
+        await page.waitForTimeout(800);
+      }
+      await page.screenshot({
+        path: `test-results/pipeline-screens/${width}-${name}.png`,
+        fullPage: width >= 1000,
+      });
+    }
     await context.close();
   }
 });

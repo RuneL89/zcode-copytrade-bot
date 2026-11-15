@@ -4,6 +4,28 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { E2E_BASE_URL, E2E_DATA_DIR } from './paths';
 
+export const E2E_RISK_PIN = '4821';
+
+/** Reset the persisted risk overrides through the same validated PATCH the UI uses. */
+export async function resetRiskDefaults(page: Page): Promise<void> {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((cookie) => cookie.name === 'zcode_csrf')?.value ?? '';
+  const res = await page.request.patch(`${E2E_BASE_URL}/api/settings`, {
+    headers: { 'x-csrf-token': csrf },
+    data: {
+      WATCH_LIST_SIZE: 20,
+      BENCH_TARGET: 10,
+      ROSTER_SIZE: 5,
+      PER_MINT_CAP_USD: 0,
+      MAX_PER_BUY_USD: 10,
+      MAX_OPEN_PER_TRADER_USD: 40,
+      SHADOW_BACKFILL_ON_ADMIT: true,
+      pin: E2E_RISK_PIN,
+    },
+  });
+  expect(res.ok()).toBe(true);
+}
+
 /** First-run setup when needed, then land on the dashboard. */
 export async function completeSetup(page: Page) {
   await page.goto('/');
@@ -24,6 +46,19 @@ export async function completeSetup(page: Page) {
     await page.getByRole('button', { name: 'Sign in' }).click();
   }
   await expect(page.getByText(/fictional demo/i).first()).toBeVisible({ timeout: 30_000 });
+  // A shared data dir persists risk overrides between runs. Reset them through
+  // the validated PATCH so every test starts from the shipped defaults.
+  await resetRiskDefaults(page);
+  // The replay is a 28s story. The banner's button goes through the same
+  // CSRF-authenticated POST the app uses; a bare request would be refused.
+  const replay = page.getByRole('button', { name: /Replay/ });
+  if ((await replay.count()) > 0)
+    await replay
+      .first()
+      .click()
+      .catch(() => undefined);
+  await expect(page.getByTestId('arena-panel')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('seat-1')).toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -63,4 +98,17 @@ export async function login(page: Page) {
   await page.locator('input[type="password"]').first().fill('e2e-password-123');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByText(/fictional demo/i).first()).toBeVisible({ timeout: 30_000 });
+  // A shared data dir persists risk overrides between runs. Reset them through
+  // the validated PATCH so every test starts from the shipped defaults.
+  await resetRiskDefaults(page);
+  // The replay is a 28s story. The banner's button goes through the same
+  // CSRF-authenticated POST the app uses; a bare request would be refused.
+  const replay = page.getByRole('button', { name: /Replay/ });
+  if ((await replay.count()) > 0)
+    await replay
+      .first()
+      .click()
+      .catch(() => undefined);
+  await expect(page.getByTestId('arena-panel')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('seat-1')).toBeVisible({ timeout: 30_000 });
 }
