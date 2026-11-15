@@ -30,6 +30,29 @@ export function openDatabase(dataDir: string, filename = 'zcode-bot.db'): DbHand
   };
 }
 
+/**
+ * Open an existing SQLite file read-only. Used by replay/report tools that must
+ * not write trading state: the connection itself refuses writes and the caller
+ * never migrates or seeds. The file must exist; there is no create fallback.
+ */
+export function openReadOnlyDatabase(filename: string): DbHandle {
+  if (!existsSync(filename)) {
+    throw new Error(`read-only database not found: ${filename}`);
+  }
+  const sqlite = new Database(filename, { readonly: true, fileMustExist: true });
+  sqlite.pragma('query_only = ON');
+  sqlite.pragma('foreign_keys = ON');
+  sqlite.pragma('busy_timeout = 5000');
+  const db = drizzle(sqlite, { schema });
+  return {
+    db,
+    sqlite,
+    close() {
+      sqlite.close();
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Single-worker lock: an exclusive lockfile in the data directory. A second
 // worker process refuses to start instead of double-executing orders.
