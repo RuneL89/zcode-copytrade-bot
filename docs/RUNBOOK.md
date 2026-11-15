@@ -233,11 +233,11 @@ The server writes a read-only review of the **last completed ISO week**
 (Monday–Sunday, Europe/Helsinki) every **Monday 08:00**, and catches up on boot
 if that week's file is missing.
 
-- **Files:** `data/reports/weekly-review-YYYY-Www.md` and `.json` (runtime
+- **Files:** `reports/weekly-review-YYYY-Www.md` and `.json` (runtime
   artifacts, gitignored).
 - **On demand:** `pnpm weekly-review` (last completed week). For a specific
   week, run from the repo root:
-  `pnpm --filter @zcode-bot/server exec tsx src/cli/weekly-review.ts --db ../../data/zcode-bot.db --out ../../data/reports --week 2026-W46`.
+  `pnpm --filter @zcode-bot/server exec tsx src/cli/weekly-review.ts --db ../../data/zcode-bot.db --out ../../reports --week 2026-W46`.
 - **Dashboard:** **Audit → weekly review** (or `#/weekly`). The endpoint is
   `GET /api/reports/weekly?week=YYYY-Www`; both the page and the endpoint use
   the normal session.

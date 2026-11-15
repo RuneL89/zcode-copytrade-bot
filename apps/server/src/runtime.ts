@@ -588,10 +588,12 @@ export class Runtime {
       sqlite: this.db.sqlite,
       mode: this.config.mode,
       dbPath: join(this.config.env.DATA_DIR, 'zcode-bot.db'),
-      reportDir: join(this.config.env.DATA_DIR, 'reports'),
+      reportDir: join(this.config.env.DATA_DIR, '..', 'reports'),
       onAudit: (message, error) => repo.audit(this.db.db, 'weekly-review', message, error ? { error } : {}),
     });
-    this.weeklyReview.start();
+    // Tests boot the runtime constantly; the scheduled catch-up write belongs
+    // to production. The on-demand endpoint still works under test.
+    if (process.env.NODE_ENV !== 'test') this.weeklyReview.start();
     if (this.telegramCommands) {
       this.telegramCommands.start();
       repo.audit(this.db.db, 'telegram', 'commands enabled (/status, /weekly, /positions, /help)', {});

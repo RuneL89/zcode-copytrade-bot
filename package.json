@@ -24,7 +24,7 @@
     "wallet:create": "pnpm --filter @zcode-bot/server run wallet:create",
     "wallet:send": "pnpm --filter @zcode-bot/server run wallet:send",
     "user:token": "pnpm --filter @zcode-bot/server run user:token",
-    "weekly-review": "pnpm --filter @zcode-bot/server exec tsx src/cli/weekly-review.ts --db ../../data/zcode-bot.db --out ../../data/reports",
+    "weekly-review": "pnpm --filter @zcode-bot/server exec tsx src/cli/weekly-review.ts --db ../../data/zcode-bot.db --out ../../reports",
     "e2e": "pnpm --filter @zcode-bot/web run e2e",
     "e2e:install": "pnpm --filter @zcode-bot/web run e2e:install"
   },
