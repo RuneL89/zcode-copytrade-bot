@@ -94,6 +94,10 @@ export const api = {
   disarm: () => request<{ ok: boolean }>('/api/control/disarm', { method: 'POST', body: '{}' }),
   demoStart: () => request<{ ok: boolean }>('/api/demo/start', { method: 'POST', body: '{}' }),
   audit: () => request<{ events: Array<Record<string, unknown>> }>('/api/audit'),
+  weeklyReview: (week?: string) =>
+    request<{ week: string; report: Record<string, unknown>; markdown: string }>(
+      `/api/reports/weekly${week ? `?week=${encodeURIComponent(week)}` : ''}`,
+    ),
   rejections: () => request<{ rejections: Array<Record<string, unknown>> }>('/api/rejections'),
   candidates: () =>
     request<{ candidates: Array<Record<string, unknown>>; addresses: Array<Record<string, unknown>> }>(

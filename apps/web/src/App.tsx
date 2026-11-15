@@ -7,9 +7,10 @@ import { SettingsPage } from './pages/Settings';
 import { AuditPage } from './pages/Audit';
 import { OperationsPage } from './pages/Operations';
 import { DeskPage } from './pages/Desk';
+import { WeeklyReviewPage } from './pages/WeeklyReview';
 import { ListIcon, PulseIcon, SlidersIcon, TerminalIcon } from './components/icons';
 
-type Route = 'dashboard' | 'desk' | 'settings' | 'audit' | 'ops';
+type Route = 'dashboard' | 'desk' | 'settings' | 'audit' | 'ops' | 'weekly';
 
 const NAV: Array<{ id: Route; label: string; icon: (props: { size?: number }) => React.JSX.Element }> = [
   { id: 'dashboard', label: 'Trade', icon: PulseIcon },
@@ -92,6 +93,7 @@ export function App() {
       {route === 'ops' && <OperationsPage state={state} onBack={() => go('dashboard')} />}
       {route === 'settings' && <SettingsPage onBack={() => go('dashboard')} />}
       {route === 'audit' && <AuditPage onBack={() => go('dashboard')} />}
+      {route === 'weekly' && <WeeklyReviewPage onBack={() => go('audit')} />}
 
       {/* Bounded by the layout viewport (inset-x-0 + max-w-full), never by vw:
           at 200% zoom the bar scrolls inside itself instead of clipping. */}
@@ -132,7 +134,7 @@ function ConnectingSkeleton() {
 
 function parseRoute(): Route {
   const h = window.location.hash.replace('#/', '');
-  return h === 'settings' || h === 'audit' || h === 'ops' || h === 'desk' ? h : 'dashboard';
+  return h === 'settings' || h === 'audit' || h === 'ops' || h === 'desk' || h === 'weekly' ? h : 'dashboard';
 }
 
 function go(route: Route) {

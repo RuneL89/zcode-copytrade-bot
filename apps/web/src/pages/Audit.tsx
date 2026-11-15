@@ -60,6 +60,15 @@ export function AuditPage({ onBack }: { onBack: () => void }) {
         </div>
         <div className="flex items-center gap-3">
           <button
+            onClick={() => {
+              window.location.hash = '#/weekly';
+              window.dispatchEvent(new Event('popstate'));
+            }}
+            className="label !text-[10.5px] underline cursor-pointer"
+          >
+            weekly review
+          </button>
+          <button
             onClick={() => void load()}
             aria-label="refresh audit"
             className="text-muted hover:text-ink cursor-pointer"
