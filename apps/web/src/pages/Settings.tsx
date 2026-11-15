@@ -134,7 +134,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         setRiskSave({ busy: false, ok: false, text: 'MAX_DEPLOYED_PCT: must be 100 or less' });
         return;
       }
-      patch[f] = Math.round(n);
+      // POSITION_GRACE_HOURS is the one fractional limit (default 1.5). Rounding
+      // it to 2 is a risk increase the legacy form has no PIN field for.
+      patch[f] = f === 'POSITION_GRACE_HOURS' ? n : Math.round(n);
     }
     patch.SHADOW_BACKFILL_ON_ADMIT = backfillDraft;
     setRiskSave({ busy: true, ok: null, text: null });
