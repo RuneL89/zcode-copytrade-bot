@@ -1,0 +1,1430 @@
+{
+  "schemaVersion": 1,
+  "kind": "param-sweep",
+  "generatedAt": "2026-11-15T17:05:24.707Z",
+  "sourceDb": "zcode-bot-before-paper-reset-20261115-095433.db",
+  "mode": "read-only counterfactual replay",
+  "range": {
+    "fromIso": "2026-11-11T00:10:17.000Z",
+    "toIso": "2026-11-15T07:18:25.000Z",
+    "days": 4.3
+  },
+  "split": {
+    "trainToIso": "2026-11-13T03:44:21.000Z"
+  },
+  "runsEvaluated": 61,
+  "runsShown": 10,
+  "baseline": {
+    "id": "baseline",
+    "label": "CURRENT PARAMS",
+    "riskLabel": "UNCHANGED",
+    "overrides": {},
+    "train": {
+      "netPnlUsdMicro": "0",
+      "realizedPnlUsdMicro": "0",
+      "openUnrealizedUsdMicro": "0",
+      "trades": 0,
+      "exitUnits": 0,
+      "wins": 0,
+      "losses": 0,
+      "winRatePct": null,
+      "worstDayUsdMicro": "0",
+      "maxDrawdownUsdMicro": "0",
+      "worstTradeUsdMicro": "0",
+      "dailyLossStopDays": 0,
+      "openPositions": 0,
+      "feesUsdMicro": "0"
+    },
+    "test": {
+      "netPnlUsdMicro": "819937",
+      "realizedPnlUsdMicro": "823063",
+      "openUnrealizedUsdMicro": "-3126",
+      "trades": 2,
+      "exitUnits": 1,
+      "wins": 1,
+      "losses": 0,
+      "winRatePct": 100,
+      "worstDayUsdMicro": "823063",
+      "maxDrawdownUsdMicro": "3126",
+      "worstTradeUsdMicro": "823063",
+      "dailyLossStopDays": 0,
+      "openPositions": 1,
+      "feesUsdMicro": "10416"
+    },
+    "full": {
+      "netPnlUsdMicro": "819937",
+      "realizedPnlUsdMicro": "823063",
+      "openUnrealizedUsdMicro": "-3126",
+      "trades": 2,
+      "exitUnits": 1,
+      "wins": 1,
+      "losses": 0,
+      "winRatePct": 100,
+      "worstDayUsdMicro": "823063",
+      "maxDrawdownUsdMicro": "3126",
+      "worstTradeUsdMicro": "823063",
+      "dailyLossStopDays": 0,
+      "openPositions": 1,
+      "feesUsdMicro": "10416"
+    },
+    "robust": false,
+    "sameSign": false,
+    "notes": [
+      "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+      "Train and test P&L do not agree in sign."
+    ],
+    "neighbors": []
+  },
+  "baselineCoverage": {
+    "signalsTotal": 173,
+    "signalsSeen": 173,
+    "signalsCopied": 2,
+    "skippedNotHired": 171,
+    "skippedCoalesced": 0,
+    "skippedSizing": 0,
+    "skippedRisk": 0,
+    "skippedStale": 0,
+    "entryRejections": []
+  },
+  "alternatives": [
+    {
+      "id": "max_per_buy_usd_40",
+      "label": "MAX_PER_BUY_USD=40",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_PER_BUY_USD": 40
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "1779085",
+        "realizedPnlUsdMicro": "1782211",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1782211",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1782211",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "22555"
+      },
+      "full": {
+        "netPnlUsdMicro": "1779085",
+        "realizedPnlUsdMicro": "1782211",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1782211",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1782211",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "22555"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": [
+        {
+          "label": "MAX_PER_BUY_USD=20",
+          "testNetPnlUsdMicro": "1643000",
+          "testTrades": 2
+        }
+      ]
+    },
+    {
+      "id": "max_per_buy_usd_20",
+      "label": "MAX_PER_BUY_USD=20",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_PER_BUY_USD": 20
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "1643000",
+        "realizedPnlUsdMicro": "1646126",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1646126",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1646126",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "20833"
+      },
+      "full": {
+        "netPnlUsdMicro": "1643000",
+        "realizedPnlUsdMicro": "1646126",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1646126",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1646126",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "20833"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": [
+        {
+          "label": "MAX_PER_BUY_USD=40",
+          "testNetPnlUsdMicro": "1779085",
+          "testTrades": 2
+        }
+      ]
+    },
+    {
+      "id": "max_per_buy_usd_20_max_open_per_trader_usd_80_max_deployed_pct_100",
+      "label": "MAX_PER_BUY_USD=20 + MAX_OPEN_PER_TRADER_USD=80 + MAX_DEPLOYED_PCT=100",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_PER_BUY_USD": 20,
+        "MAX_OPEN_PER_TRADER_USD": 80,
+        "MAX_DEPLOYED_PCT": 100
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "1643000",
+        "realizedPnlUsdMicro": "1646126",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1646126",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1646126",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "20833"
+      },
+      "full": {
+        "netPnlUsdMicro": "1643000",
+        "realizedPnlUsdMicro": "1646126",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "1646126",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "1646126",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "20833"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": []
+    },
+    {
+      "id": "max_position_age_hours_12",
+      "label": "MAX_POSITION_AGE_HOURS=12",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_POSITION_AGE_HOURS": 12
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "full": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": [
+        {
+          "label": "MAX_POSITION_AGE_HOURS=8",
+          "testNetPnlUsdMicro": "923412",
+          "testTrades": 2
+        },
+        {
+          "label": "MAX_POSITION_AGE_HOURS=8760",
+          "testNetPnlUsdMicro": "923412",
+          "testTrades": 2
+        }
+      ]
+    },
+    {
+      "id": "max_position_age_hours_8",
+      "label": "MAX_POSITION_AGE_HOURS=8",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_POSITION_AGE_HOURS": 8
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "full": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": [
+        {
+          "label": "MAX_POSITION_AGE_HOURS=12",
+          "testNetPnlUsdMicro": "923412",
+          "testTrades": 2
+        }
+      ]
+    },
+    {
+      "id": "max_position_age_hours_8760",
+      "label": "MAX_POSITION_AGE_HOURS=8760",
+      "riskLabel": "LOOSENS",
+      "overrides": {
+        "MAX_POSITION_AGE_HOURS": 8760
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "full": {
+        "netPnlUsdMicro": "923412",
+        "realizedPnlUsdMicro": "926538",
+        "openUnrealizedUsdMicro": "-3126",
+        "trades": 2,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "926538",
+        "maxDrawdownUsdMicro": "3126",
+        "worstTradeUsdMicro": "926538",
+        "dailyLossStopDays": 0,
+        "openPositions": 1,
+        "feesUsdMicro": "10468"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": [
+        {
+          "label": "MAX_POSITION_AGE_HOURS=12",
+          "testNetPnlUsdMicro": "923412",
+          "testTrades": 2
+        }
+      ]
+    },
+    {
+      "id": "cooldown_hours_12",
+      "label": "COOLDOWN_HOURS=12",
+      "riskLabel": "MIXED",
+      "overrides": {
+        "COOLDOWN_HOURS": 12
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "full": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign.",
+        "Evaluated with shadow bench hiring so this promotion/cooldown rule can change the seat pick."
+      ],
+      "neighbors": [
+        {
+          "label": "COOLDOWN_HOURS=24",
+          "testNetPnlUsdMicro": "823063",
+          "testTrades": 1
+        }
+      ]
+    },
+    {
+      "id": "cooldown_hours_24",
+      "label": "COOLDOWN_HOURS=24",
+      "riskLabel": "MIXED",
+      "overrides": {
+        "COOLDOWN_HOURS": 24
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "full": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign.",
+        "Evaluated with shadow bench hiring so this promotion/cooldown rule can change the seat pick."
+      ],
+      "neighbors": [
+        {
+          "label": "COOLDOWN_HOURS=12",
+          "testNetPnlUsdMicro": "823063",
+          "testTrades": 1
+        }
+      ]
+    },
+    {
+      "id": "cooldown_hours_72",
+      "label": "COOLDOWN_HOURS=72",
+      "riskLabel": "MIXED",
+      "overrides": {
+        "COOLDOWN_HOURS": 72
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "full": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign.",
+        "Evaluated with shadow bench hiring so this promotion/cooldown rule can change the seat pick."
+      ],
+      "neighbors": []
+    },
+    {
+      "id": "hiring_net",
+      "label": "hiring=net",
+      "riskLabel": "MIXED",
+      "overrides": {
+        "hiringPolicy": "shadow",
+        "ranking": "net"
+      },
+      "train": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "full": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "robust": false,
+      "sameSign": false,
+      "notes": [
+        "Fewer than 3 test trades; treat the out-of-sample result as thin.",
+        "Train and test P&L do not agree in sign."
+      ],
+      "neighbors": []
+    }
+  ],
+  "hiringAlternatives": [
+    {
+      "policy": "shadow",
+      "ranking": "net",
+      "riskLabel": "MIXED",
+      "full": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "test": {
+        "netPnlUsdMicro": "823063",
+        "realizedPnlUsdMicro": "823063",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 1,
+        "exitUnits": 1,
+        "wins": 1,
+        "losses": 0,
+        "winRatePct": 100,
+        "worstDayUsdMicro": "823063",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "823063",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "10416"
+      },
+      "hires": [
+        {
+          "windowId": "act_7f62360c-ca7e-4f39-a578-062bbf39855a_shadow_net",
+          "seat": 5,
+          "startIso": "2026-11-15T06:10:31.034Z",
+          "actualHandle": "coinpumper",
+          "alternativeHandle": "heat",
+          "actualNetUsdMicro": "-3126",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "3126",
+          "changed": true
+        },
+        {
+          "windowId": "act_4526aca9-8f36-4577-ba06-f151a47928e6_shadow_net",
+          "seat": 5,
+          "startIso": "2026-11-15T04:34:04.800Z",
+          "actualHandle": "waalow",
+          "alternativeHandle": "waalow",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_5e08197a-c574-4c14-bec3-22c2dfdacc17_shadow_net",
+          "seat": 4,
+          "startIso": "2026-11-15T02:10:58.993Z",
+          "actualHandle": "VastPastViper",
+          "alternativeHandle": "VastPastViper",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_4ac7458d-c07b-46a3-b1fa-8622d8b84c01_shadow_net",
+          "seat": 3,
+          "startIso": "2026-11-15T02:10:58.992Z",
+          "actualHandle": "LoyalBlankPerch",
+          "alternativeHandle": "LoyalBlankPerch",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_96ebedd5-3e4e-4f14-acbc-7103fd2612a1_shadow_net",
+          "seat": 5,
+          "startIso": "2026-11-14T22:54:39.231Z",
+          "actualHandle": "jaeescott20",
+          "alternativeHandle": "jaeescott20",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_6f41adb3-6372-498e-8921-0e2c8ee0b349_shadow_net",
+          "seat": 4,
+          "startIso": "2026-11-14T22:54:39.230Z",
+          "actualHandle": "Jmart0312",
+          "alternativeHandle": "Jmart0312",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_c16dda4b-2b60-45cd-b17a-00f2ba3151db_shadow_net",
+          "seat": 3,
+          "startIso": "2026-11-14T22:54:39.229Z",
+          "actualHandle": "aurafarmer_",
+          "alternativeHandle": "aurafarmer_",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_a0c87908-e5d6-4573-a5f5-84eb24e57f20_shadow_net",
+          "seat": 2,
+          "startIso": "2026-11-14T22:09:16.070Z",
+          "actualHandle": "JESUSISTHEWAYLOVE",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_91b62313-0483-4a64-a770-7cceac6f4b75_shadow_net",
+          "seat": 1,
+          "startIso": "2026-11-14T22:09:16.069Z",
+          "actualHandle": "VocalNavalPony",
+          "alternativeHandle": "VocalNavalPony",
+          "actualNetUsdMicro": "823063",
+          "alternativeNetUsdMicro": "823063",
+          "deltaUsdMicro": "0",
+          "changed": false
+        }
+      ]
+    },
+    {
+      "policy": "shadow",
+      "ranking": "net_per_trade",
+      "riskLabel": "MIXED",
+      "full": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "hires": [
+        {
+          "windowId": "act_7f62360c-ca7e-4f39-a578-062bbf39855a_shadow_net_per_trade",
+          "seat": 5,
+          "startIso": "2026-11-15T06:10:31.034Z",
+          "actualHandle": "coinpumper",
+          "alternativeHandle": "heat",
+          "actualNetUsdMicro": "-3126",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "3126",
+          "changed": true
+        },
+        {
+          "windowId": "act_4526aca9-8f36-4577-ba06-f151a47928e6_shadow_net_per_trade",
+          "seat": 5,
+          "startIso": "2026-11-15T04:34:04.800Z",
+          "actualHandle": "waalow",
+          "alternativeHandle": "waalow",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_5e08197a-c574-4c14-bec3-22c2dfdacc17_shadow_net_per_trade",
+          "seat": 4,
+          "startIso": "2026-11-15T02:10:58.993Z",
+          "actualHandle": "VastPastViper",
+          "alternativeHandle": "VastPastViper",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_4ac7458d-c07b-46a3-b1fa-8622d8b84c01_shadow_net_per_trade",
+          "seat": 3,
+          "startIso": "2026-11-15T02:10:58.992Z",
+          "actualHandle": "LoyalBlankPerch",
+          "alternativeHandle": "LoyalBlankPerch",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_96ebedd5-3e4e-4f14-acbc-7103fd2612a1_shadow_net_per_trade",
+          "seat": 5,
+          "startIso": "2026-11-14T22:54:39.231Z",
+          "actualHandle": "jaeescott20",
+          "alternativeHandle": "jaeescott20",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_6f41adb3-6372-498e-8921-0e2c8ee0b349_shadow_net_per_trade",
+          "seat": 4,
+          "startIso": "2026-11-14T22:54:39.230Z",
+          "actualHandle": "Jmart0312",
+          "alternativeHandle": "Jmart0312",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_c16dda4b-2b60-45cd-b17a-00f2ba3151db_shadow_net_per_trade",
+          "seat": 3,
+          "startIso": "2026-11-14T22:54:39.229Z",
+          "actualHandle": "aurafarmer_",
+          "alternativeHandle": "aurafarmer_",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_a0c87908-e5d6-4573-a5f5-84eb24e57f20_shadow_net_per_trade",
+          "seat": 2,
+          "startIso": "2026-11-14T22:09:16.070Z",
+          "actualHandle": "JESUSISTHEWAYLOVE",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_91b62313-0483-4a64-a770-7cceac6f4b75_shadow_net_per_trade",
+          "seat": 1,
+          "startIso": "2026-11-14T22:09:16.069Z",
+          "actualHandle": "VocalNavalPony",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "823063",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "-823063",
+          "changed": true
+        }
+      ]
+    },
+    {
+      "policy": "shadow",
+      "ranking": "win_rate",
+      "riskLabel": "MIXED",
+      "full": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "hires": [
+        {
+          "windowId": "act_7f62360c-ca7e-4f39-a578-062bbf39855a_shadow_win_rate",
+          "seat": 5,
+          "startIso": "2026-11-15T06:10:31.034Z",
+          "actualHandle": "coinpumper",
+          "alternativeHandle": "heat",
+          "actualNetUsdMicro": "-3126",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "3126",
+          "changed": true
+        },
+        {
+          "windowId": "act_4526aca9-8f36-4577-ba06-f151a47928e6_shadow_win_rate",
+          "seat": 5,
+          "startIso": "2026-11-15T04:34:04.800Z",
+          "actualHandle": "waalow",
+          "alternativeHandle": "waalow",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_5e08197a-c574-4c14-bec3-22c2dfdacc17_shadow_win_rate",
+          "seat": 4,
+          "startIso": "2026-11-15T02:10:58.993Z",
+          "actualHandle": "VastPastViper",
+          "alternativeHandle": "VastPastViper",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_4ac7458d-c07b-46a3-b1fa-8622d8b84c01_shadow_win_rate",
+          "seat": 3,
+          "startIso": "2026-11-15T02:10:58.992Z",
+          "actualHandle": "LoyalBlankPerch",
+          "alternativeHandle": "LoyalBlankPerch",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_96ebedd5-3e4e-4f14-acbc-7103fd2612a1_shadow_win_rate",
+          "seat": 5,
+          "startIso": "2026-11-14T22:54:39.231Z",
+          "actualHandle": "jaeescott20",
+          "alternativeHandle": "jaeescott20",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_6f41adb3-6372-498e-8921-0e2c8ee0b349_shadow_win_rate",
+          "seat": 4,
+          "startIso": "2026-11-14T22:54:39.230Z",
+          "actualHandle": "Jmart0312",
+          "alternativeHandle": "Jmart0312",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_c16dda4b-2b60-45cd-b17a-00f2ba3151db_shadow_win_rate",
+          "seat": 3,
+          "startIso": "2026-11-14T22:54:39.229Z",
+          "actualHandle": "aurafarmer_",
+          "alternativeHandle": "aurafarmer_",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_a0c87908-e5d6-4573-a5f5-84eb24e57f20_shadow_win_rate",
+          "seat": 2,
+          "startIso": "2026-11-14T22:09:16.070Z",
+          "actualHandle": "JESUSISTHEWAYLOVE",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_91b62313-0483-4a64-a770-7cceac6f4b75_shadow_win_rate",
+          "seat": 1,
+          "startIso": "2026-11-14T22:09:16.069Z",
+          "actualHandle": "VocalNavalPony",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "823063",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "-823063",
+          "changed": true
+        }
+      ]
+    },
+    {
+      "policy": "shadow",
+      "ranking": "recent",
+      "riskLabel": "MIXED",
+      "full": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "test": {
+        "netPnlUsdMicro": "0",
+        "realizedPnlUsdMicro": "0",
+        "openUnrealizedUsdMicro": "0",
+        "trades": 0,
+        "exitUnits": 0,
+        "wins": 0,
+        "losses": 0,
+        "winRatePct": null,
+        "worstDayUsdMicro": "0",
+        "maxDrawdownUsdMicro": "0",
+        "worstTradeUsdMicro": "0",
+        "dailyLossStopDays": 0,
+        "openPositions": 0,
+        "feesUsdMicro": "0"
+      },
+      "hires": [
+        {
+          "windowId": "act_7f62360c-ca7e-4f39-a578-062bbf39855a_shadow_recent",
+          "seat": 5,
+          "startIso": "2026-11-15T06:10:31.034Z",
+          "actualHandle": "coinpumper",
+          "alternativeHandle": "heat",
+          "actualNetUsdMicro": "-3126",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "3126",
+          "changed": true
+        },
+        {
+          "windowId": "act_4526aca9-8f36-4577-ba06-f151a47928e6_shadow_recent",
+          "seat": 5,
+          "startIso": "2026-11-15T04:34:04.800Z",
+          "actualHandle": "waalow",
+          "alternativeHandle": "waalow",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_5e08197a-c574-4c14-bec3-22c2dfdacc17_shadow_recent",
+          "seat": 4,
+          "startIso": "2026-11-15T02:10:58.993Z",
+          "actualHandle": "VastPastViper",
+          "alternativeHandle": "VastPastViper",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_4ac7458d-c07b-46a3-b1fa-8622d8b84c01_shadow_recent",
+          "seat": 3,
+          "startIso": "2026-11-15T02:10:58.992Z",
+          "actualHandle": "LoyalBlankPerch",
+          "alternativeHandle": "LoyalBlankPerch",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_96ebedd5-3e4e-4f14-acbc-7103fd2612a1_shadow_recent",
+          "seat": 5,
+          "startIso": "2026-11-14T22:54:39.231Z",
+          "actualHandle": "jaeescott20",
+          "alternativeHandle": "jaeescott20",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_6f41adb3-6372-498e-8921-0e2c8ee0b349_shadow_recent",
+          "seat": 4,
+          "startIso": "2026-11-14T22:54:39.230Z",
+          "actualHandle": "Jmart0312",
+          "alternativeHandle": "Jmart0312",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_c16dda4b-2b60-45cd-b17a-00f2ba3151db_shadow_recent",
+          "seat": 3,
+          "startIso": "2026-11-14T22:54:39.229Z",
+          "actualHandle": "aurafarmer_",
+          "alternativeHandle": "aurafarmer_",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_a0c87908-e5d6-4573-a5f5-84eb24e57f20_shadow_recent",
+          "seat": 2,
+          "startIso": "2026-11-14T22:09:16.070Z",
+          "actualHandle": "JESUSISTHEWAYLOVE",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "0",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "0",
+          "changed": false
+        },
+        {
+          "windowId": "act_91b62313-0483-4a64-a770-7cceac6f4b75_shadow_recent",
+          "seat": 1,
+          "startIso": "2026-11-14T22:09:16.069Z",
+          "actualHandle": "VocalNavalPony",
+          "alternativeHandle": "JESUSISTHEWAYLOVE",
+          "actualNetUsdMicro": "823063",
+          "alternativeNetUsdMicro": "0",
+          "deltaUsdMicro": "-823063",
+          "changed": true
+        }
+      ]
+    }
+  ],
+  "baselineMatch": {
+    "paperPositions": 2,
+    "withReplaySignal": 2,
+    "entriesCompared": 2,
+    "entryMatches": 1,
+    "exitsCompared": 1,
+    "exitRuleMatches": 1,
+    "exitPnlMatches": 0,
+    "exitMatches": 0,
+    "details": [
+      {
+        "positionId": "pos_797a0cdf-6e73-48de-af33-0efffc491a70",
+        "handle": "VocalNavalPony",
+        "mintSymbol": "WASTED",
+        "signalId": "paper_pos_797a0cdf-6e73-48de-af33-0efffc491a70",
+        "actualInputUsdMicro": "20000000",
+        "replayInputUsdMicro": "10000000",
+        "inputMatch": false,
+        "entryTimeDeltaSeconds": -2,
+        "actualCloseReason": "time_exit",
+        "replayExitReason": "max_hold_green",
+        "actualNetUsdMicro": "2228653",
+        "replayNetUsdMicro": "823063",
+        "exitRuleMatch": true,
+        "exitPnlMatch": false,
+        "exitMatch": false,
+        "note": "Replay input $10.00 vs actual $20.00; a historic risk config or a quote difference can explain it. Exit rule matched (max_hold_green); P&L differs by -$1.40 because size/price inputs differ."
+      },
+      {
+        "positionId": "pos_27b947a4-56a2-4336-bdb3-a5c8b0a3fccd",
+        "handle": "coinpumper",
+        "mintSymbol": "OMNI",
+        "signalId": "paper_pos_27b947a4-56a2-4336-bdb3-a5c8b0a3fccd",
+        "actualInputUsdMicro": "6250000",
+        "replayInputUsdMicro": "6250000",
+        "inputMatch": true,
+        "entryTimeDeltaSeconds": 1,
+        "actualCloseReason": null,
+        "replayExitReason": null,
+        "actualNetUsdMicro": null,
+        "replayNetUsdMicro": "-3126",
+        "exitRuleMatch": false,
+        "exitPnlMatch": false,
+        "exitMatch": false,
+        "note": ""
+      }
+    ],
+    "note": "1/2 entries match exact input; 1/1 exit rules match the historic close; 0/1 exit P&L values match within 10% or $0.25 (and close times within 2h)."
+  },
+  "coverage": {
+    "fromIso": "2026-11-11T00:10:17.000Z",
+    "toIso": "2026-11-15T07:18:25.000Z",
+    "shadowRows": 180,
+    "shadowGroups": 171,
+    "shadowSignals": 171,
+    "shadowMissingWatch": 0,
+    "shadowOpenGroups": 10,
+    "paperPositions": 2,
+    "paperSignals": 2,
+    "paperMissingLeaderEvent": 0,
+    "activations": 9,
+    "hireWindows": 9,
+    "fills": 4,
+    "realizedLots": 1,
+    "candidates": 716,
+    "feeLedgerLamports": 34000
+  },
+  "calibration": {
+    "entrySlippageBps": 0,
+    "rawEntrySlippageBps": -164,
+    "exitSlippageBps": 30,
+    "feeBps": 5,
+    "delaySeconds": 2,
+    "samples": 2,
+    "notes": [
+      "Paper fills were 164 bps better than the leader's print; the replay applies 0 adverse entry slippage, which is conservative.",
+      "Exit slippage is not observable in the DB (no pre-exit mark); it stays the paper 30 bps assumption.",
+      "Pool depth / price impact per trade is not stored; slippage is a flat calibrated bps."
+    ]
+  },
+  "dataGaps": [
+    "Only 2 paper position(s); the baseline similarity is a thin sample.",
+    "The test half has 2 baseline trade(s); out-of-sample ranking is thin.",
+    "1 baseline entry input(s) differ from the real paper fill; a historic risk config or execution quote is the likely cause."
+  ],
+  "assumptions": [
+    "The DB stores the leader entry and exit, never intra-trade marks; the replay walks a linear price path between them at 1-minute steps.",
+    "A leader exit inside the run window is mirrored; a shadow code exit or paper close is only a last-known mark (path end), so an alternate rule is not forced to obey it.",
+    "A leader exit after the run window is not used (no future price); the position is marked at its entry price and reported open.",
+    "The historical risk config is not stored; the baseline is the current config supplied to the sweep.",
+    "Copy delay shifts the entry time, but the path starts at the leader print; no separate delay price impact is stored.",
+    "Price and leaderboard freshness gates see age 0 because the DB does not store historic quote/leaderboard ages; quote-impact gates are not evaluated.",
+    "Max drawdown and worst day are realized-PnL measures plus the final open mark, not intra-trade mark-to-market.",
+    "Alternate hires use the real seat-open times and seat tenure; a different hire would have changed future firing times.",
+    "A hired wallet stops being shadowed, so the actual hire has no in-seat shadow signal while an alternate bench wallet may have one. Hiring comparisons are indicative, not like-for-like P&L.",
+    "Signals are watch-list shadow buys plus paper fills; a live seat with neither contributes no baseline trade.",
+    "No provider calls, no live trading, no parameter application. Slippage/fees are flat calibrated bps, not a pool-depth model.",
+    "MAX_POSITION_AGE_HOURS=8760 in the default grid is the practical \"none\" value (one year); it is not infinite.",
+    "Seat tenure is pinned to the historic activations: roster size and idle-fire values have no mechanical effect here; cooldown and promotion bars can change alternative hires.",
+    "Fees paid in SOL are excluded from USDC P&L; paper fills are simulated and labeled PAPER."
+  ],
+  "runtimeMs": 323
+}

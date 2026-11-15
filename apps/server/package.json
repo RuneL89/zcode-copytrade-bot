@@ -13,6 +13,7 @@
     "wallet:create": "tsx src/cli/wallet-create.ts",
     "wallet:send": "tsx src/cli/wallet-send.ts",
     "user:token": "tsx src/cli/setup-token.ts",
+    "sweep": "tsx src/cli/param-sweep.ts",
     "demo": "tsx src/cli/demo.ts",
     "fixtures:generate": "tsx scripts/generate-demo-fixtures.ts"
   },

@@ -28,6 +28,7 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                       |
 | `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`.                                                      |
 | `withdraw.ts`          | Wallet withdrawal flow and its guards.                                                                                                                                                                                                                          |
+| `paramSweep.ts`        | Read-only counterfactual replay: maps a DB copy to signals/hire windows, runs the real sizing/risk/exit/promotion rules with alternate parameters, splits train/test, and renders Markdown/JSON. Never applies a parameter.                                     |
 | `ops.ts`               | The fixed whitelisted operations runner.                                                                                                                                                                                                                        |
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
@@ -73,6 +74,9 @@ no LLM in the loop (D6).
   by one mutex.
 - **Demo never writes live tables**; `demo.ts` is in-memory and labels every
   emitted state as fictional.
+- **Replay services are read-only.** `paramSweep.ts` opens a DB snapshot with
+  `openReadOnlyDatabase`, makes no provider calls, writes no trading row, and
+  never applies a parameter. Its only output is a report the operator reads.
 
 ## Work Guidance
 
@@ -90,7 +94,8 @@ no LLM in the loop (D6).
 - `pnpm --filter @zcode-bot/server test` — `engine-flow.test.ts` covers the
   lifecycle, firing, and handoff; `ops.test.ts`, `withdraw.test.ts`,
   `reports.test.ts`, `daytrader.test.ts`, `auth-api.test.ts`, `keys.test.ts`
-  cover their services.
+  cover their services; `param-sweep.test.ts` covers the read-only mapping,
+  report and empty-DB path.
 - `pnpm --filter @zcode-bot/server typecheck`
 - Root gate before closeout.
 

@@ -4,15 +4,16 @@
 
 The deterministic heart of the bot: money math, 0.25x sizing, proportional
 exits, loss streaks, order/position state machines, event classification and
-ordering-free roster rules, watch/promotion gates, and risk evaluation. Pure
-functions that the server wires to real providers and persistence.
+ordering-free roster rules, watch/promotion gates, risk evaluation, and the
+pure counterfactual replay engine that applies those rules to historic signals.
+Pure functions that the server wires to real providers and persistence.
 
 ## Ownership
 
 `money`, `sizing`, `exits`, `streak`, `states`, `orderState`, `tx`, `swap`,
 `events`, `activity`, `watch`, `eventOrder`, `risk`, `positionAge`, `transfer`,
 `freshness`, `budget`, `backfill`, `exitGuard`, `callPattern`, `deskPolicy`,
-`swapPrograms`, `liveGate`.
+`swapPrograms`, `liveGate`, `paramSweep`.
 Everything is re-exported from `src/index.ts`.
 
 ## Local Contracts
@@ -46,6 +47,10 @@ Everything is re-exported from `src/index.ts`.
 - **Purity:** no network, database, filesystem, or clock access. The only
   non-local imports are `zod` and type-only imports from `@zcode-bot/config`.
   Time and IDs come from arguments.
+- **Replay reuses the rules.** `paramSweep.ts` calls `sizeCopy`,
+  `evaluateEntryRisk` and `dayTradeExitDecision`; never fork a rule into the
+  simulator. Signals, hire windows and the linear-path assumption are inputs;
+  the module has no DB or provider access.
 
 ## Work Guidance
 
@@ -60,10 +65,12 @@ Everything is re-exported from `src/index.ts`.
 ## Verification
 
 - `pnpm --filter @zcode-bot/core test` — `sizing`, `swap`, `events`,
-  `activity`, `watch`, `positionAge`, `transfer`, `budget` suites. The budget
-  suite is the free-tier acceptance bar: nominal day at 5,796, hard cap
-  13,600, month ceiling 600,000, dead-stream signature-first, watch cap, and
-  the 429 storm.
+  `activity`, `watch`, `positionAge`, `transfer`, `budget`, `paramSweep`
+  suites. The budget suite is the free-tier acceptance bar: nominal day at
+  5,796, hard cap 13,600, month ceiling 600,000, dead-stream signature-first,
+  watch cap, and the 429 storm. `paramSweep` proves the simulator with current
+  defaults reproduces a real historic paper sizing decision and the stop /
+  target / time exits.
 - `pnpm --filter @zcode-bot/core typecheck`
 - Any behavior change must have a test that fails before the change.
 

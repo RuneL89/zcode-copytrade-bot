@@ -42,15 +42,15 @@ agent, orderings, rotation) is RETIRED (D6) — do not recreate it.
 
 ## Repository layout
 
-| Path                 | Purpose                                                                                                                                   |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/server`        | Hono REST+SSE API, background worker, wallet CLI, demo replay                                                                             |
-| `apps/web`           | React+Vite+Tailwind dashboard, Playwright e2e                                                                                             |
-| `packages/core`      | Domain: money (micro-USD bigints), 0.25x sizing, proportional exits, loss streaks, state machines, swap/event classification, watch rules |
-| `packages/db`        | Drizzle ORM + SQLite (WAL), migrations, repositories                                                                                      |
-| `packages/providers` | Leaderboard import + FOMO web adapter, Dawn, Helius, free public Solana RPC (activity refresh), Jupiter, pricing, notifications           |
-| `packages/config`    | Zod-validated env + risk configuration                                                                                                    |
-| `fixtures`           | Example leaderboard imports, fictional demo timeline                                                                                      |
+| Path                 | Purpose                                                                                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/server`        | Hono REST+SSE API, background worker, wallet CLI, demo replay                                                                                                    |
+| `apps/web`           | React+Vite+Tailwind dashboard, Playwright e2e                                                                                                                    |
+| `packages/core`      | Domain: money (micro-USD bigints), 0.25x sizing, proportional exits, loss streaks, state machines, swap/event classification, watch rules, counterfactual replay |
+| `packages/db`        | Drizzle ORM + SQLite (WAL), migrations, repositories                                                                                                             |
+| `packages/providers` | Leaderboard import + FOMO web adapter, Dawn, Helius, free public Solana RPC (activity refresh), Jupiter, pricing, notifications                                  |
+| `packages/config`    | Zod-validated env + risk configuration                                                                                                                           |
+| `fixtures`           | Example leaderboard imports, fictional demo timeline                                                                                                             |
 
 ## Commands
 
@@ -68,6 +68,7 @@ pnpm demo                   # start in fictional demo mode (28s replay)
 pnpm start                  # production start (serves web/dist + API + worker)
 pnpm wallet:create          # generate + encrypt the dedicated Solana wallet
 pnpm user:token             # reprint the one-time setup token
+pnpm sweep                  # read-only counterfactual parameter sweep (DB copy)
 pnpm e2e                    # Playwright browser tests (chromium)
 pnpm e2e:install            # playwright install chromium
 ```
@@ -112,6 +113,10 @@ dashboard's OPS tab exposes a whitelist of these commands through
    the shell, argv, or filesystem paths. Never accept command text from the
    client; new operations are added in code only, behind auth + CSRF + the
    single-op mutex.
+10. **The parameter sweep is read-only.** `pnpm sweep` snapshots a DB copy,
+    opens it with `openReadOnlyDatabase`, and writes only the chosen report
+    folder (default `reports/`). It never applies a parameter, signs, submits,
+    or calls a provider.
 
 ## Validation rules
 
@@ -151,6 +156,9 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.
+- The counterfactual parameter sweep (`apps/server/src/services/paramSweep.ts`,
+  `pnpm sweep`) is a read-only replay of historic evidence, not the trading
+  runtime. It reports train/test results and never applies a winner.
 
 ## Modes
 
