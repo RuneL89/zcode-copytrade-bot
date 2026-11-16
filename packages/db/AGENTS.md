@@ -47,6 +47,10 @@ and every repository function the server calls.
   stamp and never changes the activity columns. The query's optional
   `checkedBefore` cutoff filters recently measured rows before the SQL limit,
   so a one-candidate admission tick cannot be consumed by a fresh head row.
+- **Exit-queue lookups are bounded helpers.** `listKvByPrefix` reads
+  `exit.queue:*` rows for the runtime retry consumer. `latestFailedExitIntent`
+  resolves a legacy queue row by position and returns only a `failed` exit
+  intent with no `tx_signature`; signed or unknown intents are never retryable.
 - **Read-only consumers use `openReadOnlyDatabase`.** The weekly report, audits
   and ad-hoc inspections must never open the live file read-write, create it, or
   migrate it.

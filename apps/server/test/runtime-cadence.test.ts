@@ -67,6 +67,7 @@ describe('runtime cadence (D5)', () => {
       'healthTimer',
       'marksTimer',
       'feeLedgerTimer',
+      'exitRetryTimer',
       'activityTimer',
     ]) {
       expect(kept in rt).toBe(true);

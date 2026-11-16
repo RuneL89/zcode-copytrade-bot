@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { AppDatabase } from './connection.js';
 import { schema } from './connection.js';
 
@@ -37,6 +37,15 @@ export function kvSet(db: Db, key: string, value: string): void {
 
 export function kvDelete(db: Db, key: string): void {
   db.delete(schema.kv).where(eq(schema.kv.key, key)).run();
+}
+
+/** Read every kv row whose key starts with `prefix` (exit.queue:* etc.). */
+export function listKvByPrefix(db: Db, prefix: string) {
+  return db
+    .select()
+    .from(schema.kv)
+    .where(sql`${schema.kv.key} LIKE ${prefix + '%'}`)
+    .all();
 }
 
 /** Per-candidate admission-scan deferral (an eligibility signal, not freshness). */
@@ -715,6 +724,28 @@ export function getIntent(db: Db, intentId: string) {
 
 export function intentsInStates(db: Db, states: string[]) {
   return db.select().from(schema.orderIntents).where(inArray(schema.orderIntents.state, states)).all();
+}
+
+/**
+ * Newest failed exit intent for a position that provably never reached the
+ * chain. Used to resolve a legacy exit.queue row written before the queue
+ * carried its own plan metadata.
+ */
+export function latestFailedExitIntent(db: Db, positionId: string) {
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(
+      and(
+        eq(schema.orderIntents.positionId, positionId),
+        inArray(schema.orderIntents.kind, ['exit', 'fire_close']),
+        eq(schema.orderIntents.state, 'failed'),
+        isNull(schema.orderIntents.txSignature),
+      ),
+    )
+    .orderBy(desc(schema.orderIntents.createdAt))
+    .limit(1)
+    .get();
 }
 
 export function pendingUnsignedIntentsForActivation(db: Db, activationId: string) {

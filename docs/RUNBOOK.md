@@ -325,6 +325,15 @@ backoff before it gives up. If a position is still open after those retries the
 handoff is blocked with a `close_failed` case, because the monitor only manages
 the active trader's positions and a FIRED trader would strand them.
 
+A failed exit also queues itself in `exit.queue:<positionId>` with its original
+amount and reason. The worker drains that queue every 30 seconds: it retries
+only intents that are still `failed` with no `tx_signature`, only while the
+position is open/partially closed and its remaining base is unchanged, and only
+up to four attempts with 30/60/120-second backoff. Exhaustion is audited and
+the normal code exits remain the backstop. Signed, submitted, unknown, or
+reconciliation-owned intents are never retried. This closes the gap where a
+transient Jupiter 429 left a copied position open after the leader had sold.
+
 Exits also sell **what the wallet holds**, not the recorded amount: the copied
 size comes from quoted outputs at entry and can exceed the delivered balance
 after slippage, which is what produced the 2026-10-30 `InsufficientFunds` (6024)

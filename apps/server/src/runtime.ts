@@ -30,7 +30,7 @@ import {
 } from '@zcode-bot/providers';
 import { StateStore } from './services/state.js';
 import { ControlService } from './services/control.js';
-import { CopyEngine, SOL_MINT, USDC_MINT } from './services/engine.js';
+import { CopyEngine, EXIT_QUEUE_RETRY_MS, SOL_MINT, USDC_MINT } from './services/engine.js';
 import { TraderLifecycle } from './services/lifecycle.js';
 import { LeaderMonitor, reconcileOpenIntents } from './services/monitor.js';
 import { selectDawnTargets } from './services/dawn-targets.js';
@@ -142,6 +142,7 @@ export class Runtime {
   private stopping = false;
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
   private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private exitRetryTimer: ReturnType<typeof setInterval> | null = null;
   private lastFeeScanAt = 0;
   private solPriceUsdMicro: bigint | null = null;
   private weeklyReview: WeeklyReviewScheduler | null = null;
@@ -578,6 +579,29 @@ export class Runtime {
     // so it stays well off the one-minute health loop.
     this.feeLedgerTimer = setInterval(() => void this.refreshFeeLedger(), 10 * 60_000);
 
+    // Pre-signature exit retries (housekeeping): a transient quote failure must
+    // not leave a copied position open after the leader sold. The engine drains
+    // only unsigned failed exits, with its own bounded backoff.
+    this.exitRetryTimer = setInterval(() => {
+      void this.engine
+        .retryQueuedExits()
+        .then((r) => {
+          if (r.retried > 0 || r.exhausted > 0) {
+            repo.audit(
+              this.db.db,
+              'trade',
+              `exit queue retry: ${r.retried} attempted, ${r.filled} filled, ` +
+                `${r.failed} failed, ${r.exhausted} exhausted, ${r.skipped} skipped`,
+              r,
+            );
+            this.rebuildState();
+          }
+        })
+        .catch((e: Error) => {
+          repo.audit(this.db.db, 'trade', `exit queue retry pass failed: ${e.message}`, {});
+        });
+    }, EXIT_QUEUE_RETRY_MS);
+
     // Candidate-pool activity refresh (housekeeping): keeps the funded-buy
     // readings and the stall watcher's evidence current. Never hires.
     this.activityTimer = setInterval(() => {
@@ -941,6 +965,7 @@ export class Runtime {
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (this.marksTimer) clearInterval(this.marksTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
+    if (this.exitRetryTimer) clearInterval(this.exitRetryTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.watchTimer) clearInterval(this.watchTimer);
     if (this.rosterTimer) clearInterval(this.rosterTimer);

@@ -34,8 +34,9 @@ the whole set is constructed and scheduled by `runtime.ts`.
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
-(health, dashboard marks, fee ledger, activity refresh, Telegram reports, the
-weekly review Monday 08:00, the Telegram command poll). Dashboard marks refresh
+(health, dashboard marks, fee ledger, activity refresh, the 30-second
+pre-signature exit retry, Telegram reports, the weekly review Monday 08:00, the
+Telegram command poll). Dashboard marks refresh
 every minute so the builder's five-minute display freshness window does not
 expire between 15-minute health samples.
 Discovery is demand-driven, not scheduled. Dawn and the native board capture are
@@ -65,6 +66,15 @@ no LLM in the loop (D6).
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
   Dedupe key is `(chain, leader, signature, leg)`.
+- **Pre-signature exit failures are retried safely.** An exit that fails before
+  a signature is written to `exit.queue:<positionId>` with its original plan.
+  `runtime.ts` drains the queue every 30 seconds. A retry requires the intent to
+  still be `failed` with no `tx_signature`, the position to be open or
+  partially closed, and the remaining base to equal the queued base. It retries
+  at most `EXIT_QUEUE_MAX_ATTEMPTS` (4) with 30/60/120-second backoff, then
+  audits exhaustion and leaves the code exits as the backstop. A signed,
+  submitted, unknown, or reconciliation-owned intent is never retried; a retry
+  never freezes the chair.
 - **Admission reads fail closed, but a busy wallet is not disqualified.** A
   failed signature page or transaction detail read marks the activity check
   failed via `markCandidateActivityFailed`; the last good activity columns and

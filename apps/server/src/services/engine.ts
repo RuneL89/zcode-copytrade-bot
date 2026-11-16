@@ -36,6 +36,35 @@ const CLOSE_ATTEMPTS = 3;
 const CLOSE_BACKOFF_MS = 800;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Bounded retries for an exit that failed before a signature existed. */
+export const EXIT_QUEUE_MAX_ATTEMPTS = 4;
+/** How often the runtime drains the exit queue. */
+export const EXIT_QUEUE_RETRY_MS = 30_000;
+const EXIT_QUEUE_BACKOFF_MS = 30_000;
+
+interface ExitQueueContext {
+  intentId: string;
+  exitBase: bigint;
+  remainingBefore: bigint;
+  remainingAfter: bigint;
+  full: boolean;
+  closeReason: string;
+  leaderSignature: string | null;
+}
+
+interface ExitQueueEntry {
+  at?: string;
+  attempt?: number;
+  detail?: string;
+  intentId?: string;
+  exitBase?: string;
+  remainingBefore?: string;
+  remainingAfter?: string;
+  full?: boolean;
+  closeReason?: string;
+  leaderSignature?: string | null;
+}
+
 /**
  * Base units a position holds after selling `exitBase`. Always scoped to the
  * position, never to the wallet: every seat shares one wallet, so the wallet's
@@ -475,14 +504,32 @@ export class CopyEngine {
   }
 
   /** Pre-signature failure: keep retrying, and do not freeze the chair. */
-  private queueExit(positionId: string, detail: string): void {
+  private queueExit(positionId: string, detail: string, context?: ExitQueueContext): void {
     const next = this.exitAttempt(positionId) + 1;
     repo.kvSet(this.db, `exit.attempt:${positionId}`, String(next));
-    repo.kvSet(
-      this.db,
-      `exit.queue:${positionId}`,
-      JSON.stringify({ at: new Date().toISOString(), attempt: next, detail }),
-    );
+    const entry = {
+      at: new Date().toISOString(),
+      attempt: next,
+      detail,
+      ...(context
+        ? {
+            intentId: context.intentId,
+            exitBase: context.exitBase.toString(),
+            remainingBefore: context.remainingBefore.toString(),
+            remainingAfter: context.remainingAfter.toString(),
+            full: context.full,
+            closeReason: context.closeReason,
+            leaderSignature: context.leaderSignature,
+          }
+        : {}),
+    };
+    repo.kvSet(this.db, `exit.queue:${positionId}`, JSON.stringify(entry));
+  }
+
+  /** Clear the queue entry. Exhaustion keeps the attempt index for the slippage ladder. */
+  private clearExitQueue(positionId: string, clearAttempt = true): void {
+    repo.kvDelete(this.db, `exit.queue:${positionId}`);
+    if (clearAttempt) repo.kvDelete(this.db, `exit.attempt:${positionId}`);
   }
 
   /** Close the entire remaining position (fire policy / close-all / emergency). */
@@ -535,6 +582,265 @@ export class CopyEngine {
       else failed++;
     }
     return { closed, unknown, failed };
+  }
+
+  /**
+   * Drain pre-signature exit failures. The queue is written whenever an exit
+   * fails before a signature exists; this consumer retries those intents with
+   * backoff, never a signed/submitted/unknown one. It re-checks the position
+   * and remaining base before selling, so a retry cannot double-sell. The
+   * existing code exits remain the backstop and the chair is never frozen.
+   */
+  async retryQueuedExits(nowMs = Date.now()): Promise<{
+    scanned: number;
+    retried: number;
+    filled: number;
+    failed: number;
+    exhausted: number;
+    skipped: number;
+  }> {
+    const out = { scanned: 0, retried: 0, filled: 0, failed: 0, exhausted: 0, skipped: 0 };
+    const prefix = 'exit.queue:';
+
+    for (const row of repo.listKvByPrefix(this.db, prefix)) {
+      out.scanned++;
+      const positionId = row.key.slice(prefix.length);
+      let entry: ExitQueueEntry;
+      try {
+        entry = JSON.parse(row.value) as ExitQueueEntry;
+      } catch {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', 'exit queue malformed; entry discarded', { positionId });
+        out.skipped++;
+        continue;
+      }
+
+      const position = repo.getPosition(this.db, positionId);
+      if (!position) {
+        this.clearExitQueue(positionId);
+        out.skipped++;
+        continue;
+      }
+      if (position.status !== 'open' && position.status !== 'partially_closed') {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', `exit queue skipped: position is ${position.status}`, {
+          positionId,
+          mint: position.mint,
+        });
+        out.skipped++;
+        continue;
+      }
+
+      // Only an intent that provably never reached submission is retryable.
+      const intent = entry.intentId
+        ? repo.getIntent(this.db, entry.intentId)
+        : repo.latestFailedExitIntent(this.db, positionId);
+      if (
+        !intent ||
+        intent.positionId !== positionId ||
+        intent.state !== 'failed' ||
+        intent.txSignature !== null
+      ) {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', 'exit queue skipped: intent was signed or is no longer failed', {
+          positionId,
+          intentId: entry.intentId ?? intent?.intentId ?? null,
+          state: intent?.state ?? null,
+          hasSignature: intent?.txSignature != null,
+        });
+        out.skipped++;
+        continue;
+      }
+
+      let currentRemaining: bigint;
+      try {
+        currentRemaining = BigInt(position.remainingTokenBase);
+      } catch {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', 'exit queue skipped: unreadable remaining base', { positionId });
+        out.skipped++;
+        continue;
+      }
+      if (currentRemaining <= 0n) {
+        this.clearExitQueue(positionId);
+        out.skipped++;
+        continue;
+      }
+
+      let exitBase: bigint;
+      let remainingBefore: bigint;
+      let full: boolean;
+      let closeReason: string;
+      let leaderSignature: string | null;
+      if (
+        entry.exitBase !== undefined &&
+        entry.remainingBefore !== undefined &&
+        typeof entry.full === 'boolean'
+      ) {
+        try {
+          exitBase = BigInt(entry.exitBase);
+          remainingBefore = BigInt(entry.remainingBefore);
+        } catch {
+          this.clearExitQueue(positionId);
+          repo.audit(this.db, 'trade', 'exit queue malformed; entry discarded', { positionId });
+          out.skipped++;
+          continue;
+        }
+        if (remainingBefore !== currentRemaining) {
+          this.clearExitQueue(positionId);
+          repo.audit(this.db, 'trade', 'exit queue skipped: position remaining base changed', {
+            positionId,
+            expectedBase: remainingBefore.toString(),
+            currentBase: currentRemaining.toString(),
+          });
+          out.skipped++;
+          continue;
+        }
+        full = entry.full;
+        if (full) exitBase = currentRemaining;
+        closeReason = entry.closeReason ?? 'exit_queue_retry';
+        leaderSignature = entry.leaderSignature ?? null;
+      } else {
+        // Legacy queue rows have no plan metadata. Retry only when the failed
+        // intent targeted the whole remaining position, which is provable from
+        // the intent's input amount; otherwise leave it to the code exits.
+        try {
+          exitBase = BigInt(intent.inputAmountBase);
+        } catch {
+          exitBase = 0n;
+        }
+        if (exitBase <= 0n || exitBase !== currentRemaining) {
+          this.clearExitQueue(positionId);
+          repo.audit(this.db, 'trade', 'exit queue legacy entry skipped: cannot prove unchanged size', {
+            positionId,
+            intentBase: exitBase.toString(),
+            currentBase: currentRemaining.toString(),
+          });
+          out.skipped++;
+          continue;
+        }
+        remainingBefore = currentRemaining;
+        full = true;
+        closeReason = intent.kind === 'fire_close' ? 'fire_close_all' : 'exit_queue_retry';
+        leaderSignature = null;
+      }
+      if (exitBase <= 0n || exitBase > currentRemaining) {
+        this.clearExitQueue(positionId);
+        out.skipped++;
+        continue;
+      }
+
+      const attempt = Math.max(1, Math.floor(entry.attempt ?? this.exitAttempt(positionId)));
+      if (!Number.isFinite(attempt)) {
+        this.clearExitQueue(positionId);
+        out.skipped++;
+        continue;
+      }
+      if (attempt >= EXIT_QUEUE_MAX_ATTEMPTS) {
+        // Keep exit.attempt: the next code exit keeps the widest slippage step.
+        repo.kvDelete(this.db, `${prefix}${positionId}`);
+        repo.audit(
+          this.db,
+          'trade',
+          `exit queue exhausted after ${attempt} attempts; code exits remain the backstop`,
+          { positionId, mint: position.mint, attempt, detail: entry.detail ?? null },
+        );
+        out.exhausted++;
+        continue;
+      }
+
+      const queuedAt = entry.at ? Date.parse(entry.at) : NaN;
+      if (!Number.isFinite(queuedAt)) {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', 'exit queue malformed; entry discarded', { positionId });
+        out.skipped++;
+        continue;
+      }
+      const waitMs = EXIT_QUEUE_BACKOFF_MS * 2 ** (attempt - 1);
+      if (nowMs - queuedAt < waitMs) continue;
+
+      out.retried++;
+      const remainingAfter = full ? 0n : remainingAfterForSale(currentRemaining, exitBase, false);
+      let result: ExecOutcome | 'no-position';
+      try {
+        result = await this.executeExit(
+          positionId,
+          exitBase,
+          remainingAfter,
+          full,
+          closeReason,
+          leaderSignature,
+        );
+      } catch (e) {
+        const detail = `exit queue retry error: ${(e as Error).message}`;
+        this.queueExit(positionId, detail, {
+          intentId: intent.intentId,
+          exitBase,
+          remainingBefore,
+          remainingAfter,
+          full,
+          closeReason,
+          leaderSignature,
+        });
+        repo.audit(this.db, 'trade', detail, { positionId, attempt });
+        out.failed++;
+        continue;
+      }
+
+      if (result === 'no-position') {
+        this.clearExitQueue(positionId);
+        out.skipped++;
+        continue;
+      }
+      if (result.kind === 'filled') {
+        this.clearExitQueue(positionId);
+        repo.audit(
+          this.db,
+          'trade',
+          full
+            ? 'exit queue retry filled; position closed'
+            : 'exit queue retry filled; position partially closed',
+          {
+            positionId,
+            mint: position.mint,
+            attempt,
+          },
+        );
+        out.filled++;
+        this.callbacks.onStateChanged();
+      } else if (result.kind === 'unknown') {
+        this.clearExitQueue(positionId);
+        repo.audit(this.db, 'trade', 'exit queue retry outcome unknown; reconciliation owns it', {
+          positionId,
+          mint: position.mint,
+          attempt,
+        });
+        out.skipped++;
+      } else if (result.kind === 'skipped') {
+        this.queueExit(positionId, result.reason, {
+          intentId: intent.intentId,
+          exitBase,
+          remainingBefore,
+          remainingAfter,
+          full,
+          closeReason,
+          leaderSignature,
+        });
+        repo.audit(this.db, 'trade', `exit queue retry skipped; queued again: ${result.reason}`, {
+          positionId,
+          attempt,
+        });
+        out.failed++;
+      } else {
+        repo.audit(this.db, 'trade', `exit queue retry failed; queued again: ${result.error}`, {
+          positionId,
+          attempt,
+        });
+        out.failed++;
+      }
+    }
+
+    return out;
   }
 
   /** Warn (throttled) before the wallet runs out of fee headroom. */
@@ -817,6 +1123,15 @@ export class CopyEngine {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
+      this.queueExit(positionId, detail, {
+        intentId,
+        exitBase,
+        remainingBefore: remainingRecorded,
+        remainingAfter,
+        full,
+        closeReason,
+        leaderSignature,
+      });
       repo.audit(this.db, 'trade', `exit skipped — ${detail}`, { positionId, mint: position.mint });
       return { kind: 'failed', error: detail };
     }
@@ -871,7 +1186,15 @@ export class CopyEngine {
     if (guardExitMode(positionMode, this.executor.mode) === 'refuse') {
       const detail = `exit refused: ${this.executor.mode} executor cannot close a ${positionMode} position`;
       repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
-      this.queueExit(positionId, detail);
+      this.queueExit(positionId, detail, {
+        intentId,
+        exitBase,
+        remainingBefore: remainingRecorded,
+        remainingAfter,
+        full,
+        closeReason,
+        leaderSignature,
+      });
       repo.audit(this.db, 'monitor', `exit refused — ${detail}`, { positionId, mint: position.mint });
       return { kind: 'failed', error: detail };
     }
@@ -884,6 +1207,15 @@ export class CopyEngine {
       if (solLamports < MIN_SOL_FOR_FEES_LAMPORTS) {
         const detail = `insufficient SOL for fees: ${solLamports} lamports (need ${MIN_SOL_FOR_FEES_LAMPORTS}) — exit NOT sent`;
         repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
+        this.queueExit(positionId, detail, {
+          intentId,
+          exitBase,
+          remainingBefore: remainingRecorded,
+          remainingAfter,
+          full,
+          closeReason,
+          leaderSignature,
+        });
         repo.audit(this.db, 'trade', `exit blocked — ${detail}`, { positionId });
         void this.notifier
           .notify(
@@ -935,7 +1267,15 @@ export class CopyEngine {
     }
     if (outcome.kind === 'failed') {
       repo.updateIntent(this.db, intentId, { state: 'failed', reason: outcome.error });
-      this.queueExit(positionId, outcome.error);
+      this.queueExit(positionId, outcome.error, {
+        intentId,
+        exitBase,
+        remainingBefore: remainingRecorded,
+        remainingAfter,
+        full,
+        closeReason,
+        leaderSignature,
+      });
       return outcome;
     }
     if (outcome.kind === 'skipped') {

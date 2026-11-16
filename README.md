@@ -252,6 +252,7 @@ The monthly ladder is green, amber at 450,000 credits, red at 550,000, roster-on
 - **Headless ZCode runs are invisible in the app.** The mailbox route exists so the work shows up; the CLI fallback leaves only `last-run.json` and its run log.
 - **Equity is account value.** The dashboard KPI is USDC cash + the live mark of each open position; open P&L moves it before a position closes. The realized book (start + closed PnL) is the closed-lot series, not the headline equity.
 - **Equity excludes fees.** Trade PnL is proceeds minus cost basis in USDC; network fees and account rent are paid in SOL from a separate reserve and measured by the fee ledger.
+- **Pre-signature exit failures retry.** An exit that failed before signing is queued and retried up to four times with backoff; the normal code exits remain the backstop, and signed or unknown outcomes are never retried.
 - **Reconciliation needs you.** An execution with an unknown outcome stays open until you resolve it with on-chain evidence, and those positions are kept out of equity.
 - **Emergency stop is not a recall.** It blocks new entries and new signing at once. It cannot undo a transaction already on chain.
 - **The dashboard is plain HTTP.** Keep it on the machine or your own Wi-Fi. Do not expose port 8787 without HTTPS and a reverse proxy.

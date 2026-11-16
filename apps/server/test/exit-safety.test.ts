@@ -9,8 +9,9 @@ import { openDatabase, type AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type AppConfig } from '@zcode-bot/config';
 import type { PriceProvider } from '@zcode-bot/providers';
-import { CopyEngine, remainingAfterForSale } from '../src/services/engine.js';
+import { CopyEngine, EXIT_QUEUE_MAX_ATTEMPTS, remainingAfterForSale } from '../src/services/engine.js';
 import { ControlService } from '../src/services/control.js';
+import { PaperExecutor } from '../src/services/executors.js';
 import type { ExecOutcome, Executor, IntentSpec, QuoteCheck } from '../src/services/executors.js';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -142,6 +143,54 @@ function engineWith(executor: Executor) {
     'Fksjc9dLJHtCXCqXbJfRjQUmBUKtqivYFte2kGCLsV4i',
     1_000_000_000n,
     true,
+  );
+}
+
+function seedFailedExitIntent(
+  positionId: string,
+  activationId: string,
+  inputBase = '1000',
+  txSignature: string | null = null,
+): string {
+  const intentId = 'intent_' + crypto.randomUUID();
+  repo.insertIntent(handle.db, {
+    intentId,
+    kind: 'exit',
+    mode: 'live',
+    activationId,
+    candidateId: 'cand_test',
+    positionId,
+    mint: 'MintGTA6',
+    inputMint: USDC,
+    inputAmountBase: inputBase,
+    inputUsdMicro: '1000000',
+    state: 'failed',
+    reason: 'pre-signature failure',
+    txSignature,
+    idempotencyKey: 'idem_' + crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  return intentId;
+}
+
+function enqueueExit(positionId: string, intentId: string, overrides: Record<string, unknown> = {}): void {
+  repo.kvSet(
+    handle.db,
+    `exit.queue:${positionId}`,
+    JSON.stringify({
+      at: new Date().toISOString(),
+      attempt: 1,
+      detail: 'pre-signature failure',
+      intentId,
+      exitBase: '1000',
+      remainingBefore: '1000',
+      remainingAfter: '0',
+      full: true,
+      closeReason: 'leader_exit',
+      leaderSignature: null,
+      ...overrides,
+    }),
   );
 }
 
@@ -363,5 +412,220 @@ describe('exit safety: retries and blocked fires', () => {
     const result = await engine.closePosition(positionId, 'fire_close_all');
     expect(result).toBe('failed');
     expect(executor.specs).toHaveLength(0);
+  });
+});
+
+describe('exit queue retry', () => {
+  it('retries a pre-signature 429 and closes exactly once', async () => {
+    const { positionId } = seedPosition('1000');
+    const executor = new ScriptedExecutor([
+      { kind: 'failed', error: 'paper simulation failed: jupiter: rate limited (429)' },
+      {
+        kind: 'filled',
+        signature: 'sig-retry',
+        inputAmountBase: '1000',
+        outputAmountBase: '1000000',
+        feeUsdMicro: '0',
+        evidence: {},
+        commitment: 'confirmed',
+      },
+    ]);
+    const engine = engineWith(executor);
+
+    expect(await engine.closePosition(positionId, 'fire_close_all')).toBe('failed');
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toContain('rate limited');
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.retried).toBe(1);
+    expect(retry.filled).toBe(1);
+    expect(executor.specs).toHaveLength(2);
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('closed');
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+    expect(repo.kvGet(handle.db, `exit.attempt:${positionId}`)).toBeUndefined();
+    const lots = repo.listPnlLots(handle.db, 10).filter((lot) => lot.positionId === positionId);
+    expect(lots).toHaveLength(1);
+    expect(lots[0]!.closedBase).toBe('1000');
+  });
+
+  it('retries on the paper executor path too', async () => {
+    const { positionId } = seedPosition('1000');
+    let priceCalls = 0;
+    const paper = new PaperExecutor(null, async () => {
+      priceCalls++;
+      if (priceCalls === 1) throw new Error('jupiter: rate limited (429)');
+      return 1_000_000n;
+    });
+    const engine = new CopyEngine(
+      handle.db,
+      config.risk,
+      prices,
+      paper,
+      new ControlService(handle.db),
+      notifier,
+      { onFired: () => {}, onStateChanged: () => {} },
+      null,
+      1_000_000_000n,
+      false,
+    );
+
+    expect(await engine.closePosition(positionId, 'leader_exit')).toBe('failed');
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeDefined();
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.filled).toBe(1);
+    expect(priceCalls).toBe(2);
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('closed');
+  });
+
+  it('never retries an intent that already has a signature', async () => {
+    const { positionId, activationId } = seedPosition('1000');
+    const intentId = seedFailedExitIntent(positionId, activationId, '1000', 'sig-signed');
+    enqueueExit(positionId, intentId);
+    const executor = new ScriptedExecutor([]);
+    const engine = engineWith(executor);
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.retried).toBe(0);
+    expect(retry.skipped).toBe(1);
+    expect(executor.specs).toHaveLength(0);
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+  });
+
+  it('never retries a position owned by reconciliation', async () => {
+    const { positionId, activationId } = seedPosition('1000');
+    const intentId = seedFailedExitIntent(positionId, activationId);
+    enqueueExit(positionId, intentId);
+    repo.updatePosition(handle.db, positionId, { status: 'requires_reconciliation' });
+    const executor = new ScriptedExecutor([]);
+    const engine = engineWith(executor);
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.retried).toBe(0);
+    expect(retry.skipped).toBe(1);
+    expect(executor.specs).toHaveLength(0);
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+  });
+
+  it('stops after the bounded attempt count and audits exhaustion', async () => {
+    const { positionId } = seedPosition('1000');
+    const failed = { kind: 'failed' as const, error: 'preflight rejected (not submitted)' };
+    const executor = new ScriptedExecutor([failed, failed, failed, failed]);
+    const engine = engineWith(executor);
+
+    await engine.closePosition(positionId, 'fire_close_all'); // attempt 1
+    let retried = 0;
+    for (let i = 0; i < EXIT_QUEUE_MAX_ATTEMPTS; i++) {
+      retried += (await engine.retryQueuedExits(Date.now() + (i + 1) * 10 * 60_000)).retried;
+    }
+
+    expect(executor.specs).toHaveLength(EXIT_QUEUE_MAX_ATTEMPTS);
+    expect(retried).toBe(EXIT_QUEUE_MAX_ATTEMPTS - 1);
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+    expect(repo.kvGet(handle.db, `exit.attempt:${positionId}`)).toBe(String(EXIT_QUEUE_MAX_ATTEMPTS));
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('open');
+    expect(repo.listAudit(handle.db, 100).some((row) => row.message.includes('exit queue exhausted'))).toBe(
+      true,
+    );
+  });
+
+  it('skips a retry when the remaining base changed', async () => {
+    const { positionId } = seedPosition('1000');
+    const executor = new ScriptedExecutor([
+      { kind: 'failed', error: 'paper simulation failed: jupiter: rate limited (429)' },
+    ]);
+    const engine = engineWith(executor);
+    await engine.closePosition(positionId, 'fire_close_all');
+    repo.updatePosition(handle.db, positionId, { remainingTokenBase: '900' });
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.retried).toBe(0);
+    expect(retry.skipped).toBe(1);
+    expect(executor.specs).toHaveLength(1);
+    expect(repo.getPosition(handle.db, positionId)!.remainingTokenBase).toBe('900');
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+    expect(repo.listAudit(handle.db, 100).some((row) => row.message.includes('remaining base changed'))).toBe(
+      true,
+    );
+  });
+
+  it('skips a retry when the position is already closed', async () => {
+    const { positionId } = seedPosition('1000');
+    const executor = new ScriptedExecutor([
+      { kind: 'failed', error: 'paper simulation failed: jupiter: rate limited (429)' },
+    ]);
+    const engine = engineWith(executor);
+    await engine.closePosition(positionId, 'fire_close_all');
+    repo.updatePosition(handle.db, positionId, {
+      status: 'closed',
+      remainingTokenBase: '0',
+      closedAt: new Date().toISOString(),
+    });
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.retried).toBe(0);
+    expect(retry.skipped).toBe(1);
+    expect(executor.specs).toHaveLength(1);
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+  });
+
+  it('retries a legacy queue row when the failed intent proves the full size', async () => {
+    const { positionId, activationId } = seedPosition('1000');
+    seedFailedExitIntent(positionId, activationId, '1000');
+    repo.kvSet(
+      handle.db,
+      `exit.queue:${positionId}`,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        attempt: 1,
+        detail: 'paper simulation failed: jupiter: rate limited (429)',
+      }),
+    );
+    const executor = new ScriptedExecutor([
+      {
+        kind: 'filled',
+        signature: 'sig-legacy',
+        inputAmountBase: '1000',
+        outputAmountBase: '1000000',
+        feeUsdMicro: '0',
+        evidence: {},
+        commitment: 'confirmed',
+      },
+    ]);
+    const engine = engineWith(executor);
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.filled).toBe(1);
+    expect(executor.specs).toHaveLength(1);
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('closed');
+    expect(repo.kvGet(handle.db, `exit.queue:${positionId}`)).toBeUndefined();
+  });
+
+  it('re-sizes a partial retry from the unchanged remaining base', async () => {
+    const { positionId, activationId } = seedPosition('1000');
+    const intentId = seedFailedExitIntent(positionId, activationId, '400');
+    enqueueExit(positionId, intentId, {
+      exitBase: '400',
+      remainingAfter: '600',
+      full: false,
+    });
+    const executor = new ScriptedExecutor([
+      {
+        kind: 'filled',
+        signature: 'sig-partial',
+        inputAmountBase: '400',
+        outputAmountBase: '400000',
+        feeUsdMicro: '0',
+        evidence: {},
+        commitment: 'confirmed',
+      },
+    ]);
+    const engine = engineWith(executor);
+
+    const retry = await engine.retryQueuedExits(Date.now() + 60_000);
+    expect(retry.filled).toBe(1);
+    expect(executor.specs[0]!.inputAmountBase).toBe('400');
+    const position = repo.getPosition(handle.db, positionId)!;
+    expect(position.status).toBe('partially_closed');
+    expect(position.remainingTokenBase).toBe('600');
   });
 });
