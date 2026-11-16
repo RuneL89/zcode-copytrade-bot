@@ -562,8 +562,17 @@ export class Runtime {
 
     // Dashboard marks (housekeeping): quote open positions every minute so the
     // builder's five-minute freshness window never expires between refreshes.
-    this.marksTimer = setInterval(() => void this.refreshMarks().catch(() => undefined), MARKS_REFRESH_MS);
-    void this.refreshMarks().catch(() => undefined);
+    // Rebuild after each pass so the SSE state carries the new marks.
+    this.marksTimer = setInterval(
+      () =>
+        void this.refreshMarks()
+          .then(() => this.rebuildState())
+          .catch(() => undefined),
+      MARKS_REFRESH_MS,
+    );
+    void this.refreshMarks()
+      .then(() => this.rebuildState())
+      .catch(() => undefined);
 
     // Fee ledger scan cadence (housekeeping): wallet history is a billed call,
     // so it stays well off the one-minute health loop.
