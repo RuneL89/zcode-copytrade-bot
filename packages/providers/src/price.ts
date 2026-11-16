@@ -1,4 +1,23 @@
-import { JUPITER_FALLBACK_TAKER, type JupiterProvider } from './solana/jupiter.js';
+import {
+  JUPITER_FALLBACK_TAKER,
+  JupiterNoRouteError,
+  type JupiterProvider,
+  type JupiterQuote,
+} from './solana/jupiter.js';
+
+/** A failed price read, split by whether retrying can ever help this mint. */
+export class PriceUnavailableError extends Error {
+  constructor(
+    public readonly reason: 'no_route' | 'transient',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PriceUnavailableError';
+  }
+}
+
+/** A confirmed no-route is remembered this long; no HTTP is paid during it. */
+export const NO_ROUTE_CACHE_MS = 60 * 60_000;
 
 export interface CachedPrice {
   /** Micro-USD per 1 whole token. */
@@ -18,6 +37,8 @@ export interface PriceProvider {
  */
 export class JupiterPriceProvider implements PriceProvider {
   private cache = new Map<string, CachedPrice>();
+  /** Mint -> no-route cache expiry. Transient failures are never stored. */
+  private noRouteUntil = new Map<string, number>();
   private jup: JupiterProvider | null = null;
   private taker = JUPITER_FALLBACK_TAKER;
 
@@ -32,17 +53,34 @@ export class JupiterPriceProvider implements PriceProvider {
   async priceOf(mint: string, decimals: number): Promise<CachedPrice> {
     const hit = this.cache.get(mint);
     if (hit && Date.now() - hit.observedAt <= this.maxAgeMs) return hit;
-    if (!this.jup) throw new Error('price: no pricing source');
-    const quote = await this.jup.quote({
-      inputMint: mint,
-      outputMint: this.usdcMint,
-      amount: (10n ** BigInt(decimals)).toString(),
-      slippageBps: 1000,
-      taker: this.taker,
-    });
+    const blockedUntil = this.noRouteUntil.get(mint);
+    if (blockedUntil !== undefined) {
+      if (Date.now() < blockedUntil) {
+        throw new PriceUnavailableError('no_route', `price: no route for ${mint} (cached)`);
+      }
+      this.noRouteUntil.delete(mint);
+    }
+    if (!this.jup) throw new PriceUnavailableError('transient', 'price: no pricing source');
+    let quote: JupiterQuote;
+    try {
+      quote = await this.jup.quote({
+        inputMint: mint,
+        outputMint: this.usdcMint,
+        amount: (10n ** BigInt(decimals)).toString(),
+        slippageBps: 1000,
+        taker: this.taker,
+      });
+    } catch (e) {
+      if (e instanceof JupiterNoRouteError) {
+        this.noRouteUntil.set(mint, Date.now() + NO_ROUTE_CACHE_MS);
+        throw new PriceUnavailableError('no_route', `price: no route for ${mint}`);
+      }
+      throw new PriceUnavailableError('transient', `price: ${e instanceof Error ? e.message : String(e)}`);
+    }
     const outBase = BigInt(quote.outAmount); // USDC has 6 decimals == micro-USD directly
     const cached: CachedPrice = { priceUsdMicro: outBase, observedAt: Date.now() };
     this.cache.set(mint, cached);
+    this.noRouteUntil.delete(mint);
     return cached;
   }
 
@@ -50,6 +88,7 @@ export class JupiterPriceProvider implements PriceProvider {
   setJupiter(jup: JupiterProvider): void {
     this.jup = jup;
     this.cache.clear();
+    this.noRouteUntil.clear();
   }
 
   setTaker(taker: string): void {

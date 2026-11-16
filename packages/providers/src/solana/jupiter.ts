@@ -22,6 +22,14 @@ export interface BuiltSwap {
   lastValidBlockHeight?: number;
 }
 
+/** Jupiter positively confirmed there is no route for this quote. */
+export class JupiterNoRouteError extends Error {
+  constructor(message = 'jupiter: no route found') {
+    super(message);
+    this.name = 'JupiterNoRouteError';
+  }
+}
+
 /** Used when the desk has no wallet file yet. `/build` rejects a missing taker. */
 export const JUPITER_FALLBACK_TAKER = '11111111111111111111111111111111';
 
@@ -70,7 +78,11 @@ export class JupiterProvider {
     const res = await fetch(`${this.baseUrl}/swap/v2/build?${qs}`, { headers: this.headers() });
     if (res.status === 429) throw new Error('jupiter: rate limited (429)');
     if (!res.ok) {
-      throw new Error(`jupiter: quote HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const body = (await res.text()).slice(0, 200);
+      if (res.status === 400 && /no routes? found/i.test(body)) {
+        throw new JupiterNoRouteError(`jupiter: no route found: ${body}`);
+      }
+      throw new Error(`jupiter: quote HTTP ${res.status}: ${body}`);
     }
     return (await res.json()) as JupiterQuote;
   }

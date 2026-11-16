@@ -100,6 +100,13 @@ no LLM in the loop (D6).
   next 5-minute watch poll. The roster push stream's safety backstop is 10
   minutes and only advances cursors; the outage poll remains 45 seconds and may
   inspect the newest 25 fresh details per tick.
+- **An unpriceable shadow lot has a terminal state.** At/after
+  `MAX_POSITION_AGE_HOURS + POSITION_GRACE_HOURS`, a confirmed Jupiter no-route
+  closes the lot at `exit_reason='unpriceable'`, `exit_price_usd_micro='0'`,
+  `pnl_usd_micro=-notional`, plus an audit row. A transient failure (429/5xx/
+  network) or missing decimals stays open and retries; it closes at zero only
+  after a 24-hour wall-clock backstop past the grace deadline. Closing updates
+  the lot before the next tick, so it cannot double-close.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.

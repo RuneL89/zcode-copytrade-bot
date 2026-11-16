@@ -41,7 +41,9 @@ Everything is re-exported from `src/index.ts`.
   A seat younger than `LEADER_STALL_FIRE_HOURS` is not stall-fired.
 - **Fail closed by default.** Ambiguous events are skipped, an unpriced mint or
   a missing quote never invents a fill, and an unproven wallet is reported as
-  blocked rather than promoted.
+  blocked rather than promoted. A shadow lot with no mark gets a terminal
+  decision only at/after its grace deadline: confirmed no-route -> close at
+  zero; transient/missing decimals -> close at zero only after a 24h backstop.
 - **Weekly review math is pure and read-only.** `weeklyReview` groups exits,
   attributes the promised-vs-actual gap, correlates pre-hire shadow stats with
   actual P&L, and resolves ISO weeks/schedules. Missing post-exit prices,

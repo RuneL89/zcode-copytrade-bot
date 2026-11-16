@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { timeExitDecision, isIdleOver, dayTradeExitDecision, exitSlippageBps } from '../src/positionAge.js';
+import {
+  timeExitDecision,
+  isIdleOver,
+  dayTradeExitDecision,
+  exitSlippageBps,
+  unpriceableShadowExitDecision,
+} from '../src/positionAge.js';
 import { usdToMicro } from '../src/money.js';
 
 const OPENED = '2026-10-28T13:12:00.000Z';
@@ -195,5 +201,44 @@ describe('day-trade exits', () => {
     expect(exitSlippageBps(1, ladder)).toBe(600);
     expect(exitSlippageBps(2, ladder)).toBe(1000);
     expect(exitSlippageBps(5, ladder)).toBe(1000);
+  });
+});
+
+describe('unpriceable shadow ceiling', () => {
+  const at = (hours: number, failure: 'no_route' | 'transient') =>
+    unpriceableShadowExitDecision({
+      openedAtIso: OPEN,
+      nowMs: Date.parse(OPEN) + hours * 3_600_000,
+      maxAgeHours: 5,
+      graceHours: 1.5,
+      failure,
+    });
+
+  it('never closes before the grace deadline, even on a confirmed no-route', () => {
+    expect(at(6, 'no_route')).toBe('none');
+    expect(at(6.49, 'no_route')).toBe('none');
+  });
+
+  it('closes a confirmed no-route at/after the grace deadline', () => {
+    expect(at(6.5, 'no_route')).toBe('close_zero');
+    expect(at(30, 'no_route')).toBe('close_zero');
+  });
+
+  it('waits through a transient failure until grace + 24h', () => {
+    expect(at(6.5, 'transient')).toBe('none');
+    expect(at(30.4, 'transient')).toBe('none');
+    expect(at(30.5, 'transient')).toBe('close_zero');
+  });
+
+  it('ignores an unparseable opened-at timestamp', () => {
+    expect(
+      unpriceableShadowExitDecision({
+        openedAtIso: 'garbage',
+        nowMs: Date.now(),
+        maxAgeHours: 5,
+        graceHours: 1.5,
+        failure: 'no_route',
+      }),
+    ).toBe('none');
   });
 });

@@ -5,6 +5,8 @@ import {
   canPromote,
   canReenter,
   dayTradeExitDecision,
+  unpriceableShadowExitDecision,
+  SHADOW_UNPRICEABLE_BACKSTOP_HOURS,
   classifyFundedSwap,
   computeCopyNotional,
   usdToMicro,
@@ -12,8 +14,14 @@ import {
   signaturesAfterCursor,
   type FundedSwap,
   type PromotionBlockReason,
+  type ShadowPriceFailure,
 } from '@zcode-bot/core';
-import type { HeliusProvider, PriceProvider, PublicSolanaProvider } from '@zcode-bot/providers';
+import {
+  PriceUnavailableError,
+  type HeliusProvider,
+  type PriceProvider,
+  type PublicSolanaProvider,
+} from '@zcode-bot/providers';
 import type { TraderLifecycle } from './lifecycle.js';
 
 /**
@@ -561,18 +569,23 @@ export class WatchService {
   private async closeDueCeilings(): Promise<number> {
     let closed = 0;
     for (const lot of repo.listOpenShadowTrades(this.db)) {
+      const now = Date.now();
       const decimals = this.decimalsFor(lot.candidateId, lot.mint);
-      if (decimals === null) continue; // cannot price without the mint's scale
       let mark: bigint | null = null;
-      try {
-        mark = (await this.deps.prices.priceOf(lot.mint, decimals)).priceUsdMicro;
-      } catch {
-        mark = null; // no quote: retry next tick, never invent a price
+      let priceFailure: ShadowPriceFailure = 'transient';
+      if (decimals !== null) {
+        try {
+          mark = (await this.deps.prices.priceOf(lot.mint, decimals)).priceUsdMicro;
+        } catch (e) {
+          mark = null;
+          priceFailure =
+            e instanceof PriceUnavailableError && e.reason === 'no_route' ? 'no_route' : 'transient';
+        }
       }
       const entry = BigInt(lot.entryPriceUsdMicro);
       const decision = dayTradeExitDecision({
         openedAtIso: lot.openedAt,
-        nowMs: Date.now(),
+        nowMs: now,
         maxAgeHours: this.risk.MAX_POSITION_AGE_HOURS,
         graceHours: this.risk.POSITION_GRACE_HOURS,
         entryUsdMicro: entry,
@@ -587,7 +600,44 @@ export class WatchService {
         graceBounceBps: this.risk.GRACE_BOUNCE_BPS,
         sellOnGreen: this.risk.SELL_ON_GREEN,
       });
-      if (decision === 'none' || decision === 'partial_take_profit' || mark === null) continue;
+      if (decision === 'none' || decision === 'partial_take_profit') continue;
+      if (mark === null) {
+        // The deadline passed but nothing could be priced. A confirmed Jupiter
+        // no-route is terminal at the deadline; a transient failure (or missing
+        // decimals) gets a 24h wall-clock backstop so an outage cannot zero lots.
+        const terminal = unpriceableShadowExitDecision({
+          openedAtIso: lot.openedAt,
+          nowMs: now,
+          maxAgeHours: this.risk.MAX_POSITION_AGE_HOURS,
+          graceHours: this.risk.POSITION_GRACE_HOURS,
+          failure: priceFailure,
+        });
+        if (terminal !== 'close_zero') continue;
+        const notional = BigInt(lot.notionalUsdMicro);
+        repo.closeShadowTrade(this.db, lot.id, {
+          closedAt: new Date().toISOString(),
+          exitReason: 'unpriceable',
+          exitPriceUsdMicro: '0',
+          pnlUsdMicro: (-notional).toString(),
+        });
+        repo.audit(
+          this.db,
+          'watch',
+          priceFailure === 'no_route'
+            ? 'shadow closed unpriceable at $0 (no Jupiter route)'
+            : `shadow closed unpriceable at $0 (no quote after ${SHADOW_UNPRICEABLE_BACKSTOP_HOURS}h backstop)`,
+          {
+            candidateId: lot.candidateId,
+            mint: lot.mint,
+            openedAt: lot.openedAt,
+            notionalUsdMicro: notional.toString(),
+            failure: priceFailure,
+            decimalsKnown: decimals !== null,
+          },
+        );
+        closed++;
+        continue;
+      }
       const notional = BigInt(lot.notionalUsdMicro);
       const pnl = shadowPnlUsdMicro(notional, entry, mark);
       repo.closeShadowTrade(this.db, lot.id, {
