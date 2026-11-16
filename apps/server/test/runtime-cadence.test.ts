@@ -65,6 +65,7 @@ describe('runtime cadence (D5)', () => {
       'watchTimer', // the watch list, WATCH_POLL_MS
       'rosterTimer', // the roster, ROSTER_POLL_MS
       'healthTimer',
+      'marksTimer',
       'feeLedgerTimer',
       'activityTimer',
     ]) {

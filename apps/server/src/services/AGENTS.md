@@ -34,8 +34,10 @@ the whole set is constructed and scheduled by `runtime.ts`.
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
-(health, fee ledger, activity refresh, Telegram reports, the weekly review
-Monday 08:00, the Telegram command poll).
+(health, dashboard marks, fee ledger, activity refresh, Telegram reports, the
+weekly review Monday 08:00, the Telegram command poll). Dashboard marks refresh
+every minute so the builder's five-minute display freshness window does not
+expire between 15-minute health samples.
 Discovery is demand-driven, not scheduled. Dawn and the native board capture are
 manual fallbacks only.
 `engine.ts` is called, it does not schedule itself.

@@ -368,8 +368,9 @@ We run on the Jupiter **free keyed plan** (`api.jup.ag`, 1 request/s and
 (provider health check + one mark per open position per minute), well under the
 limit at any position count the bankroll cap allows — the deployed-% ceiling
 times capital, divided by max bet, bounds the position count (e.g. 8 positions
-at $100 capital / $10 bets). Rare 429s fail closed: a mark skips one cycle
-("mark pending"), a rejected quote is logged and never retried blind. Upgrade
+at $100 capital / $10 bets). Marks refresh every minute; the dashboard treats a
+mark older than five minutes as stale ("mark pending"). Rare 429s fail closed: a
+mark skips one cycle, a rejected quote is logged and never retried blind. Upgrade
 to the Developer tier **only if** request volume ever requires it (roughly 40+
 concurrent positions at current sizing) **and** profits justify the cost.
 

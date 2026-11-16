@@ -75,6 +75,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Dashboard marks: quote open positions once a minute. The builder treats a
+ * mark older than five minutes as stale, so the old 15-minute health cadence
+ * blanked unrealized P&L for ten minutes out of every fifteen. Display-only;
+ * exits quote on their own path.
+ */
+const MARKS_REFRESH_MS = 60_000;
+
+/**
  * Runtime wires every service together. One process = one worker (exclusive
  * lock) + HTTP server. Demo mode short-circuits providers for a purely
  * fictional, in-memory replay.
@@ -121,6 +129,7 @@ export class Runtime {
   private baseExecutor: PaperExecutor;
   private liveExecutor: LiveExecutor | null = null;
   private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private marksTimer: ReturnType<typeof setInterval> | null = null;
   private usageTimer: ReturnType<typeof setInterval> | null = null;
   private seatTimer: ReturnType<typeof setInterval> | null = null;
   private seatRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -551,6 +560,11 @@ export class Runtime {
     this.healthTimer = setInterval(() => void this.sampleHealth(), 15 * 60_000);
     void this.sampleHealth();
 
+    // Dashboard marks (housekeeping): quote open positions every minute so the
+    // builder's five-minute freshness window never expires between refreshes.
+    this.marksTimer = setInterval(() => void this.refreshMarks().catch(() => undefined), MARKS_REFRESH_MS);
+    void this.refreshMarks().catch(() => undefined);
+
     // Fee ledger scan cadence (housekeeping): wallet history is a billed call,
     // so it stays well off the one-minute health loop.
     this.feeLedgerTimer = setInterval(() => void this.refreshFeeLedger(), 10 * 60_000);
@@ -913,6 +927,7 @@ export class Runtime {
     this.monitor?.stop();
     this.demo?.stop();
     if (this.healthTimer) clearInterval(this.healthTimer);
+    if (this.marksTimer) clearInterval(this.marksTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.watchTimer) clearInterval(this.watchTimer);
@@ -963,7 +978,6 @@ export class Runtime {
         helius: this.helius.configured ? (h.ok ? 'OK' : 'DOWN') : 'UNCONFIGURED',
         jupiter: j.ok ? 'OK' : 'DOWN',
       });
-      await this.refreshMarks().catch(() => undefined);
       // Fee wallet runway: SOL pays every network fee, so surface its balance.
       const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
       let solLamports = feeAddress
