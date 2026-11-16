@@ -70,18 +70,20 @@ no LLM in the loop (D6).
   failed via `markCandidateActivityFailed`; the last good activity columns and
   `activity_checked_at` stay intact, no watch row is created, and a transient
   failure stays first in line for the next tick. Admission uses the strict
-  page and pages backwards to the 24h cutoff. A window of at most 100
-  in-window signatures is detailed in full and written as `ok`; a busier
-  wallet (or one that does not fit in three pages) gets a bounded newest
-  12-signature prefix instead, sharing a 12-detail-per-tick budget across
-  candidates. If that prefix proves
-  `ADMISSION_MIN_BUYS_24H` funded buys and a recent buy, the wallet is admitted
-  and the reading is written as `partial` — a lower bound, never an `ok`
-  census. If the prefix cannot prove the gate, the last good columns are kept
-  and the candidate is deferred for 30 minutes via a scan-eligibility key in
-  `kv`. A spent Helius detail budget (`WATCH_DETAIL_PER_MINUTE`) defers for
-  10 minutes so one candidate cannot hold every admission slot. A genuinely
-  empty read still records `ok` zeros and advances the queue.
+  page and pages backwards to the 24h cutoff, and scans one candidate per watch
+  tick. A window of at most 12 in-window signatures is detailed in full and
+  written as `ok`; a busier wallet (or one that does not fit in three pages)
+  gets a bounded newest 12-signature prefix instead, sharing the 12-detail
+  per-pass budget. If that prefix proves `ADMISSION_MIN_BUYS_24H` funded buys
+  and a recent buy, the wallet is admitted and the reading is written as
+  `partial` — a lower bound, never an `ok` census. If the prefix cannot prove
+  the gate, the last good columns are kept and the candidate is deferred for
+  30 minutes via a scan-eligibility key in `kv`. A spent Helius detail budget
+  (`WATCH_DETAIL_PER_MINUTE`, capped at 12 per pass) defers for 10 minutes so
+  one candidate cannot hold the only admission slot. Freshness is filtered in
+  SQL before the one-candidate limit, so a recently checked head row cannot
+  consume the tick. A genuinely empty read still records `ok` zeros and
+  advances the queue.
 - **Watch-list detail reads are public-only by default.** Helius is a bounded
   15-read/minute safety valve only for watched wallets with an open shadow
   position or a funded buy inside the last hour; idle watchers retry on the

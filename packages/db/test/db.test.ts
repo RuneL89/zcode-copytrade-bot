@@ -123,6 +123,55 @@ describe('database', () => {
     expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_defer'))).toBeUndefined();
   });
 
+  it('filters fresh candidates before applying the admission scan limit', () => {
+    for (const [candidateId, address] of [
+      ['cand_fresh_head_db', 'AddrFreshHead'],
+      ['cand_stale_head_db', 'AddrStaleHead'],
+    ] as Array<[string, string]>) {
+      repo.upsertCandidate(handle.db, {
+        candidateId,
+        handle: candidateId,
+        weeklyRank: null,
+        displayedWeeklyPnlUsdMicro: null,
+        profileUrl: null,
+        avatarUrl: null,
+        enabled: true,
+        source: 'manual',
+        observedAt: new Date().toISOString(),
+      });
+      repo.upsertCandidateAddress(handle.db, candidateId, {
+        chain: 'solana',
+        address,
+        verification: 'reported',
+      });
+    }
+
+    const lastBuy = new Date().toISOString();
+    repo.updateCandidateActivity(handle.db, 'cand_fresh_head_db', {
+      swaps24h: 5,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 5,
+      sells24h: 0,
+      status: 'ok',
+      checkedAt: lastBuy,
+    });
+    const stale = new Date(Date.now() - 96 * 3_600_000).toISOString();
+    repo.updateCandidateActivity(handle.db, 'cand_stale_head_db', {
+      swaps24h: 1,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 1,
+      sells24h: 0,
+      status: 'ok',
+      checkedAt: stale,
+    });
+
+    const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
+    const rows = repo.listAdmissionScanCandidates(handle.db, 1, cutoff);
+    expect(rows.map((row) => row.candidateId)).toEqual(['cand_stale_head_db']);
+  });
+
   it('scan import writes pnl24h + stats stamp and preserves Dawn stats', () => {
     const now = new Date().toISOString();
     // Dawn card first: rich stats + its own stamp.

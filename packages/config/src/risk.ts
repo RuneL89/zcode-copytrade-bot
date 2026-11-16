@@ -251,8 +251,8 @@ export const DEFAULT_RISK: RiskConfig = {
   PER_MINT_CAP_USD: 0, // 0 = disabled (operator decision: no cap for now)
   WATCH_POLL_MS: 300000,
   ROSTER_POLL_MS: 45000,
-  // Admission scans three candidates per tick; a busy wallet's bounded prefix
-  // is 40 details, so one minute of burst can cover the whole scan.
+  // Admission scans one candidate per tick and caps each pass at 12 details;
+  // this config is the hard upper bound for both admission and watch fallback.
   WATCH_DETAIL_PER_MINUTE: 120,
   WATCH_EVICTION_DAYS: 14,
   SHADOW_BACKFILL_ON_ADMIT: true,

@@ -44,7 +44,9 @@ and every repository function the server calls.
   records the failed status plus an `admission.defer:<candidateId>` eligibility
   key; `listAdmissionScanCandidates` excludes an unexpired key, and a later
   successful `updateCandidateActivity` deletes it. The key is not a freshness
-  stamp and never changes the activity columns.
+  stamp and never changes the activity columns. The query's optional
+  `checkedBefore` cutoff filters recently measured rows before the SQL limit,
+  so a one-candidate admission tick cannot be consumed by a fresh head row.
 - **Read-only consumers use `openReadOnlyDatabase`.** The weekly report, audits
   and ad-hoc inspections must never open the live file read-write, create it, or
   migrate it.

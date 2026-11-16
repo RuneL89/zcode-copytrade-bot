@@ -53,8 +53,8 @@ Everything is re-exported from `src/index.ts`.
   vetting and agent paths. Timer loops are checked by `callPattern.ts`.
   `backfill.ts` also exports the admission/watch detail burst ceiling
   (`WATCH_DETAIL_PER_MINUTE`); the server reads the same default from
-  `risk.WATCH_DETAIL_PER_MINUTE`, and the governor's daily cap remains the
-  hard stop.
+  `risk.WATCH_DETAIL_PER_MINUTE`, applies a stricter 12-detail admission
+  per-pass budget, and keeps the governor's daily cap as the hard stop.
 - **Exit mode is matched.** `guardExitMode` refuses when the executor mode and
   the position mode differ. A refusal does not invent a paper fill.
 - **Purity:** no network, database, filesystem, or clock access. The only

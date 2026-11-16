@@ -202,17 +202,21 @@ free. The fired trader keeps his shadow record and the normal promotion gates
 apply (8 closed, net above $3, last funded buy inside 4h); the same block
 applies to a manual activation. There is no repeat-fire archive.
 
-**Admission (2026-11-16).** Admission is a bounded scan, not a census-or-nothing
-gate. A complete 24h window of at most 100 signatures is detailed in full and
-written as `ok`. A busier wallet — or one that does not fit in three signature
-pages — gets a newest 40-signature prefix; if that prefix proves the three funded
-buys and a recent buy, the wallet is admitted and the reading is written as
-`partial` (a lower bound, never an `ok` census). A prefix that cannot prove the
-gate is deferred for 30 minutes without overwriting the last good columns; a
-spent `WATCH_DETAIL_PER_MINUTE` Helius detail budget defers for 10 minutes so one
-candidate cannot hold every admission slot. Rationale: the old 100-detail cap
-excluded exactly the most active fomo wallets, while admission only needs proof
-of three funded buys and a recent one.
+**Admission (2026-11-16; rate-capped 2026-11-17).** Admission is a bounded scan,
+not a census-or-nothing gate. It scans one candidate per watch tick and allows
+at most 12 Helius detail reads per admission pass (lower when
+`WATCH_DETAIL_PER_MINUTE` is lower). A complete 24h window of at most 12
+signatures is detailed in full and written as `ok`. A busier wallet — including
+one that does not fit in three signature pages — gets a newest 12-signature
+prefix; if that prefix proves the three funded buys and a recent buy, the wallet
+is admitted and the reading is written as `partial` (a lower bound, never an `ok`
+census). A prefix that cannot prove the gate is deferred for 30 minutes without
+overwriting the last good columns; a spent detail budget defers for 10 minutes
+so one candidate cannot hold the only admission slot. Freshness is filtered
+before the one-candidate limit, so a recently checked head row cannot consume
+the tick. Rationale: the 3c2a62b run spent 52–57 details per tick and tripped
+the 13.6k credits/day guard; the per-pass cap keeps admission inside the cap
+while still admitting wallets whose newest 12 prove the gate.
 
 **Lifecycle.** The idle clock runs from `max(hire time, last held position)`; 8h
 idle fires. Replacements are taken from the promotion queue within one watch tick

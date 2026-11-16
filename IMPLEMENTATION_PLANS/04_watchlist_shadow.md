@@ -63,14 +63,17 @@ price provider (Jupiter), the lifecycle (for promotion), and an audit callback.
   - optional seed: if `SHADOW_BACKFILL_ON_ADMIT` is true, insert the admission
     scan's funded events with their `block_time` and build shadow trades from
     them (config flag, default true; the verification used a 72h backfill).
-  - amended 2026-11-16: a 24h window of at most 100 in-window signatures is a
-    full census (`ok`). A busier wallet, or one beyond three signature pages,
-    uses a newest 40-signature prefix; when the prefix proves the three-buy and
-    recency gates the wallet is admitted with a `partial` reading (a lower
-    bound, never an `ok` census). A prefix that cannot prove the gate is
-    deferred for 30 minutes without overwriting the last good columns; a spent
-    `WATCH_DETAIL_PER_MINUTE` detail budget defers for 10 minutes so one wallet
-    cannot hold every admission slot.
+  - amended 2026-11-17: admission scans one candidate per watch tick and allows
+    at most 12 detail reads per admission pass (lower when
+    `WATCH_DETAIL_PER_MINUTE` is lower). A 24h window of at most 12 in-window
+    signatures is a full census (`ok`). A busier wallet, or one beyond three
+    signature pages, uses a newest 12-signature prefix; when the prefix proves
+    the three-buy and recency gates the wallet is admitted with a `partial`
+    reading (a lower bound, never an `ok` census). A prefix that cannot prove
+    the gate is deferred for 30 minutes without overwriting the last good
+    columns; a spent detail budget defers for 10 minutes so one wallet cannot
+    hold the only admission slot. Freshness is filtered before the
+    one-candidate limit.
 - `tick()` (every `WATCH_POLL_MS`, 5 min):
   - for each `watching` wallet: read the cursor, poll signatures (public RPC
     first, Helius fallback), fetch details for new signatures only (Helius

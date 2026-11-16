@@ -177,24 +177,31 @@ export function listCandidates(db: Db) {
  * longest without a reading, never-measured ahead of everything. The scan is
  * bounded per tick, so it must advance through the pool instead of re-reading
  * its head forever, and it must reach the promising wallets before the tail.
+ * `checkedBeforeIso` filters recently measured rows before the limit, so a
+ * one-candidate tick cannot be consumed by a fresh head row.
  */
-export function listAdmissionScanCandidates(db: Db, limit: number) {
+export function listAdmissionScanCandidates(db: Db, limit: number, checkedBeforeIso?: string) {
+  const conditions = [
+    eq(schema.traderCandidates.enabled, true),
+    sql`EXISTS (SELECT 1 FROM ${schema.candidateAddresses} a
+         WHERE a.candidate_id = ${schema.traderCandidates.candidateId}
+           AND a.chain = 'solana')`,
+    sql`NOT EXISTS (SELECT 1 FROM ${schema.watchWallets} w
+         WHERE w.candidate_id = ${schema.traderCandidates.candidateId})`,
+    sql`NOT EXISTS (SELECT 1 FROM kv d
+         WHERE d.key = ${ADMISSION_DEFER_KEY_PREFIX} || ${schema.traderCandidates.candidateId}
+           AND datetime(d.value) > datetime('now'))`,
+  ];
+  if (checkedBeforeIso) {
+    conditions.push(
+      sql`(${schema.traderCandidates.activityCheckedAt} IS NULL
+           OR ${schema.traderCandidates.activityCheckedAt} < ${checkedBeforeIso})`,
+    );
+  }
   return db
     .select()
     .from(schema.traderCandidates)
-    .where(
-      and(
-        eq(schema.traderCandidates.enabled, true),
-        sql`EXISTS (SELECT 1 FROM ${schema.candidateAddresses} a
-             WHERE a.candidate_id = ${schema.traderCandidates.candidateId}
-               AND a.chain = 'solana')`,
-        sql`NOT EXISTS (SELECT 1 FROM ${schema.watchWallets} w
-             WHERE w.candidate_id = ${schema.traderCandidates.candidateId})`,
-        sql`NOT EXISTS (SELECT 1 FROM kv d
-             WHERE d.key = ${ADMISSION_DEFER_KEY_PREFIX} || ${schema.traderCandidates.candidateId}
-               AND datetime(d.value) > datetime('now'))`,
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(
       sql`CASE WHEN ${schema.traderCandidates.buys24h} >= 1
                  AND ${schema.traderCandidates.lastBuyAt} IS NOT NULL

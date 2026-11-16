@@ -116,22 +116,19 @@ const WATCH_TX_SCAN_LIMIT = 25;
 export const WATCH_LIST_FALLBACK_PER_MINUTE = 15;
 const WATCH_LIST_FALLBACK_RECENT_BUY_MS = 60 * 60_000;
 /** Candidates scanned for admission per tick (bounded spend). */
-export const ADMISSION_SCAN_PER_TICK = 3;
+export const ADMISSION_SCAN_PER_TICK = 1;
 /** A candidate measured inside this window is not read again on the next tick. */
 const ADMISSION_RESCAN_MS = 30 * 60_000;
 /** Admission needs the whole 24h window, not just the newest page. */
 const ADMISSION_SIGNATURE_PAGE = 100;
 const ADMISSION_MAX_PAGES = 3;
 /**
- * A complete window is detailed in full up to this many signatures. A busier
- * wallet gets a bounded newest-prefix read instead: admission only has to prove
- * three funded buys and a recent one, not census the whole day. The prefix is
- * deliberately larger than the few details most active wallets need.
+ * Detail reads admitted per admission pass. A window with more signatures is
+ * read through its newest 12 and marked `partial`: admission only has to prove
+ * the funded-buy gate, not census the whole day. The cap keeps one tick from
+ * spending a full busy wallet's history.
  */
-const ADMISSION_MAX_DETAILS = 100;
-const ADMISSION_PREFIX_DETAILS = 12;
-/** Partial-prefix admission details share this per-tick budget across candidates. */
-const ADMISSION_PARTIAL_DETAIL_BUDGET = 12;
+export const ADMISSION_DETAILS_PER_TICK = 12;
 /** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
 const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
 
@@ -146,16 +143,11 @@ class DetailDeferred extends Error {
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
-  /** A complete window keeps its own budget; a partial prefix is shared/bounded. */
-  private readonly admissionDetailCeiling: MinuteCeiling;
-  private readonly partialAdmissionDetailCeiling: MinuteCeiling;
+  /** Admission details left in this evaluate() pass (shared across scans). */
+  private admissionDetailsRemaining = 0;
   private readonly watchListDetailCeiling: MinuteCeiling;
 
   constructor(private deps: WatchServiceDeps) {
-    this.admissionDetailCeiling = new MinuteCeiling(deps.risk.WATCH_DETAIL_PER_MINUTE);
-    this.partialAdmissionDetailCeiling = new MinuteCeiling(
-      Math.min(ADMISSION_PARTIAL_DETAIL_BUDGET, deps.risk.WATCH_DETAIL_PER_MINUTE),
-    );
     this.watchListDetailCeiling = new MinuteCeiling(
       Math.min(WATCH_LIST_FALLBACK_PER_MINUTE, deps.risk.WATCH_DETAIL_PER_MINUTE),
     );
@@ -240,16 +232,16 @@ export class WatchService {
   }
 
   /**
-   * Admission detail read: the paid reader directly, bounded by its own
-   * per-minute burst ceiling. Admission is the hire path; spending its window
-   * retrying a rate-limited public node is what left active wallets unscanned.
-   * The daily CreditGovernor cap remains the hard stop.
+   * Admission detail read: the paid reader directly, bounded by the per-pass
+   * budget. Admission is the hire path; spending its window retrying a
+   * rate-limited public node is what left active wallets unscanned. The daily
+   * CreditGovernor cap remains the hard stop.
    */
-  private async admissionTxSummary(address: string, signature: string, partial: boolean) {
-    const ceiling = partial ? this.partialAdmissionDetailCeiling : this.admissionDetailCeiling;
-    if (!ceiling.allow(Date.now())) {
-      throw new DetailDeferred('watch detail deferred (minute ceiling)');
+  private async admissionTxSummary(address: string, signature: string) {
+    if (this.admissionDetailsRemaining <= 0) {
+      throw new DetailDeferred('watch detail deferred (admission budget)');
     }
+    this.admissionDetailsRemaining -= 1;
     return this.deps.helius.transactionSummary(address, signature, 'watch');
   }
 
@@ -354,13 +346,13 @@ export class WatchService {
   /**
    * Scan one wallet for funded swaps over the lookback window.
    *
-   * A window with at most 100 in-window signatures is detailed in full and
-   * recorded as a complete (`ok`) reading. A busier wallet — or one whose
-   * history does not fit in three signature pages — gets a bounded newest
-   * prefix instead: admission only has to prove three funded buys and a recent
-   * one, not census the whole day. That reading is marked `partial`; it is a
-   * lower bound and is never stored as an `ok` census. A genuinely empty
-   * wallet still returns an empty complete reading.
+   * A window with at most ADMISSION_DETAILS_PER_TICK in-window signatures is
+   * detailed in full and recorded as a complete (`ok`) reading. A busier
+   * wallet — including one whose history does not fit in three signature pages
+   * — gets a bounded newest prefix instead: admission only has to prove the
+   * funded-buy gate, not census the whole day. That reading is marked
+   * `partial`; it is a lower bound and is never stored as an `ok` census. A
+   * genuinely empty wallet still returns an empty complete reading.
    *
    * Throws only when a signature page or a detail read itself fails (the
    * caller preserves the last good columns) or when the paid detail budget is
@@ -396,13 +388,12 @@ export class WatchService {
     }
 
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
-    const partial = !covered || inWindow.length > ADMISSION_MAX_DETAILS;
-    const detailRows =
-      inWindow.length > ADMISSION_MAX_DETAILS ? inWindow.slice(0, ADMISSION_PREFIX_DETAILS) : inWindow;
+    const detailRows = inWindow.slice(0, ADMISSION_DETAILS_PER_TICK);
+    const partial = !covered || detailRows.length < inWindow.length;
 
     const events: FundedSwap[] = [];
     for (const row of detailRows) {
-      const summary = await this.admissionTxSummary(address, row.signature, partial);
+      const summary = await this.admissionTxSummary(address, row.signature);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -733,19 +724,21 @@ export class WatchService {
 
     // --- admission: candidates with a wallet that are not already on the list ---
     // The list is ordered least-recently-measured first (never-measured ahead of
-    // everything), so the bounded scan advances through the pool.
+    // everything), so the bounded scan advances through the pool. Freshness is
+    // filtered before the SQL limit: with a one-candidate tick, a recently
+    // checked head row must not consume the only slot.
     //
     // Failure policy: a complete read (including a genuinely empty wallet) is
     // recorded as `ok` and moves the candidate to the back of the queue. A
     // bounded prefix that PROVES the D4 gate is recorded as `partial` and
     // admitted; a prefix that cannot prove it records NOTHING as a census and
     // is deferred. A spent detail budget also defers briefly, so one busy
-    // candidate cannot hold all three slots. Every failure path preserves the
+    // candidate cannot hold the only slot. Every failure path preserves the
     // last good activity columns and their true freshness.
-    const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
+    this.admissionDetailsRemaining = Math.min(ADMISSION_DETAILS_PER_TICK, this.risk.WATCH_DETAIL_PER_MINUTE);
+    const checkedBefore = new Date(Date.now() - ADMISSION_RESCAN_MS).toISOString();
+    const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK, checkedBefore);
     for (const candidate of candidates) {
-      const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
-      if (checkedAt !== null && Date.now() - checkedAt < ADMISSION_RESCAN_MS) continue;
       const address = repo
         .listCandidateAddresses(this.db, candidate.candidateId)
         .find((a) => a.chain === 'solana')?.address;
