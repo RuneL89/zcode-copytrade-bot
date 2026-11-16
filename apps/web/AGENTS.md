@@ -42,6 +42,10 @@ reachable.
   and fee-wallet balance are the current examples. The demo banner is the only
   fictional-data banner; it appears only when the state is fictional, and the
   mockup's "example data" banner must never ship.
+- **Equity is account value.** The header KPI and the Desk equity headline use
+  `equity.rollingUsdMicro` (cash + live marks of open positions), not the
+  realized book `equity.currentUsdMicro`. The realized book drives the
+  closed-lot series; a position that is up must raise equity before it closes.
 - **The redesign is the approved mockup**: dark palette, desktop shell up to
   1680 px, desktop tabs and a four-item mobile bottom nav (Line / Seats /
   Credits / Risk), no horizontal page overflow at phone width, and the same

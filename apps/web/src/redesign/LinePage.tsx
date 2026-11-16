@@ -57,11 +57,16 @@ export function LinePage({
   const paused = control.newEntriesPaused;
   const stopped = control.emergencyStopped;
   const live = connected && state.health.workerRunning && !stopped;
-  const today = BigInt(state.equity.currentUsdMicro) - BigInt(state.equity.startUsdMicro);
-  const todayPct = Number((today * 10_000n) / (BigInt(state.equity.startUsdMicro) || 1n)) / 100;
+  // Equity is account value: cash plus the live mark of every open position.
+  const equityStart = BigInt(state.equity.startUsdMicro);
+  const equityNow = BigInt(state.equity.rollingUsdMicro);
+  const sinceStart = equityNow - equityStart;
+  const sinceStartPct = Number((sinceStart * 10_000n) / (equityStart || 1n)) / 100;
   const realized = state.closes
     .filter((close) => close.t.slice(0, 10) === new Date().toISOString().slice(0, 10))
     .reduce((acc, close) => acc + BigInt(close.pnlUsdMicro), 0n);
+  const unrealized = state.positions.reduce((acc, p) => acc + BigInt(p.unrealizedPnlUsdMicro ?? '0'), 0n);
+  const today = realized + unrealized;
 
   return (
     <section className="view on" id="v-line" data-testid="desk-line">
@@ -149,27 +154,29 @@ export function LinePage({
           <div className="ph">
             <h3>Desk equity</h3>
             <span className="r dim" style={{ fontSize: 12 }}>
-              paper book · since start
+              paper book · mark to market
             </span>
           </div>
           <div className="eqk">
             <div>
               <div className="k">Equity</div>
-              <div className="v num">{usdFromMicro(state.equity.currentUsdMicro)}</div>
+              <div className="v num">{usdFromMicro(state.equity.rollingUsdMicro)}</div>
             </div>
             <div>
-              <div className="k">Today</div>
-              <div className={`v num ${realized >= 0n ? 'pos' : 'neg'}`}>{signedUsdFromMicro(realized)}</div>
+              <div className="k">Today P&amp;L</div>
+              <div className={`v num ${today >= 0n ? 'pos' : 'neg'}`}>{signedUsdFromMicro(today)}</div>
             </div>
             <div>
               <div className="k">Since start</div>
-              <div className={`v num ${todayPct >= 0 ? 'pos' : 'neg'}`}>
-                {todayPct >= 0 ? '+' : '−'}
-                {Math.abs(todayPct).toFixed(1)}%
+              <div className={`v num ${sinceStartPct >= 0 ? 'pos' : 'neg'}`}>
+                {sinceStartPct >= 0 ? '+' : '−'}
+                {Math.abs(sinceStartPct).toFixed(1)}%
               </div>
             </div>
           </div>
-          <EquityChart values={state.equity.series.map((point) => point.usdMicro)} />
+          <EquityChart
+            values={[...state.equity.series.map((point) => point.usdMicro), state.equity.rollingUsdMicro]}
+          />
           <div
             style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--tx3)' }}
           >

@@ -58,10 +58,11 @@ export interface DashboardState {
     pausedReason: string | null;
   };
   equity: {
+    /** Realized book: start + closed PnL (drives the closed-lot series). */
     currentUsdMicro: string;
     startUsdMicro: string;
     changeUsdMicro: string;
-    /** Bankroll (cash, investable now) + unrealized marks of open positions. */
+    /** Account value: cash + live marks of open positions (the equity KPI). */
     rollingUsdMicro: string;
     series: Array<{ t: string; usdMicro: string }>;
     source: 'DEMO_FIXTURES' | 'PAPER_CALCULATION' | 'LIVE_EVIDENCE';

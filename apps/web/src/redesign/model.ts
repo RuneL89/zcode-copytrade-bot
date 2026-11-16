@@ -171,15 +171,16 @@ export function headerModel(state: DashboardState, settings: SettingsView | null
   const lossLimit = numberRisk(settings?.risk ?? {}, 'MAX_DAILY_REALIZED_LOSS_USD', 15) * 1_000_000;
   const lossHeadroom = BigInt(Math.max(0, lossLimit)) + (realized < 0n ? realized : 0n);
   const solBalance = state.health.feeSolBalance;
+  // Equity is account value: cash plus the live mark of every open position.
+  // `currentUsdMicro` is the realized book (start + closed PnL) and is kept for
+  // the realized-equity chart; the header KPI uses the mark-to-market figure.
+  const equityStart = BigInt(state.equity.startUsdMicro);
+  const equityNow = BigInt(state.equity.rollingUsdMicro);
   return {
     modeLabel,
     modeClass,
-    equity: BigInt(state.equity.currentUsdMicro),
-    equityPct:
-      Number(
-        ((BigInt(state.equity.currentUsdMicro) - BigInt(state.equity.startUsdMicro)) * 10_000n) /
-          (BigInt(state.equity.startUsdMicro) || 1n),
-      ) / 100,
+    equity: equityNow,
+    equityPct: Number(((equityNow - equityStart) * 10_000n) / (equityStart || 1n)) / 100,
     today,
     realized,
     unrealized,
