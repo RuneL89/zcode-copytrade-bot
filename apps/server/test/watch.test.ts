@@ -128,14 +128,22 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
   const hired: string[] = [];
 
+  const pageFor = (address: string, limit = 100, before?: string) => {
+    const rows = perAddress.get(address)?.page ?? page;
+    if (before === undefined) return rows.slice(0, limit).map((row) => ({ ...row }));
+    const index = rows.findIndex((row) => row.signature === before);
+    if (index === -1) return [];
+    return rows.slice(index + 1, index + 1 + limit).map((row) => ({ ...row }));
+  };
+
   const deps: WatchServiceDeps = {
     db: handle.db,
     risk,
     publicSolana: {
       configured: over.publicConfigured ?? false,
-      recentSignatures: async (address: string) => {
+      recentSignatures: async (address: string, limit = 100, before?: string) => {
         if (over.publicPageFails) throw new Error('public-solana: rate limited (HTTP 429)');
-        return (perAddress.get(address)?.page ?? page).map((r) => ({ ...r }));
+        return pageFor(address, limit, before);
       },
       transactionSummary: async (address: string, signature: string) => {
         if (over.publicDetailFails) throw new Error('public-solana: rate limited (HTTP 429)');
@@ -149,9 +157,15 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
         lastTransactionIndex: 0,
         lastBlockTime: null,
       }),
-      recentSignatures: async (address: string) => {
+      // Production shape: the tolerant method returns [] when the RPC fails.
+      recentSignatures: async (address: string, limit = 100, before?: string) => {
+        if (over.heliusPageFailures?.includes(address)) return [];
+        return pageFor(address, limit, before);
+      },
+      // Admission uses the strict method, which throws instead of hiding failure.
+      recentSignaturesStrict: async (address: string, limit = 100, before?: string) => {
         if (over.heliusPageFailures?.includes(address)) throw new Error('helius: HTTP 429');
-        return (perAddress.get(address)?.page ?? page).map((r) => ({ ...r }));
+        return pageFor(address, limit, before);
       },
       transactionSummary: async (address: string, signature: string) => {
         if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
@@ -1103,6 +1117,8 @@ describe('admission scan fail-closed', () => {
   it('preserves the previous reading when the signature page fails everywhere', async () => {
     seedCandidate('cand_fail_closed', 'fail_closed', 'WalletFailClosed');
     const h = harness(riskConfig(), { heliusPageFailures: ['WalletFailClosed'] });
+    // Production shape: the tolerant Helius method returns [] on failure; the
+    // strict method used by admission throws, which must mark the check failed.
     stampAllActivity();
     const oldAt = iso(Date.now() - 96 * HOUR);
     const lastBuy = iso(Date.now() - HOUR);
@@ -1228,5 +1244,81 @@ describe('admission scan fail-closed', () => {
     expect(Date.parse(candidate.activityCheckedAt!)).toBeGreaterThan(Date.now() - 60_000);
     expect(repo.getWatchWallet(handle.db, 'cand_empty_ok')).toBeUndefined();
     expect(result.admitted).toBe(0);
+  });
+
+  it('details a full 100-row page instead of dropping buys beyond the old 25-tx cap', async () => {
+    seedCandidate('cand_bulk_page', 'bulk_page', 'WalletBulkPage');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_bulk_page', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    const page: Array<{ signature: string; blockTime: number | null }> = [];
+    const summaries = new Map<string, LeaderTxSummary>();
+    const buyIndexes = new Set([0, 30, 60, 90, 99]);
+    for (let i = 0; i < 100; i++) {
+      const signature = `bulk_${i}`;
+      const summary = buyIndexes.has(i)
+        ? swapSummary({
+            signature,
+            minutesAgo: i + 1,
+            tokens: 6_000_000n,
+            usd: 6_000_000n,
+            side: 'buy',
+          })
+        : null;
+      page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      if (summary) summaries.set(signature, summary);
+    }
+    // The next page exists but is entirely outside 24h; the scan must fetch it
+    // to prove the window is covered, then filter it out.
+    for (let i = 0; i < 10; i++) {
+      page.push({
+        signature: `bulk_old_${i}`,
+        blockTime: NOW_SEC - 25 * 3600 - i * 60,
+      });
+    }
+    h.perAddress.set('WalletBulkPage', { page, summaries });
+
+    // The page is full and all 100 newest rows are inside 24h. The five funded
+    // buys include four beyond the old 25-detail slice.
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_bulk_page')!;
+    expect(candidate.activityCheckStatus).toBe('ok');
+    expect(candidate.buys24h).toBe(5);
+    expect(candidate.swaps24h).toBe(5);
+    expect(candidate.lastBuyAt).not.toBeNull();
+    expect(repo.getWatchWallet(handle.db, 'cand_bulk_page')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+  });
+
+  it('fails closed when the in-window set exceeds the bounded detail cap', async () => {
+    seedCandidate('cand_over_cap', 'over_cap', 'WalletOverCap');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_over_cap', {
+      swaps24h: 8,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 4,
+      checkedAt: oldAt,
+    });
+
+    // 101 signatures, all inside 24h: the bounded scan cannot detail them all
+    // and must keep the previous reading rather than write a truncated one.
+    for (let i = 0; i < 101; i++) {
+      h.page.push({ signature: `over_cap_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+    }
+
+    await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_over_cap')!;
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.buys24h).toBe(4);
+    expect(candidate.swaps24h).toBe(8);
+    expect(candidate.lastBuyAt).toBe(lastBuy);
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    expect(repo.getWatchWallet(handle.db, 'cand_over_cap')).toBeUndefined();
   });
 });

@@ -203,10 +203,11 @@ export class PublicSolanaProvider {
   async recentSignatures(
     address: string,
     limit = 25,
+    before?: string,
   ): Promise<Array<{ signature: string; slot: number; blockTime: number | null }>> {
     const rows = await this.rpc<
       Array<{ signature: string; slot: number; blockTime: number | null; err: null | object }>
-    >('getSignaturesForAddress', [address, { limit }]);
+    >('getSignaturesForAddress', [address, { limit, ...(before ? { before } : {}) }]);
     return (rows ?? []).filter((r) => Boolean(r.signature));
   }
 

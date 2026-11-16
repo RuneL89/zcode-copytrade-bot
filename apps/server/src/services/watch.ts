@@ -96,18 +96,30 @@ export interface WatchServiceDeps {
   onStateChanged: () => void;
 }
 
-/** How many transactions one poll / scan inspects per wallet. */
+/** How many new transactions one watch poll inspects per wallet. */
 const WATCH_TX_SCAN_LIMIT = 25;
 /** Candidates scanned for admission per tick (bounded spend). */
 export const ADMISSION_SCAN_PER_TICK = 3;
 /** A candidate measured inside this window is not read again on the next tick. */
 const ADMISSION_RESCAN_MS = 30 * 60_000;
+/** Admission needs the whole 24h window, not just the newest page. */
+const ADMISSION_SIGNATURE_PAGE = 100;
+const ADMISSION_MAX_PAGES = 3;
+const ADMISSION_MAX_DETAILS = 100;
 
 /** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
 class DetailDeferred extends Error {
   constructor() {
     super('watch detail deferred (minute ceiling)');
     this.name = 'DetailDeferred';
+  }
+}
+
+/** The scan cannot prove it covered the full lookback window; retry, never record zeros. */
+class AdmissionScanIncomplete extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdmissionScanIncomplete';
   }
 }
 /** Admission reads look back 24h (D4's window). */
@@ -141,6 +153,28 @@ export class WatchService {
       }
     }
     const rows = await this.deps.helius.recentSignatures(address, limit);
+    return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
+  }
+
+  /**
+   * Strict page used only by admission. Public failure falls back to Helius;
+   * a Helius failure throws instead of returning [] (the tolerant
+   * `recentSignatures` method would hide an outage as an empty wallet).
+   */
+  private async signaturePageStrict(
+    address: string,
+    limit: number,
+    before?: string,
+  ): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    if (this.deps.publicSolana.configured) {
+      try {
+        const rows = await this.deps.publicSolana.recentSignatures(address, limit, before);
+        return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
+      } catch {
+        // Public node unavailable: the strict paid fallback below answers or throws.
+      }
+    }
+    const rows = await this.deps.helius.recentSignaturesStrict(address, limit, before);
     return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
   }
 
@@ -260,21 +294,56 @@ export class WatchService {
   /**
    * Scan one wallet for funded swaps over the lookback window.
    *
-   * Throws when the signature page or any transaction detail read fails: a
-   * partial scan must never be recorded as an `ok` reading. A successful read
-   * with no funded swaps returns an empty reading (and advances the queue).
-   * The caller (`evaluate`) marks a thrown scan failed and preserves the last
-   * good columns; the unchanged `activity_checked_at` keeps this candidate
-   * first in line for the next tick.
+   * Throws when the signature page or any transaction detail read fails, or
+   * when the bounded page/detail caps cannot prove the whole lookback window
+   * was read: a partial scan must never be recorded as an `ok` reading. A
+   * successful read with no funded swaps returns an empty reading (and
+   * advances the queue). The caller (`evaluate`) marks a thrown scan failed
+   * and preserves the last good columns; the unchanged `activity_checked_at`
+   * keeps this candidate first in line for the next tick.
    */
   async scanWallet(address: string, lookbackHours = ADMISSION_LOOKBACK_HOURS): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
-    const rows = await this.signaturePage(address, 100);
+
+    // Page backwards until the 24h cutoff (bounded). A full page whose oldest
+    // row is still inside the window does not prove coverage.
+    const rows: Array<{ signature: string; blockTime: number | null }> = [];
+    let before: string | undefined;
+    let covered = false;
+    for (let page = 0; page < ADMISSION_MAX_PAGES; page++) {
+      const batch = await this.signaturePageStrict(address, ADMISSION_SIGNATURE_PAGE, before);
+      if (batch.length === 0) {
+        covered = true;
+        break;
+      }
+      rows.push(...batch);
+      const oldest = batch[batch.length - 1]!;
+      if (batch.length < ADMISSION_SIGNATURE_PAGE) {
+        covered = true;
+        break;
+      }
+      if (oldest.blockTime !== null && oldest.blockTime < cutoffSec) {
+        covered = true;
+        break;
+      }
+      before = oldest.signature;
+    }
+    if (!covered) {
+      throw new AdmissionScanIncomplete(
+        `signature page still inside the ${lookbackHours}h window after ${ADMISSION_MAX_PAGES} pages`,
+      );
+    }
+
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
+    if (inWindow.length > ADMISSION_MAX_DETAILS) {
+      throw new AdmissionScanIncomplete(
+        `${inWindow.length} in-window signatures exceed the ${ADMISSION_MAX_DETAILS}-detail admission cap`,
+      );
+    }
 
     const events: FundedSwap[] = [];
-    for (const row of inWindow.slice(0, WATCH_TX_SCAN_LIMIT)) {
+    for (const row of inWindow) {
       const summary = await this.txSummary(address, row.signature);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
