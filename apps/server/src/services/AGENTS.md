@@ -100,6 +100,10 @@ no LLM in the loop (D6).
   next 5-minute watch poll. The roster push stream's safety backstop is 10
   minutes and only advances cursors; the outage poll remains 45 seconds and may
   inspect the newest 25 fresh details per tick.
+- **Shadow exit audits label the actual decision.** `closeDueCeilings` writes
+  `shadow exit <decision> at $<price> after <age>h (max …, grace …)` and puts
+  `decision` + `ageHours` in the audit data. Never hardcode a ceiling label for
+  a stop, trail, green, bounce or grace-expired close.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.

@@ -91,7 +91,7 @@ pnpm demo           # fictional 28-second replay; writes nothing to live tables
 ## 2. Daily operation
 
 1. Start the server (`launch.bat`) and open http://127.0.0.1:8787. On boot the runtime catches up: discovery when the bench is thin, one watch pass, then the promotion queue fills the free chairs.
-2. Watch **Audit** for the pipeline: `discovery run` (rows, traders, credits), `watch admitted`, `shadow opened/closed`, `benched: record passes`, `watch hired into the roster`.
+2. Watch **Audit** for the pipeline: `discovery run` (rows, traders, credits), `watch admitted`, `shadow opened` / `shadow exit <decision>` (stop_loss, trailing_stop, grace_expired, …), `benched: record passes`, `watch hired into the roster`.
 3. Use **Ops → Sync discovery now** when you want a board read immediately (it spends ~750 credits per run; the demand trigger otherwise runs it only when needed).
 4. Watch the dashboard: the ROSTER panel (chairs, streaks, per-seat FIRE), the WATCH LIST panel (status, last buy, closed/net, blocked reason) and the positions/closes panels grouped by leader.
 5. Manual fallbacks, if the API is unavailable: `docs/FOMO_DAWN_FETCHING.md` (desktop-Chrome capture, Dawn) or Settings → MANUAL IMPORT. Every import is audited and no fallback is scheduled.
