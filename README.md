@@ -203,7 +203,7 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 | Max copied event age               | 90 seconds                                                              | `MAX_COPY_EVENT_AGE_SECONDS`                                                      |
 | Max price age                      | 45 seconds                                                              | `PRICE_MAX_AGE_SECONDS`                                                           |
 | Admission                          | 3 funded buys in 24h, last within 24h                                   | `ADMISSION_MIN_BUYS_24H` / `ADMISSION_MAX_LAST_BUY_HOURS`                         |
-| Busy-wallet admission prefix       | newest 40 signatures when the 24h window exceeds 100; `partial` reading | code: `ADMISSION_PREFIX_DETAILS`                                                  |
+| Busy-wallet admission prefix       | newest 12 signatures when the 24h window exceeds 100; `partial` reading | code: `ADMISSION_PREFIX_DETAILS`                                                  |
 | Admission detail burst             | 120 detail reads/minute when the public RPC cannot answer               | `WATCH_DETAIL_PER_MINUTE`                                                         |
 | Watch-list detail fallback         | 15 reads/minute, only with open shadow exposure or a buy in the last 1h | code: `WATCH_LIST_FALLBACK_PER_MINUTE`                                            |
 | Promotion                          | 8 closed shadow trades, net above $3, last buy within 4h                | `PROMOTION_MIN_CLOSED` / `PROMOTION_MIN_NET_USD` / `PROMOTION_MAX_LAST_BUY_HOURS` |
@@ -216,7 +216,7 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 | Watch eviction                     | after 14 days without a funded buy                                      | `WATCH_EVICTION_DAYS`                                                             |
 | Per-mint cap                       | off (0 disables it)                                                     | `PER_MINT_CAP_USD`                                                                |
 
-Admission sizes its read to the wallet: a 24h window of at most 100 signatures is detailed in full and stored as `ok`; a busier wallet is read through its newest 40 signatures and, when that prefix proves the three-buy gate, admitted with a `partial` reading (a lower bound, never a full census). A spent Helius detail budget defers the scan briefly so one busy wallet cannot hold the admission queue.
+Admission sizes its read to the wallet: a 24h window of at most 100 signatures is detailed in full and stored as `ok`; a busier wallet is read through its newest 12 signatures and, when that prefix proves the three-buy gate, admitted with a `partial` reading (a lower bound, never a full census). Partial-prefix reads share a 12-detail-per-tick budget; a spent budget defers the scan briefly so one busy wallet cannot hold the admission queue.
 
 The risk form refuses an inverted pair (a maximum below the minimum), a per-leader open cap below the per-buy maximum, a decreasing exit slippage ladder, and a bench target above the watch-list size. Raising a limit from the dashboard needs `RISK_PIN`; an empty PIN rejects every increase.
 

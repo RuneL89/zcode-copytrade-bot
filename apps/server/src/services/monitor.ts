@@ -14,6 +14,16 @@ import type { TraderLifecycle } from './lifecycle.js';
 import type { RiskConfig } from '@zcode-bot/config';
 
 /**
+ * Push mode is the live path. The 10-minute safety poll only advances the
+ * signature cursor there: it cannot copy a buy older than the 90s window, so
+ * spending a getTransaction per signature is waste. When both sockets are down
+ * (outage mode, 45s) the poll is the copy path and may inspect a bounded
+ * newest prefix.
+ */
+const PUSH_SAFETY_DETAIL_BUDGET = 0;
+const OUTAGE_DETAIL_BUDGET = 25;
+
+/**
  * Leader monitor. Each tick is signature-first: `getSignaturesForAddress`,
  * then `getTransaction` for signatures the cursor has not seen. Full history
  * polling is not used here. On first activation the latest confirmed
@@ -42,6 +52,9 @@ export class LeaderMonitor {
    * past its deadline on, say, seat 3 sat open for hours (ANONCOIN: 14h).
    */
   private lastSweepCheckAt = new Map<string, number>();
+  private streamMode: 'push' | 'outage' = 'outage';
+  /** getTransaction reads left in this tick, shared across activations. */
+  private detailBudget = 0;
   lastTickAt: string | null = null;
   lastError: string | null = null;
   running = false;
@@ -79,6 +92,11 @@ export class LeaderMonitor {
     this.running = false;
   }
 
+  /** Set by the runtime from the roster stream: push is live, outage copies. */
+  setStreamMode(mode: 'push' | 'outage'): void {
+    this.streamMode = mode;
+  }
+
   /**
    * One pass over the ROSTER (plan 05): every ACTIVE/FIRING/
    * REQUIRES_RECONCILIATION activation is polled and disciplined on its own, and
@@ -88,6 +106,7 @@ export class LeaderMonitor {
   async tick(now = new Date()): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
+    this.detailBudget = this.streamMode === 'push' ? PUSH_SAFETY_DETAIL_BUDGET : OUTAGE_DETAIL_BUDGET;
     try {
       this.lastError = null;
       let firstError: string | null = null;
@@ -358,12 +377,15 @@ export class LeaderMonitor {
       lastBlockTime: cursor.lastBlockTime,
     });
 
-    for (const sig of sigs) {
-      if (sig.err) continue;
-      // The 10-minute safety poll is a backstop. A buy already outside the copy
-      // window is not fetched: that getTransaction cannot become a fill, and
-      // the push path is what copies a buy while it is still fresh.
-      if (isEventTooOld(sig.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) continue;
+    // Only signatures inside the copy window can matter. In push mode the
+    // budget is zero (the stream is the copy path); in outage mode the newest
+    // 25 are inspected. Skipped older signatures will be stale next tick.
+    const fresh = sigs.filter(
+      (sig) => !sig.err && !isEventTooOld(sig.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS),
+    );
+    const selected = this.detailBudget > 0 ? fresh.slice(-this.detailBudget) : [];
+    this.detailBudget -= selected.length;
+    for (const sig of selected) {
       const summary = await this.helius.transactionSummary(address, sig.signature);
       if (summary) await this.engine.handleLeaderTx(activationId, candidateId, summary);
     }

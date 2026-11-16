@@ -1362,7 +1362,7 @@ describe('admission scan fail-closed', () => {
     });
 
     // 101 signatures, all inside 24h. The full window no longer has to fit the
-    // detail cap: the newest 40 are classified, and three buys there prove the
+    // detail cap: the newest 12 are classified, and three buys there prove the
     // D4 gate. The reading is recorded as `partial`, never as an ok census.
     const buys = new Set([0, 5, 10]);
     for (let i = 0; i < 101; i++) {

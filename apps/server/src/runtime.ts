@@ -761,10 +761,13 @@ export class Runtime {
       openSocket: browserSocket,
       onMode: (mode, pollMs) => {
         this.helius.setSpendPath(mode === 'outage' ? 'outage' : 'roster');
+        this.monitor?.setStreamMode(mode);
         this.armRosterClock(pollMs);
         repo.audit(this.db.db, 'monitor', `roster stream ${mode}; poll ${Math.round(pollMs / 1000)}s`, {});
       },
     });
+    // Until a socket reports otherwise, the push stream is the live path.
+    this.monitor?.setStreamMode('push');
     this.rosterPush.start();
     this.armRosterClock(SAFETY_POLL_MS);
     if (this.seatRefreshTimer) clearInterval(this.seatRefreshTimer);

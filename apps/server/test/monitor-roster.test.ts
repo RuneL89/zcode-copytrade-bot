@@ -339,3 +339,46 @@ describe('the hourly sweep reaches every seat', () => {
     expect(h.closed).toContain(p2);
   });
 });
+
+describe('roster safety poll in push mode', () => {
+  it('advances the cursor without spending detail reads', async () => {
+    reset();
+    seedChair('pushskip');
+    let fetched = 0;
+    const helius = {
+      latestCursor: async () => ({
+        lastSignature: 'tip',
+        lastSlot: 1,
+        lastTransactionIndex: 0,
+        lastBlockTime: Math.floor(Date.now() / 1000),
+      }),
+      signaturesSince: async () => [
+        {
+          signature: 'fresh-push',
+          slot: 2,
+          blockTime: Math.floor(Date.now() / 1000),
+          err: false,
+        },
+      ],
+      transactionSummary: async () => {
+        fetched++;
+        return null;
+      },
+    };
+    const monitor = new LeaderMonitor(
+      handle.db,
+      helius as never,
+      { handleLeaderTx: async () => undefined, closePosition: async () => 'closed' } as never,
+      risk,
+      { fire: async () => ({ status: 'NO_REPLACEMENT', skipped: [] }) } as never,
+      () => undefined,
+      600_000,
+      () => null,
+    );
+    monitor.setStreamMode('push');
+    await monitor.tick(); // initialise the cursor at the tip
+    await monitor.tick(); // signature page only
+    expect(fetched).toBe(0);
+    expect(repo.getCursor(handle.db, 'MonWalletpushskip')?.lastSignature).toBe('fresh-push');
+  });
+});

@@ -129,7 +129,9 @@ const ADMISSION_MAX_PAGES = 3;
  * deliberately larger than the few details most active wallets need.
  */
 const ADMISSION_MAX_DETAILS = 100;
-const ADMISSION_PREFIX_DETAILS = 40;
+const ADMISSION_PREFIX_DETAILS = 12;
+/** Partial-prefix admission details share this per-tick budget across candidates. */
+const ADMISSION_PARTIAL_DETAIL_BUDGET = 12;
 /** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
 const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
 
@@ -144,12 +146,16 @@ class DetailDeferred extends Error {
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
-  /** Admission keeps its own budget; the watch-list safety valve is separate. */
+  /** A complete window keeps its own budget; a partial prefix is shared/bounded. */
   private readonly admissionDetailCeiling: MinuteCeiling;
+  private readonly partialAdmissionDetailCeiling: MinuteCeiling;
   private readonly watchListDetailCeiling: MinuteCeiling;
 
   constructor(private deps: WatchServiceDeps) {
     this.admissionDetailCeiling = new MinuteCeiling(deps.risk.WATCH_DETAIL_PER_MINUTE);
+    this.partialAdmissionDetailCeiling = new MinuteCeiling(
+      Math.min(ADMISSION_PARTIAL_DETAIL_BUDGET, deps.risk.WATCH_DETAIL_PER_MINUTE),
+    );
     this.watchListDetailCeiling = new MinuteCeiling(
       Math.min(WATCH_LIST_FALLBACK_PER_MINUTE, deps.risk.WATCH_DETAIL_PER_MINUTE),
     );
@@ -239,8 +245,9 @@ export class WatchService {
    * retrying a rate-limited public node is what left active wallets unscanned.
    * The daily CreditGovernor cap remains the hard stop.
    */
-  private async admissionTxSummary(address: string, signature: string) {
-    if (!this.admissionDetailCeiling.allow(Date.now())) {
+  private async admissionTxSummary(address: string, signature: string, partial: boolean) {
+    const ceiling = partial ? this.partialAdmissionDetailCeiling : this.admissionDetailCeiling;
+    if (!ceiling.allow(Date.now())) {
       throw new DetailDeferred('watch detail deferred (minute ceiling)');
     }
     return this.deps.helius.transactionSummary(address, signature, 'watch');
@@ -395,7 +402,7 @@ export class WatchService {
 
     const events: FundedSwap[] = [];
     for (const row of detailRows) {
-      const summary = await this.admissionTxSummary(address, row.signature);
+      const summary = await this.admissionTxSummary(address, row.signature, partial);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);

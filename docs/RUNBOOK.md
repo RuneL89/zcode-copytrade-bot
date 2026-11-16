@@ -228,8 +228,10 @@ best record takes a freed chair.
   mint at that percent of the deployment budget (`MAX_DEPLOYED_PCT`% of
   capital, D7; rule `PER_MINT_CAP`); `0` disables the cap.
 - **Poll cadence.** With the push stream healthy, the roster safety backstop
-  polls every 10 minutes; if both sockets stay down for 60 s it switches to a
-  45-second signature-first poll on the outage budget. The watch list keeps
+  polls every 10 minutes and only advances its cursor (a buy it would find is
+  already older than the 90 s copy window); if both sockets stay down for 60 s
+  it switches to a 45-second signature-first poll that inspects at most the
+  newest 25 fresh details per tick on the outage budget. The watch list keeps
   its own 5-minute clock.
 
 ## 2c. Weekly performance review
@@ -395,7 +397,7 @@ failed page or detail read
 keeps the last good activity reading and retries the candidate next tick
 instead of recording zeros. A complete 24h window of at most 100 signatures is
 a census; a busier wallet (or one beyond three signature pages) is read through
-its newest 40 signatures and may be admitted with a `partial` reading (a lower
+its newest 12 signatures and may be admitted with a `partial` reading (a lower
 bound). A prefix that cannot prove the three-buy gate is deferred for 30
 minutes; a spent detail budget is deferred for 10 minutes so one candidate
 cannot hold every admission slot. Live mode starts on the same
