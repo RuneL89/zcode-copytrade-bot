@@ -617,4 +617,41 @@ describe('public RPC wallet activity', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('walletActivity fails closed when signatures exist but no transaction is readable', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const { method } = JSON.parse(init?.body ?? '{}') as { method: string };
+      if (method === 'getSignaturesForAddress') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            result: [
+              {
+                signature: 'unreadable',
+                slot: 1,
+                blockTime: Math.floor(NOW / 1000) - 60,
+                err: null,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (method === 'getTransaction') {
+        // Pruned / not-yet-indexed reads are null, not "no swap".
+        return new Response(JSON.stringify({ jsonrpc: '2.0', result: null }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: { message: 'unexpected' } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const provider = new PublicSolanaProvider('https://public.test', 1);
+      await expect(provider.walletActivity(leader, { nowMs: NOW })).resolves.toMatchObject({
+        ok: false,
+        reason: 'all transactions unreadable',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

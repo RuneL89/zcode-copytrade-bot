@@ -273,12 +273,60 @@ describe('promotion queue fills the chairs (AC2/AC3/AC5)', () => {
 
     await lifecycle.fire(hire.activationId!, 'idle: test');
 
-    // The fired leader is in the cooling rotation (a post-fire buy may bring
-    // him back), not still on the bench.
+    // The fired leader is cooling (another hire or the free-chair window may
+    // bring him back), not still on the bench.
     expect(repo.getWatchWallet(handle.db, fired)?.status).toBe('cooling');
     const active = repo.listActiveActivations(handle.db).filter((a) => a.state === 'ACTIVE');
     expect(active).toHaveLength(1);
     expect(active[0]!.candidateId).toBe(other);
+  });
+});
+
+describe('fired-trader re-entry block (AC7)', () => {
+  it('refuses an immediate manual rehire until another trader is hired', async () => {
+    const fired = seedBench('reentry_manual', 5_000_000n);
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));
+    const hire = await lifecycle.hireFromWatch(fired);
+    expect(hire.ok).toBe(true);
+    await lifecycle.fire(hire.activationId!, 'idle: test');
+    expect(repo.getWatchWallet(handle.db, fired)?.status).toBe('cooling');
+
+    const blocked = await lifecycle.activate(fired, 'manual');
+    expect(blocked.ok).toBe(false);
+    expect(blocked.reason).toMatch(/^REENTRY_BANNED/);
+
+    // Any other trader's hire lifts the block immediately.
+    const other = seedCandidateWithWallet('reentry_other');
+    expect((await lifecycle.activate(other, 'manual')).ok).toBe(true);
+    expect((await lifecycle.activate(fired, 'manual')).ok).toBe(true);
+  });
+
+  it('allows the rehire after the cooldown when a chair is free', async () => {
+    handle.sqlite.prepare('delete from trader_activations').run();
+    const fired = seedBench('reentry_timed', 5_000_000n);
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3, COOLDOWN_HOURS: 3 }));
+    const hire = await lifecycle.hireFromWatch(fired);
+    expect(hire.ok).toBe(true);
+    await lifecycle.fire(hire.activationId!, 'idle: test');
+    handle.sqlite
+      .prepare('update firing_events set fired_at = ? where candidate_id = ?')
+      .run(new Date(Date.now() - 4 * 3_600_000).toISOString(), fired);
+    expect((await lifecycle.activate(fired, 'manual')).ok).toBe(true);
+  });
+
+  it('never archives a repeat firing; it cools again', async () => {
+    const fired = seedBench('repeat_fire', 5_000_000n);
+    const lifecycle = lifecycleFor(riskConfig({ ROSTER_SIZE: 3 }));
+    const first = await lifecycle.hireFromWatch(fired);
+    expect(first.ok).toBe(true);
+    await lifecycle.fire(first.activationId!, 'idle: first');
+    handle.sqlite
+      .prepare('update firing_events set fired_at = ? where candidate_id = ?')
+      .run(new Date(Date.now() - 4 * 3_600_000).toISOString(), fired);
+    const second = await lifecycle.activate(fired, 'manual');
+    expect(second.ok).toBe(true);
+    await lifecycle.fire(second.activationId!, 'idle: second');
+    expect(repo.getWatchWallet(handle.db, fired)?.status).toBe('cooling');
   });
 });
 

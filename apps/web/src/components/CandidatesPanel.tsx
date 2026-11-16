@@ -25,7 +25,7 @@ interface CandidateRow {
   lastBuyAt: string | null;
   buys24h: number | null;
   sells24h: number | null;
-  activityCheckStatus: 'ok' | 'failed' | null;
+  activityCheckStatus: 'ok' | 'partial' | 'failed' | null;
   activityCheckedAt: string | null;
   statsCheckedAt: string | null;
   observedAt: string;
@@ -71,7 +71,9 @@ function ageLabel(ageH: number | null): string {
  * unverified wallet is not a buyer as far as this display is concerned.
  */
 function buyerTier(row: CandidateRow, now: number): 0 | 1 | 2 {
-  if (row.activityCheckStatus !== 'ok') return 2;
+  // A partial reading is a proven lower bound from a bounded prefix; it sorts
+  // with a complete reading, while failed/never-checked wallets stay last.
+  if (row.activityCheckStatus !== 'ok' && row.activityCheckStatus !== 'partial') return 2;
   const lastBuyAge = ageHours(row.lastBuyAt, now);
   if (lastBuyAge !== null && lastBuyAge <= ACTIVE_BUY_WINDOW_HOURS) return 0;
   if ((row.buys24h ?? 0) > 0) return 1;
@@ -193,7 +195,7 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
     let failed = 0;
     for (const r of enabled) {
       if (r.activityCheckStatus === 'failed') failed++;
-      if (r.activityCheckStatus !== 'ok') continue;
+      if (r.activityCheckStatus !== 'ok' && r.activityCheckStatus !== 'partial') continue;
       if ((r.buys24h ?? 0) > 0) bought++;
       const a = ageHours(r.lastBuyAt, now);
       if (a !== null && a <= ACTIVE_BUY_WINDOW_HOURS) inWindow++;
@@ -216,6 +218,8 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
   function BuyerChip({ row }: { row: CandidateRow }) {
     const g = gates(row);
     const base = 'tag chip !text-[10px] shrink-0 whitespace-nowrap';
+    const partialNote =
+      row.activityCheckStatus === 'partial' ? ' (partial read — counts are a lower bound)' : '';
     if (row.activityCheckStatus === 'failed') {
       return (
         <span
@@ -238,7 +242,7 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
       return (
         <span
           className={`${base} bg-posdim text-pos`}
-          title={`bought ${ageLabel(g.lastBuyAge)} ago — inside the ${ACTIVE_BUY_WINDOW_HOURS}h buy window`}
+          title={`bought ${ageLabel(g.lastBuyAge)} ago — inside the ${ACTIVE_BUY_WINDOW_HOURS}h buy window${partialNote}`}
         >
           BUY {ageLabel(g.lastBuyAge)}
           {sellsOver && ' s>b'}
@@ -249,7 +253,7 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
       return (
         <span
           className={`${base} bg-warndim text-warn`}
-          title={`last buy ${ageLabel(g.lastBuyAge)} ago — outside the buy window`}
+          title={`last buy ${ageLabel(g.lastBuyAge)} ago — outside the buy window${partialNote}`}
         >
           BUY {ageLabel(g.lastBuyAge)}
           {sellsOver && ' s>b'}
@@ -259,13 +263,16 @@ export function CandidatesPanel({ state }: { state: DashboardState }) {
     // Checked ok, but no buy found in the lookback: quiet (or sell-only).
     if ((row.sells24h ?? 0) > 0) {
       return (
-        <span className={`${base} bg-negdim text-neg`} title="no buys in 24h — sell-only wallet">
+        <span
+          className={`${base} bg-negdim text-neg`}
+          title={`no buys in 24h — sell-only wallet${partialNote}`}
+        >
           {dirPair(row.buys24h, row.sells24h)}
         </span>
       );
     }
     return (
-      <span className={`${base} bg-inset text-faint`} title="no buys in 24h">
+      <span className={`${base} bg-inset text-faint`} title={`no buys in 24h${partialNote}`}>
         NO BUYS
       </span>
     );

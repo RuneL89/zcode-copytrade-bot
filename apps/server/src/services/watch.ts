@@ -10,7 +10,6 @@ import {
   usdToMicro,
   MinuteCeiling,
   signaturesAfterCursor,
-  WATCH_DETAIL_PER_MINUTE,
   type FundedSwap,
   type PromotionBlockReason,
 } from '@zcode-bot/core';
@@ -62,14 +61,24 @@ export function shadowPnlUsdMicro(
   return (notionalUsdMicro * effectiveExit) / effectiveEntry - notionalUsdMicro;
 }
 
-/** The funded-buy reading admission is decided from. */
+/**
+ * The funded-buy reading admission is decided from.
+ *
+ * `partial` means the scan could not detail the whole 24h window (a busy
+ * wallet, or more than three signature pages) and instead read a bounded
+ * newest prefix. The buys/last-buy fields are a lower bound, never a census;
+ * `admit` may still use them to prove the D4 gate, and the caller records the
+ * reading as `partial` instead of `ok`.
+ */
 export interface AdmissionReading {
-  /** Funded buys in the lookback (D4 definition). */
+  /** Funded buys in the lookback (D4 definition); a lower bound when partial. */
   fundedBuys24h: number;
   /** Newest funded buy, ISO; null when there is none. */
   lastFundedBuyAt: string | null;
   /** When this reading was measured (freshness gate). */
   measuredAt: string;
+  /** True when only a bounded prefix of the window was detailed. */
+  partial: boolean;
   /** The scan's funded events, oldest first — used for the optional backfill. */
   events: FundedSwap[];
 }
@@ -78,6 +87,7 @@ export interface WatchTickResult {
   polled: number;
   newEvents: number;
   ceilingsClosed: number;
+  readmitted: number;
   admitted: number;
   benched: number;
   hired: string | null;
@@ -105,30 +115,33 @@ const ADMISSION_RESCAN_MS = 30 * 60_000;
 /** Admission needs the whole 24h window, not just the newest page. */
 const ADMISSION_SIGNATURE_PAGE = 100;
 const ADMISSION_MAX_PAGES = 3;
+/**
+ * A complete window is detailed in full up to this many signatures. A busier
+ * wallet gets a bounded newest-prefix read instead: admission only has to prove
+ * three funded buys and a recent one, not census the whole day. The prefix is
+ * deliberately larger than the few details most active wallets need.
+ */
 const ADMISSION_MAX_DETAILS = 100;
+const ADMISSION_PREFIX_DETAILS = 40;
+/** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
+const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
 
-/** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
+/** The minute's Helius detail budget is spent; retry after a short deferral. */
 class DetailDeferred extends Error {
   constructor() {
     super('watch detail deferred (minute ceiling)');
     this.name = 'DetailDeferred';
   }
 }
-
-/** The scan cannot prove it covered the full lookback window; retry, never record zeros. */
-class AdmissionScanIncomplete extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AdmissionScanIncomplete';
-  }
-}
 /** Admission reads look back 24h (D4's window). */
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
-  private detailCeiling = new MinuteCeiling(WATCH_DETAIL_PER_MINUTE);
+  private readonly detailCeiling: MinuteCeiling;
 
-  constructor(private deps: WatchServiceDeps) {}
+  constructor(private deps: WatchServiceDeps) {
+    this.detailCeiling = new MinuteCeiling(deps.risk.WATCH_DETAIL_PER_MINUTE);
+  }
 
   private get db(): AppDatabase {
     return this.deps.db;
@@ -191,6 +204,17 @@ export class WatchService {
     }
     // A Helius error is a failed read, not "no swap". Let it reach the caller so
     // the admission scan can mark the check failed and keep the previous reading.
+    return this.deps.helius.transactionSummary(address, signature, 'watch');
+  }
+
+  /**
+   * Admission detail read: the paid reader directly, bounded by the per-minute
+   * burst ceiling. Admission is the hire path; spending its window retrying a
+   * rate-limited public node is what left active wallets unscanned. The daily
+   * CreditGovernor cap remains the hard stop.
+   */
+  private async admissionTxSummary(address: string, signature: string) {
+    if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
     return this.deps.helius.transactionSummary(address, signature, 'watch');
   }
 
@@ -284,6 +308,7 @@ export class WatchService {
         address,
         fundedBuys24h: reading.fundedBuys24h,
         lastFundedBuyAt: reading.lastFundedBuyAt,
+        partial: reading.partial,
         backfilled,
       },
     );
@@ -294,20 +319,25 @@ export class WatchService {
   /**
    * Scan one wallet for funded swaps over the lookback window.
    *
-   * Throws when the signature page or any transaction detail read fails, or
-   * when the bounded page/detail caps cannot prove the whole lookback window
-   * was read: a partial scan must never be recorded as an `ok` reading. A
-   * successful read with no funded swaps returns an empty reading (and
-   * advances the queue). The caller (`evaluate`) marks a thrown scan failed
-   * and preserves the last good columns; the unchanged `activity_checked_at`
-   * keeps this candidate first in line for the next tick.
+   * A window with at most 100 in-window signatures is detailed in full and
+   * recorded as a complete (`ok`) reading. A busier wallet — or one whose
+   * history does not fit in three signature pages — gets a bounded newest
+   * prefix instead: admission only has to prove three funded buys and a recent
+   * one, not census the whole day. That reading is marked `partial`; it is a
+   * lower bound and is never stored as an `ok` census. A genuinely empty
+   * wallet still returns an empty complete reading.
+   *
+   * Throws only when a signature page or a detail read itself fails (the
+   * caller preserves the last good columns) or when the paid detail budget is
+   * spent (the caller defers briefly so the queue advances).
    */
   async scanWallet(address: string, lookbackHours = ADMISSION_LOOKBACK_HOURS): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
 
     // Page backwards until the 24h cutoff (bounded). A full page whose oldest
-    // row is still inside the window does not prove coverage.
+    // row is still inside the window does not prove coverage; the rows we did
+    // collect still support a bounded prefix decision.
     const rows: Array<{ signature: string; blockTime: number | null }> = [];
     let before: string | undefined;
     let covered = false;
@@ -329,22 +359,15 @@ export class WatchService {
       }
       before = oldest.signature;
     }
-    if (!covered) {
-      throw new AdmissionScanIncomplete(
-        `signature page still inside the ${lookbackHours}h window after ${ADMISSION_MAX_PAGES} pages`,
-      );
-    }
 
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
-    if (inWindow.length > ADMISSION_MAX_DETAILS) {
-      throw new AdmissionScanIncomplete(
-        `${inWindow.length} in-window signatures exceed the ${ADMISSION_MAX_DETAILS}-detail admission cap`,
-      );
-    }
+    const partial = !covered || inWindow.length > ADMISSION_MAX_DETAILS;
+    const detailRows =
+      inWindow.length > ADMISSION_MAX_DETAILS ? inWindow.slice(0, ADMISSION_PREFIX_DETAILS) : inWindow;
 
     const events: FundedSwap[] = [];
-    for (const row of inWindow) {
-      const summary = await this.txSummary(address, row.signature);
+    for (const row of detailRows) {
+      const summary = await this.admissionTxSummary(address, row.signature);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -357,6 +380,7 @@ export class WatchService {
       lastFundedBuyAt:
         newestBuy && newestBuy.blockTime !== null ? new Date(newestBuy.blockTime * 1000).toISOString() : null,
       measuredAt,
+      partial,
       events,
     };
   }
@@ -561,12 +585,16 @@ export class WatchService {
 
   // ---- ticks ---------------------------------------------------------------
 
-  /** Poll every watching wallet, apply new funded swaps, then evaluate. */
+  /**
+   * Re-admit cooling wallets whose re-entry block has lifted, poll every
+   * watching wallet, apply new funded swaps, then evaluate.
+   */
   async tick(): Promise<WatchTickResult> {
     const result: WatchTickResult = {
       polled: 0,
       newEvents: 0,
       ceilingsClosed: 0,
+      readmitted: 0,
       admitted: 0,
       benched: 0,
       hired: null,
@@ -576,6 +604,9 @@ export class WatchService {
     };
 
     result.ceilingsClosed = await this.closeDueCeilings();
+    // Re-admit before polling so a wallet whose block just lifted is observed
+    // in this same tick.
+    result.readmitted = await this.coolingTick();
 
     // Watching only. Hired seats are covered by the roster stream and its
     // safety poll, so this pass does not pay for them a second time. Bench
@@ -655,13 +686,13 @@ export class WatchService {
     // The list is ordered least-recently-measured first (never-measured ahead of
     // everything), so the bounded scan advances through the pool.
     //
-    // Failure policy: a successful read (including a genuinely empty wallet)
-    // records the reading and moves the candidate to the back of the queue. A
-    // failed or incomplete read records NOTHING as ok. Transient failures keep
-    // the candidate first in line for the next tick; a deterministic overflow
-    // / coverage cap gets a 30-minute scan deferral so it cannot occupy a slot
-    // every tick. Both preserve the last good activity columns and their true
-    // freshness.
+    // Failure policy: a complete read (including a genuinely empty wallet) is
+    // recorded as `ok` and moves the candidate to the back of the queue. A
+    // bounded prefix that PROVES the D4 gate is recorded as `partial` and
+    // admitted; a prefix that cannot prove it records NOTHING as a census and
+    // is deferred. A spent detail budget also defers briefly, so one busy
+    // candidate cannot hold all three slots. Every failure path preserves the
+    // last good activity columns and their true freshness.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
       const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
@@ -675,8 +706,10 @@ export class WatchService {
         reading = await this.scanWallet(address);
       } catch (e) {
         const failedAt = new Date().toISOString();
-        const deferred = e instanceof AdmissionScanIncomplete;
-        const deferredUntil = deferred ? new Date(Date.now() + ADMISSION_RESCAN_MS).toISOString() : null;
+        const transient = e instanceof DetailDeferred;
+        const deferredUntil = transient
+          ? new Date(Date.now() + ADMISSION_TRANSIENT_DEFER_MS).toISOString()
+          : null;
         if (deferredUntil !== null) {
           repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, failedAt);
         } else {
@@ -696,6 +729,20 @@ export class WatchService {
         );
         continue;
       }
+      if (reading.partial && reading.fundedBuys24h < this.risk.ADMISSION_MIN_BUYS_24H) {
+        // The bounded prefix did not prove the gate. Never overwrite the last
+        // good census with a truncated zero; defer so the queue advances.
+        const deferredUntil = new Date(Date.now() + ADMISSION_RESCAN_MS).toISOString();
+        repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
+        repo.audit(
+          this.db,
+          'watch',
+          `admission prefix for ${candidate.handle} did not prove ` +
+            `${this.risk.ADMISSION_MIN_BUYS_24H} funded buys; deferred`,
+          { candidateId: candidate.candidateId, address, deferredUntil },
+        );
+        continue;
+      }
       const newestEvent = reading.events[reading.events.length - 1] ?? null;
       repo.updateCandidateActivity(this.db, candidate.candidateId, {
         swaps24h: reading.events.length,
@@ -704,7 +751,7 @@ export class WatchService {
         lastBuyAt: reading.lastFundedBuyAt,
         buys24h: reading.fundedBuys24h,
         sells24h: reading.events.filter((e) => e.side === 'sell').length,
-        status: 'ok',
+        status: reading.partial ? 'partial' : 'ok',
         checkedAt: reading.measuredAt,
       });
       try {
@@ -796,7 +843,7 @@ export class WatchService {
       const decision = this.promotionDecision(wallet.candidateId);
       if (decision.ok) promotable.push(wallet.candidateId);
       else if (decision.reason === 'REENTRY_BANNED') {
-        repo.audit(this.db, 'watch', 're-entry blocked (no funded buy since the firing)', {
+        repo.audit(this.db, 'watch', 're-entry blocked (waiting for another hire or the free-chair window)', {
           candidateId: wallet.candidateId,
         });
       }
@@ -828,11 +875,14 @@ export class WatchService {
 
   /** The live inputs of a wallet's own promotion gates (no chair count). */
   private recordInput(candidateId: string) {
+    const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
     return {
       aggregates: repo.shadowAggregates(this.db, candidateId),
       lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
-      lastFiredAt: repo.lastFiredAt(this.db, candidateId),
+      lastFiredAt,
       nowMs: Date.now(),
+      anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, candidateId),
+      freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
       config: {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
@@ -848,41 +898,41 @@ export class WatchService {
   }
 
   /**
-   * Cooling rotation: a fired trader returns only on a funded buy observed
-   * after the fire; without one he is archived after the eviction window.
+   * Re-admission: a cooling wallet returns to the watch list when another
+   * trader was hired after its firing, or when the re-entry window has elapsed
+   * while a roster chair is free. The normal promotion gates then decide.
    */
   async coolingTick(): Promise<number> {
     let readmitted = 0;
+    let watchingCount = repo.listWatchWallets(this.db, 'watching').length;
+    const freeChair = repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE;
     for (const wallet of repo.listWatchWallets(this.db, 'cooling')) {
       const firedAt = repo.lastFiredAt(this.db, wallet.candidateId);
-      const lastBuy = repo.lastFundedBuyAt(this.db, wallet.candidateId);
+      if (firedAt === null) continue; // fail closed: no firing clock, no re-entry
+      const anotherHired = repo.hasHireSince(this.db, firedAt, wallet.candidateId);
       if (
-        canReenter({
+        !canReenter({
           lastFiredAt: firedAt,
-          lastFundedBuyAt: lastBuy,
           nowMs: Date.now(),
           cooldownHours: this.risk.COOLDOWN_HOURS,
+          anotherHiredSinceFire: anotherHired,
+          freeChair,
         })
       ) {
-        repo.setWatchStatus(this.db, wallet.candidateId, 'watching', 'funded buy observed after the firing');
-        repo.audit(this.db, 'watch', 're-entry observed: funded buy after the firing', {
-          candidateId: wallet.candidateId,
-          lastFiredAt: firedAt,
-          lastFundedBuyAt: lastBuy,
-        });
-        readmitted++;
         continue;
       }
-      if (lastBuy === null && firedAt !== null) {
-        const quietDays = (Date.now() - Date.parse(firedAt)) / (24 * 3_600_000);
-        if (quietDays >= this.risk.WATCH_EVICTION_DAYS) {
-          repo.setWatchStatus(this.db, wallet.candidateId, 'archived', 'no funded buy since the firing');
-          repo.audit(this.db, 'watch', 'watch archived: no funded buy since the firing', {
-            candidateId: wallet.candidateId,
-            lastFiredAt: firedAt,
-          });
-        }
-      }
+      // The watch list is a funnel cap, not a re-entry right: wait for room.
+      if (watchingCount >= this.risk.WATCH_LIST_SIZE) continue;
+      const reason = anotherHired
+        ? 're-entry: another trader was hired after the firing'
+        : `re-entry: ${this.risk.COOLDOWN_HOURS}h elapsed with a free chair`;
+      repo.setWatchStatus(this.db, wallet.candidateId, 'watching', reason);
+      repo.audit(this.db, 'watch', `watch re-admitted: ${reason}`, {
+        candidateId: wallet.candidateId,
+        lastFiredAt: firedAt,
+      });
+      watchingCount++;
+      readmitted++;
     }
     if (readmitted > 0) this.deps.onStateChanged();
     return readmitted;

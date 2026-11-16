@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/index.js';
-import { DEFAULT_RISK, riskConfigSchema, settingsPatchSchema } from '../src/risk.js';
+import { DEFAULT_RISK, riskConfigSchema, SETTINGS_PATCH_KEYS, settingsPatchSchema } from '../src/risk.js';
 
 const base = { SESSION_SECRET: 'x'.repeat(40) };
 
@@ -16,7 +16,7 @@ const D4_DEFAULTS = {
   PER_MINT_CAP_USD: 0,
   WATCH_POLL_MS: 300000,
   ROSTER_POLL_MS: 45000,
-  COOLING_SCAN_MS: 7200000,
+  WATCH_DETAIL_PER_MINUTE: 120,
   WATCH_EVICTION_DAYS: 14,
   SHADOW_BACKFILL_ON_ADMIT: true,
   DISCOVERY_MIN_INTERVAL_MS: 1800000,
@@ -37,11 +37,20 @@ describe('loadConfig', () => {
     expect(cfg.risk.MAX_POSITION_AGE_HOURS).toBe(5);
     expect(cfg.risk.POSITION_GRACE_HOURS).toBe(1.5);
     expect(cfg.risk.STOP_LOSS_BPS).toBe(2500);
-    expect(cfg.risk.COOLDOWN_HOURS).toBe(36);
+    expect(cfg.risk.COOLDOWN_HOURS).toBe(3);
+    expect(cfg.risk.WATCH_DETAIL_PER_MINUTE).toBe(120);
     expect(cfg.risk.EXIT_SLIPPAGE_BPS_3).toBe(1000);
     expect(cfg.risk.SELL_ON_GREEN).toBe(true);
     expect(cfg.risk.LOSS_STREAK_UNIT).toBe('fully_closed_position');
     expect(cfg.risk.FIRE_POSITION_POLICY).toBe('close_all_before_switch');
+  });
+
+  it('no longer accepts the retired repeat-fire and cooling-scan keys', () => {
+    expect(SETTINGS_PATCH_KEYS).not.toContain('REPEAT_FIRE_WINDOW_DAYS');
+    expect(SETTINGS_PATCH_KEYS).not.toContain('REPEAT_FIRE_LIMIT');
+    expect(SETTINGS_PATCH_KEYS).not.toContain('COOLING_SCAN_MS');
+    expect(() => settingsPatchSchema.parse({ REPEAT_FIRE_LIMIT: 2 })).toThrow();
+    expect(() => settingsPatchSchema.parse({ COOLING_SCAN_MS: 7200000 })).toThrow();
   });
 
   it('coerces risk numbers from env strings', () => {
@@ -110,7 +119,7 @@ describe('loadConfig', () => {
       PER_MINT_CAP_USD: 0,
       WATCH_POLL_MS: 120000,
       ROSTER_POLL_MS: 20000,
-      COOLING_SCAN_MS: 3600000,
+      WATCH_DETAIL_PER_MINUTE: 240,
       WATCH_EVICTION_DAYS: 7,
       SHADOW_BACKFILL_ON_ADMIT: false,
       DISCOVERY_MIN_INTERVAL_MS: 900000,
@@ -127,6 +136,7 @@ describe('loadConfig', () => {
     expect(settingsPatchSchema.safeParse({ PER_MINT_CAP_USD: -1 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ WATCH_POLL_MS: 59999 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ ROSTER_POLL_MS: 10000 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ WATCH_DETAIL_PER_MINUTE: 0 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ DISCOVERY_MIN_INTERVAL_MS: 60000 }).success).toBe(false);
     // Whole-config invariants hold through the full schema as well.
     expect(riskConfigSchema.safeParse({ ...DEFAULT_RISK, BENCH_TARGET: 21 }).success).toBe(false);

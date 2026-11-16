@@ -31,11 +31,14 @@ function promoteConfig(risk: RiskConfig) {
 function qualified(db: AppDatabase, risk: RiskConfig, candidateId: string): boolean {
   const watch = repo.getWatchWallet(db, candidateId);
   if (!watch || (watch.status !== 'bench' && watch.status !== 'watching')) return false;
+  const lastFiredAt = repo.lastFiredAt(db, candidateId);
   return canPromote({
     aggregates: repo.shadowAggregates(db, candidateId),
     lastFundedBuyAt: repo.lastFundedBuyAt(db, candidateId),
-    lastFiredAt: repo.lastFiredAt(db, candidateId),
+    lastFiredAt,
     nowMs: Date.now(),
+    anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(db, lastFiredAt, candidateId),
+    freeChair: repo.activeActivationCount(db) < risk.ROSTER_SIZE,
     config: promoteConfig(risk),
   }).ok;
 }

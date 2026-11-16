@@ -45,6 +45,12 @@ notifications. This is the only package allowed to talk to the outside world.
   `0` makes the public node reject version 1 swaps as unreadable, and the
   activity refresh then fails the wallet. That refresh does not spend Helius
   to fill the gap. Helius stays the sole source for the leader monitor.
+- **Signatures without a readable transaction are unknown, not quiet.**
+  `walletActivity` returns `ok:false` when the signature page has rows but no
+  transaction could be read (failed, null/pruned, or the fetch budget
+  expired). Only a genuinely empty signature page is an `ok` zero; a
+  signatures-present zero would erase an active wallet from the admission
+  queue.
 - **Jupiter uses Swap API v2** `GET /swap/v2/build` on `api.jup.ag` (free key,
   about 1 request/second, no platform fee). Every quote sends `taker`: the
   wallet pubkey when `WALLET_FILE` is present, otherwise a fixed valid pubkey.

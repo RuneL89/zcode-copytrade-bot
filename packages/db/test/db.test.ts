@@ -478,6 +478,26 @@ describe('foundation schema (plan 02)', () => {
     expect(repo.lastFiredAt(handle.db, 'cand_never_fired')).toBeNull();
   });
 
+  it('hasHireSince finds a strictly later hire of another trader', () => {
+    const startedAt = '2099-01-01T00:00:01.000Z';
+    repo.createActivation(handle.db, {
+      activationId: 'act_hire_since',
+      candidateId: 'cand_hire_since',
+      state: 'FIRED',
+      startedAt,
+      endedAt: '2099-01-01T01:00:00.000Z',
+      endReason: 'fired',
+      lossStreak: 0,
+      firedReason: 'idle',
+      source: 'test',
+    });
+    expect(repo.hasHireSince(handle.db, '2099-01-01T00:00:00.000Z', 'cand_fired_since')).toBe(true);
+    // Strictly after: a hire at the firing instant does not count.
+    expect(repo.hasHireSince(handle.db, startedAt, 'cand_fired_since')).toBe(false);
+    // The fired trader's own activation does not lift his own block.
+    expect(repo.hasHireSince(handle.db, '2099-01-01T00:00:00.000Z', 'cand_hire_since')).toBe(false);
+  });
+
   it('roster helpers list every active chair, not one', () => {
     expect(repo.activeActivationCount(handle.db)).toBe(0);
     const activation = (activationId: string, candidateId: string, startedAt: string) =>

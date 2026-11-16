@@ -217,7 +217,7 @@ describe('copy engine end-to-end (paper simulation, no signing)', () => {
     expect(repo.listActiveActivations(handle.db)).toHaveLength(0);
   });
 
-  it('a fire is filled from the promotion queue (no ordering, no cooldown) and entries pause while paused', async () => {
+  it('a fire is filled from the promotion queue and entries pause while paused', async () => {
     // Hire a fresh chair, bench a wallet, then fire: the bench fills it.
     const candidateId = 'cand_bench_fill';
     repo.upsertCandidate(handle.db, {

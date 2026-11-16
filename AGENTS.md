@@ -146,15 +146,23 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Helius timer polling is signature-first (`getSignaturesForAddress`, then
   `getTransaction` for an unseen signature). `getTransactionsForAddress` is
   vetting-only. Enhanced Transactions is deprecated — do not reintroduce it.
+- Admission is a bounded scan. A complete 24h window of at most 100 signatures
+  is a census and is stored as `ok`; a busier wallet (or one beyond three
+  signature pages) uses a newest 40-signature prefix and may be admitted as
+  `partial`, a lower bound that is never stored as an `ok` census. A spent
+  `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the candidate briefly so
+  it cannot starve the admission queue.
 - Jupiter uses Swap API v2 `GET /swap/v2/build` on `api.jup.ag` (free key).
   Paper quotes fall back to a cached price. Live assembly is not enabled.
 - Order-intent transitions are guarded (`packages/core/orderState.ts`); there
   is no transition from signed/submitted back to quotable. Preserve that.
 - Firing is transactional: mark FIRING + cancel unsigned intents atomically,
   then position policy, then `fillRoster()` from the promotion queue (see
-  `apps/server/src/services/lifecycle.ts`). A fired trader returns only after a
-  funded buy observed after the firing (the `canReenter` rule); no timed
-  cooldowns. A stuck close freezes only its own chair.
+  `apps/server/src/services/lifecycle.ts`). A fired trader cannot be rehired
+  immediately: the block lifts when another trader is hired after the firing,
+  or after `COOLDOWN_HOURS` (default 3) with a roster chair still free. He keeps
+  his shadow record and passes the same promotion gates; manual activation obeys
+  the block too. A stuck close freezes only its own chair.
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.

@@ -310,7 +310,6 @@ export class PublicSolanaProvider {
       const fetchStartedAt = Date.now();
       const budgetMs = opts.fetchBudgetMs ?? DEFAULT_FETCH_BUDGET_MS;
       let fetched = 0;
-      let failedTxs = 0;
       for (const row of signatures.slice(0, maxTxScans)) {
         // Budget guard: under a 429 storm each request can burn several seconds
         // of backoff, and an unbounded loop is exactly what used to hang the
@@ -328,7 +327,6 @@ export class PublicSolanaProvider {
             },
           ]);
         } catch {
-          failedTxs++;
           continue;
         }
         await sleep(TX_SLEEP_MS);
@@ -361,7 +359,11 @@ export class PublicSolanaProvider {
         collect((tx.meta as { preTokenBalances?: [] })?.preTokenBalances);
         collect((tx.meta as { postTokenBalances?: [] })?.postTokenBalances);
       }
-      if (fetched === 0 && failedTxs > 0) return { ok: false, reason: 'all transactions unreadable' };
+      // There were signatures but none produced a readable transaction: the
+      // reads failed, came back null (pruned/not-yet-indexed), or the fetch
+      // budget expired. That is an unknown reading, not a quiet wallet — never
+      // turn it into an ok zero.
+      if (fetched === 0) return { ok: false, reason: 'all transactions unreadable' };
       return this.sample(
         summaries,
         decimalsByMint,

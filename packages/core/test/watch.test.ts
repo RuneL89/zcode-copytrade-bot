@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  canPromote,
-  canReenter,
-  ceilingAction,
-  isRepeatOffender,
-  stallDecision,
-  type PromotionConfig,
-} from '../src/watch.js';
+import { canPromote, canReenter, ceilingAction, stallDecision, type PromotionConfig } from '../src/watch.js';
 import { isIdleOver } from '../src/positionAge.js';
 
 const HOUR = 3_600_000;
@@ -17,6 +10,7 @@ const config: PromotionConfig = {
   promotionMinClosed: 8,
   promotionMinNetUsdMicro: 3_000_000n,
   promotionMaxLastBuyHours: 4,
+  cooldownHours: 3,
 };
 
 const passing = {
@@ -24,6 +18,8 @@ const passing = {
   lastFundedBuyAt: iso(NOW - 2 * HOUR),
   lastFiredAt: null,
   nowMs: NOW,
+  anotherHiredSinceFire: false,
+  freeChair: true,
   config,
 };
 
@@ -46,6 +42,16 @@ describe('canPromote — the bench gate (AC6)', () => {
     expect(
       canPromote({ ...passing, lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 2 * HOUR) }).reason,
     ).toBe('REENTRY_BANNED');
+  });
+
+  it('a hire of another trader after the firing lifts the re-entry ban', () => {
+    expect(
+      canPromote({
+        ...passing,
+        lastFiredAt: iso(NOW - HOUR),
+        anotherHiredSinceFire: true,
+      }),
+    ).toEqual({ ok: true, reason: null });
   });
 
   it('the newest close does not matter: the gates are K, net, recency, re-entry', () => {
@@ -74,47 +80,38 @@ describe('canPromote — the bench gate (AC6)', () => {
   });
 });
 
-describe('canReenter — no timed cooldown, a post-fire buy (AC7)', () => {
+describe('canReenter — another hire, or the cooldown with a free chair (AC7)', () => {
+  const base = {
+    lastFiredAt: iso(NOW),
+    nowMs: NOW,
+    cooldownHours: 3,
+    anotherHiredSinceFire: false,
+    freeChair: true,
+  };
+
   it('never-fired wallets may return', () => {
-    expect(canReenter({ lastFiredAt: null, lastFundedBuyAt: null })).toBe(true);
+    expect(canReenter({ ...base, lastFiredAt: null })).toBe(true);
   });
 
-  it('a fired trader with no buy since the fire is banned', () => {
-    expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: null })).toBe(false);
-    expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 2 * HOUR) })).toBe(false);
-    expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - HOUR) })).toBe(false);
+  it('blocks immediately after the firing, even with a free chair', () => {
+    expect(canReenter(base)).toBe(false);
+    expect(canReenter({ ...base, nowMs: NOW + 3 * HOUR - 1 })).toBe(false);
   });
 
-  it('a funded buy observed after the fire lifts the ban', () => {
-    expect(canReenter({ lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 60_000) })).toBe(true);
+  it('opens the timed path at the cooldown boundary when a chair is free', () => {
+    expect(canReenter({ ...base, nowMs: NOW + 3 * HOUR })).toBe(true);
+    expect(canReenter({ ...base, nowMs: NOW + 3 * HOUR, freeChair: false })).toBe(false);
   });
 
-  it('holds the ban until the cooldown elapses, then accepts the post-fire buy', () => {
-    const firedAt = iso(NOW - 36 * HOUR);
-    const buyAt = iso(NOW - 60_000);
-    expect(
-      canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW - 60_000, cooldownHours: 36 }),
-    ).toBe(false);
-    expect(canReenter({ lastFiredAt: firedAt, lastFundedBuyAt: buyAt, nowMs: NOW, cooldownHours: 36 })).toBe(
+  it('another trader hired after the firing lifts the block immediately', () => {
+    expect(canReenter({ ...base, anotherHiredSinceFire: true, nowMs: NOW + 60_000, freeChair: false })).toBe(
       true,
     );
-    expect(
-      canReenter({
-        lastFiredAt: iso(NOW - 36 * HOUR + 1),
-        lastFundedBuyAt: buyAt,
-        nowMs: NOW,
-        cooldownHours: 36,
-      }),
-    ).toBe(false);
   });
-});
 
-describe('isRepeatOffender', () => {
-  it('archives the second firing inside 7 days and ignores an older one', () => {
-    const day = 86_400_000;
-    expect(isRepeatOffender([NOW - day, NOW], NOW)).toBe(true);
-    expect(isRepeatOffender([NOW], NOW)).toBe(false);
-    expect(isRepeatOffender([NOW - 8 * day, NOW], NOW)).toBe(false);
+  it('fails closed on an unreadable firing timestamp or clock', () => {
+    expect(canReenter({ ...base, lastFiredAt: 'not-a-date' })).toBe(false);
+    expect(canReenter({ ...base, nowMs: Number.NaN })).toBe(false);
   });
 });
 
@@ -210,25 +207,24 @@ describe('operator scenarios (8h idle / 14h after a close / no old-record return
     expect(isIdleOver({ baselineIso, nowMs: hiredAt + 14 * HOUR, idleFireHours })).toBe(true);
   });
 
-  it('a fired trader is not re-promoted on the old record', () => {
-    const firedAt = iso(NOW - 30 * HOUR);
-    // Strong record, but every funded buy predates the fire.
-    expect(
-      canPromote({
-        ...passing,
-        aggregates: { closedCount: 12, netPnlUsdMicro: 50_000_000n, lastClosedAt: iso(NOW - 31 * HOUR) },
-        lastFiredAt: firedAt,
-        lastFundedBuyAt: iso(NOW - 40 * HOUR),
-      }),
-    ).toMatchObject({ ok: false });
-    // …and a buy after the fire brings him back.
-    expect(
-      canPromote({
-        ...passing,
-        lastFiredAt: firedAt,
-        lastFundedBuyAt: iso(NOW - 2 * HOUR),
-      }),
-    ).toEqual({ ok: true, reason: null });
+  it('a fired trader keeps his record but waits out the re-entry block', () => {
+    const firedAt = iso(NOW - HOUR);
+    const strong = {
+      ...passing,
+      aggregates: { closedCount: 12, netPnlUsdMicro: 50_000_000n, lastClosedAt: iso(NOW - 31 * HOUR) },
+      lastFiredAt: firedAt,
+      lastFundedBuyAt: iso(NOW - 30 * 60_000),
+    };
+    // The old record still passes K/net/recency, but the re-entry block holds.
+    expect(canPromote(strong)).toMatchObject({ ok: false, reason: 'REENTRY_BANNED' });
+    // A hire of another trader after the firing re-opens the same gates.
+    expect(canPromote({ ...strong, anotherHiredSinceFire: true })).toEqual({ ok: true, reason: null });
+    // Or the 3h path with a free chair.
+    expect(canPromote({ ...strong, nowMs: NOW + 3 * HOUR })).toEqual({ ok: true, reason: null });
+    expect(canPromote({ ...strong, nowMs: NOW + 3 * HOUR, freeChair: false })).toMatchObject({
+      ok: false,
+      reason: 'REENTRY_BANNED',
+    });
   });
 });
 

@@ -56,14 +56,16 @@ export const traderCandidates = sqliteTable(
     activityCheckedAt: text('activity_checked_at'),
     // Direction-aware: most recent on-chain BUY within the checker's lookback at
     // ANY age. Null ambiguity ("no buy" vs "check failed") is resolved by
-    // activity_check_status ('ok' | 'failed').
+    // activity_check_status ('ok' | 'partial' | 'failed').
     lastBuyAt: text('last_buy_at'),
     // Direction counts within the checker's 24h lookback (public-RPC path only;
-    // null when the fallback source could not classify directions).
+    // null when the fallback source could not classify directions). A 'partial'
+    // reading is a lower bound from a bounded prefix, not a 24h census.
     buys24h: integer('buys_24h'),
     sells24h: integer('sells_24h'),
-    // 'ok' = last check succeeded (columns are current); 'failed' = every source
-    // errored (older column values were preserved).
+    // 'ok' = last complete check succeeded (columns are current); 'partial' =
+    // a bounded prefix proved the admission gate but did not census the window;
+    // 'failed' = every source errored (older column values were preserved).
     activityCheckStatus: text('activity_check_status'),
     observedAt: text('observed_at').notNull(),
     createdAt: text('created_at').notNull(),
@@ -410,7 +412,7 @@ export const watchWallets = sqliteTable(
     candidateId: text('candidate_id').primaryKey(),
     userId: text('user_id'),
     address: text('address').notNull(),
-    status: text('status').notNull().default('watching'), // watching|cooling|promoted|archived
+    status: text('status').notNull().default('watching'), // watching|cooling|bench|hired|archived
     admittedAt: text('admitted_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     reason: text('reason'),

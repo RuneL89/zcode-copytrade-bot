@@ -8,7 +8,7 @@ import {
   signaturesAfterCursor,
   WATCH_DETAIL_PER_MINUTE,
 } from '../src/backfill.js';
-import { EXPECTED_DAILY, nominalDayPlan, planCredits } from '../src/budget.js';
+import { DAILY_HARD_CAP, EXPECTED_DAILY, nominalDayPlan, planCredits } from '../src/budget.js';
 
 const NOW = Date.parse('2026-11-15T00:09:40Z');
 
@@ -71,7 +71,10 @@ describe('hire backfill', () => {
     const repeated = wallets * pollsPerDay * 24;
     expect(repeated).toBeGreaterThan(EXPECTED_DAILY);
     expect(wallets * pollsPerDay * 0).toBe(0);
-    expect(WATCH_DETAIL_PER_MINUTE * pollsPerDay).toBeLessThan(800);
+    // The watch detail ceiling is a burst cap for admission's bounded prefix,
+    // not a daily plan. The nominal day stays under the governor's hard stop.
+    expect(WATCH_DETAIL_PER_MINUTE).toBe(120);
+    expect(EXPECTED_DAILY).toBeLessThan(DAILY_HARD_CAP);
   });
 
   it('the designed day stays 5,796', () => {

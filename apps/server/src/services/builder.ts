@@ -36,8 +36,8 @@ type WatchRow = DashboardState['watchlist']['rows'][number];
  * How soon a watch row would be hired, lowest first. The bench is the ordered
  * queue fillRoster drains (best shadow net first); a watching wallet with no
  * block is benched on the next watch tick; blocked watchers need their record
- * to change; cooling needs a funded buy after the fire; hired leaders hold a
- * chair and are not candidates; archived wallets are out of the running.
+ * to change; cooling waits for another hire or the free-chair window; hired
+ * leaders hold a chair and are not candidates; archived wallets are out.
  */
 export function watchHireRank(r: Pick<WatchRow, 'status' | 'blockedReason'>): number {
   if (r.status === 'bench') return 0;
@@ -565,6 +565,7 @@ export class StateBuilder {
     const wallets = repo.listWatchWallets(this.db);
     const openLots = repo.listOpenShadowTrades(this.db);
     const ceilingMs = risk.MAX_POSITION_AGE_HOURS * 3_600_000;
+    const freeChair = repo.activeActivationCount(this.db) < risk.ROSTER_SIZE;
 
     const rows: DashboardState['watchlist']['rows'] = wallets.map((wallet) => {
       const candidate = repo.getCandidate(this.db, wallet.candidateId);
@@ -578,15 +579,20 @@ export class StateBuilder {
       const ceilingExposure = lots
         .filter((l) => now - Date.parse(l.openedAt) >= ceilingMs)
         .reduce((acc, l) => acc + BigInt(l.notionalUsdMicro), 0n);
+      const lastFiredAt = repo.lastFiredAt(this.db, wallet.candidateId);
       const decision = canPromote({
         aggregates,
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
-        lastFiredAt: repo.lastFiredAt(this.db, wallet.candidateId),
+        lastFiredAt,
         nowMs: now,
+        anotherHiredSinceFire:
+          lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, wallet.candidateId),
+        freeChair,
         config: {
           promotionMinClosed: risk.PROMOTION_MIN_CLOSED,
           promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
           promotionMaxLastBuyHours: risk.PROMOTION_MAX_LAST_BUY_HOURS,
+          cooldownHours: risk.COOLDOWN_HOURS,
         },
       });
       const status = (wallet.status as DashboardState['watchlist']['rows'][number]['status']) ?? 'watching';
@@ -850,7 +856,10 @@ export class StateBuilder {
       pool: {
         total: enabled.length,
         withWallet: enabled.filter((c) => walletIds.has(c.candidateId)).length,
-        fundedBuyers24h: enabled.filter((c) => c.activityCheckStatus === 'ok' && (c.buys24h ?? 0) > 0).length,
+        fundedBuyers24h: enabled.filter(
+          (c) =>
+            (c.activityCheckStatus === 'ok' || c.activityCheckStatus === 'partial') && (c.buys24h ?? 0) > 0,
+        ).length,
       },
       watch: {
         watching: watchWallets.filter((w) => w.status === 'watching').length,

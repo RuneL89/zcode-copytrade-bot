@@ -19,8 +19,10 @@ rules — deterministically, with full audit.
   Jupiter price, with `POSITION_GRACE_HOURS` when the mark is not positive.
 - Promotion: **≥8 closed shadow trades, net > $3** (configurable), last funded
   buy **≤4h**, no re-entry ban, a free roster slot, and free capital.
-- Re-entry: a fired trader cannot be promoted until a **funded buy is observed
-  after the firing time**; no timed cooldown.
+- Re-entry (revised 2026-11-15): a fired trader cannot be rehired until
+  **another trader is hired after the firing**, or until **`COOLDOWN_HOURS`
+  (default 3)** elapse with a free roster chair. His shadow record is kept and
+  the same promotion gates apply; no repeat-fire archive.
 - Watch list **20**, bench target **10** (configurable).
 - The fomo PnL mark is context only — never the promotion gate.
 - One definition of "funded buy" across the scanner and the copier.
@@ -61,6 +63,14 @@ price provider (Jupiter), the lifecycle (for promotion), and an audit callback.
   - optional seed: if `SHADOW_BACKFILL_ON_ADMIT` is true, insert the admission
     scan's funded events with their `block_time` and build shadow trades from
     them (config flag, default true; the verification used a 72h backfill).
+  - amended 2026-11-16: a 24h window of at most 100 in-window signatures is a
+    full census (`ok`). A busier wallet, or one beyond three signature pages,
+    uses a newest 40-signature prefix; when the prefix proves the three-buy and
+    recency gates the wallet is admitted with a `partial` reading (a lower
+    bound, never an `ok` census). A prefix that cannot prove the gate is
+    deferred for 30 minutes without overwriting the last good columns; a spent
+    `WATCH_DETAIL_PER_MINUTE` detail budget defers for 10 minutes so one wallet
+    cannot hold every admission slot.
 - `tick()` (every `WATCH_POLL_MS`, 5 min):
   - for each `watching` wallet: read the cursor, poll signatures (public RPC
     first, Helius fallback), fetch details for new signatures only (Helius
@@ -81,20 +91,21 @@ price provider (Jupiter), the lifecycle (for promotion), and an audit callback.
   - for each `watching` wallet run `canPromote`; if true and a slot/headroom is
     free, call `lifecycle.hireFromWatch(candidateId)` (plan 04 wires this to the
     existing `activate()`; plan 05 makes it roster-aware).
-- `coolingTick()` (every `COOLING_SCAN_MS`, 2h): scan `cooling` wallets for a
-  funded buy after `lastFiredAt`; on one, set `status='watching'`. Archive after
-  `WATCH_EVICTION_DAYS` without one.
+- `coolingTick()` (every watch tick): scan `cooling` wallets; set
+  `status='watching'` when another trader was hired after `lastFiredAt`, or when
+  `COOLDOWN_HOURS` elapsed while a roster chair is free.
 
 ### 3. Pure rules — `packages/core/src/watch.ts` (new)
 
-- `canPromote({ aggregates, lastFundedBuyAt, lastFiredAt, now, config })`
+- `canPromote({ aggregates, lastFundedBuyAt, lastFiredAt, now, anotherHiredSinceFire, freeChair, config })`
   → `{ ok, reason }`. Reasons: `FEWER_THAN_K_CLOSED`, `NET_BELOW_THRESHOLD`,
   `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`. (Amended 2026-11-03: the capital
   `headroomUsdMicro` input and the `NO_HEADROOM`/`NO_SLOT` promotion reasons
   were withdrawn by operator decision — the bench pre-builds without a chair
   and capital is checked per entry. See DECISIONS.md D4.)
-- `canReenter({ lastFiredAt, lastFundedBuyAt })` → true when there is no fire or
-  a funded buy observed after it. Clock source: `observed_at` (local), no skew.
+- `canReenter({ lastFiredAt, nowMs, cooldownHours, anotherHiredSinceFire, freeChair })`
+  → true when there is no fire, another trader was hired after it, or the
+  cooldown elapsed with a free chair.
 - `ceilingAction({ openedAt, now, maxAgeHours, graceHours, markUsdMicro, entryUsdMicro })`
   → `none | close_now | close_at_grace`.
 - Unit tests use a fake clock for the operator's scenario: zero-trade at 8h,
@@ -144,16 +155,17 @@ fire)`, `ceiling closed at $X` (with the price and age).
   buys with no funding leg are not buys; exact one-token/one-funding buys are;
   sells mirror.
 - `packages/core/test/watch.test.ts`: promotion truth table (K, net, recency,
-  re-entry, slot, headroom); `canReenter` requires a post-fire buy; ceiling
-  decision at 8h/11h.
+  re-entry); another trader's hire after the firing, or the cooldown with a free
+  chair, lifts the re-entry block; ceiling decision at 8h/11h.
 - `apps/server/test/watch.test.ts` (mock providers, fake clock):
   - admission writes `watching`; cursor initialised;
   - a buy opens a shadow trade; a sell closes it at the leader's price;
   - a buy with no sell closes at the ceiling at the quoted price;
   - 3 closed + net > 0 + last buy ≤4h promotes; each failing condition blocks
     with the right reason;
-  - re-entry: fired at T, no buy since → `REENTRY_BANNED`; a buy observed after
-    T → allowed;
+  - re-entry: fired at T, no other hire and inside the window →
+    `REENTRY_BANNED`; another hire after T, or the window with a free chair →
+    allowed;
   - eviction after 14 days of inactivity;
   - restart: events/positions/cursors persist and the tick resumes.
 - `apps/web` component test or e2e: the panel renders rows and the disabled
@@ -178,8 +190,9 @@ fire)`, `ceiling closed at $X` (with the price and age).
 - **AC6** — Promotion requires all of: ≥K closed, net > threshold, last funded
   buy ≤4h, no re-entry ban, a free slot, and free capital. Each failing condition
   produces its specific audit/blocked reason.
-- **AC7** — Re-entry: a fired trader with no funded buy observed after
-  `firing_events.fired_at` cannot be promoted; a post-fire buy re-admits him.
+- **AC7** — Re-entry: a fired trader cannot be rehired immediately. Another
+  hire after `firing_events.fired_at`, or the cooldown with a free chair,
+  re-admits him to the same promotion gates.
 - **AC8** — Eviction: 14 days without a funded buy archives the wallet; a
   negative record with enough sample demotes it.
 - **AC9** — Events are idempotent: the same signature+side never creates two

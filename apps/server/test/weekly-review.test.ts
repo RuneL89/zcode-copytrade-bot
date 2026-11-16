@@ -13,7 +13,9 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 let dir: string;
 let handle: DbHandle;
-const now = new Date();
+// Second-aligned so the fixture's second-precision blockTime does not make the
+// expected 60s leader-to-fill delay flaky (60.0–61.0s).
+const now = new Date(Math.floor(Date.now() / 1000) * 1000);
 const at = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000).toISOString();
 const candidateId = 'cand_weekly_fixture';
 const activationId = 'act_weekly_fixture';

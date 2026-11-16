@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, ne, sql } from 'drizzle-orm';
 import type { AppDatabase } from './connection.js';
 import { schema } from './connection.js';
 
@@ -270,7 +270,7 @@ export function updateCandidateActivity(
     lastBuyAt: string | null;
     buys24h: number | null;
     sells24h: number | null;
-    status: 'ok';
+    status: 'ok' | 'partial';
     checkedAt: string;
   },
 ): void {
@@ -838,8 +838,8 @@ export function listFiringEventsSince(db: Db, sinceIso: string) {
 
 /**
  * When this candidate was last fired, or null when never fired. This is the
- * D4 re-entry clock: a fired trader may only return after a funded buy newer
- * than this timestamp.
+ * D4 re-entry clock: the block lifts on a later hire of another trader, or
+ * after the cooldown while a roster chair is free.
  */
 export function lastFiredAt(db: Db, candidateId: string): string | null {
   const row = db
@@ -852,13 +852,33 @@ export function lastFiredAt(db: Db, candidateId: string): string | null {
   return row?.firedAt ?? null;
 }
 
+/**
+ * True when a trader other than `excludeCandidateId` was activated strictly
+ * after `firedAtIso` — the event that lifts a fired trader's re-entry block.
+ * Source and chair do not matter; any hire of another trader counts.
+ */
+export function hasHireSince(db: Db, firedAtIso: string, excludeCandidateId: string): boolean {
+  const row = db
+    .select({ activationId: schema.traderActivations.activationId })
+    .from(schema.traderActivations)
+    .where(
+      and(
+        gt(schema.traderActivations.startedAt, firedAtIso),
+        ne(schema.traderActivations.candidateId, excludeCandidateId),
+      ),
+    )
+    .limit(1)
+    .get();
+  return row !== undefined;
+}
+
 // --- watch list / shadow ledger (D3/D4) ----------------------------------------
 
 export interface WatchWalletUpsert {
   candidateId: string;
   userId?: string | null;
   address: string;
-  status: string; // watching|cooling|promoted|archived
+  status: string; // watching|cooling|bench|hired|archived
   reason?: string | null;
   admittedAt?: string;
 }

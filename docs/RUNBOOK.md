@@ -114,11 +114,14 @@ idle chair.
 ### The fire → bench → hire path
 
 A fire closes the chair's positions under `FIRE_POSITION_POLICY`, marks the
-activation FIRED, moves the trader to `cooling` (he returns only after a funded
-buy observed after the firing) and immediately calls `fillRoster()`, which takes
-the best bench wallet (shadow net first). Every firing path (idle, stall, manual, loss
-streak) performs that hand-off, so a fired leader is never left on the bench —
-otherwise the very fill he triggered could re-hire him. The bench is empty →
+activation FIRED, moves the trader to `cooling` and immediately calls
+`fillRoster()`, which takes the best bench wallet (shadow net first). Every
+firing path (idle, stall, manual, loss streak) performs that hand-off, so a
+fired leader is never left on the bench — otherwise the very fill he triggered
+could re-hire him. The fired trader is blocked until another trader is hired
+after the firing, or until `COOLDOWN_HOURS` (default 3) elapse while a roster
+chair is still free; he keeps his shadow record and must pass the normal
+promotion gates. A manual activation obeys the same block. The bench is empty →
 the chair stays empty and the demand trigger asks discovery for a fresh bench. A
 close-out that needs reconciliation freezes **only** that chair.
 
@@ -379,12 +382,16 @@ Helius free plan = 1M credits/month. Credit costs: standard RPC (`getBalance`,
 (~2,400 polls + health + SOL balance) → the free million lasts ~36 days.
 The candidate activity refresh (the bursty part that once burned 429s) moved
 to the free public Solana RPC (`PUBLIC_SOLANA_RPC_URL`); Helius is only its
-fallback. The watch admission scan uses the same path and fails closed: a
-failed page or detail read keeps the last good activity reading and retries
-the candidate next tick instead of recording zeros. A deterministic
-incomplete scan (it cannot page back across the full 24h window, or the
-in-window detail count exceeds the bounded cap) is deferred for 30 minutes so
-it does not occupy an admission slot every tick. Live mode starts on the same
+fallback. The watch admission scan reads transaction details through Helius
+directly, bounded by `WATCH_DETAIL_PER_MINUTE` (default 120 reads/minute), so a
+429ing public node cannot stall the hire path. A failed page or detail read
+keeps the last good activity reading and retries the candidate next tick
+instead of recording zeros. A complete 24h window of at most 100 signatures is
+a census; a busier wallet (or one beyond three signature pages) is read through
+its newest 40 signatures and may be admitted with a `partial` reading (a lower
+bound). A prefix that cannot prove the three-buy gate is deferred for 30
+minutes; a spent detail budget is deferred for 10 minutes so one candidate
+cannot hold every admission slot. Live mode starts on the same
 free plan; if credits ever get tight (higher capital, faster copying wanted),
 the options are a slower poll or the Developer tier
 ($49/mo, 10M credits — ~3+ months at 8 s polling).
@@ -449,15 +456,16 @@ pnpm sweep --risk-file my-risk.json         # baseline overrides (JSON object)
 
 ## 9. Troubleshooting
 
-| Symptom                                     | Meaning / action                                                                                              |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Badge STALE                                 | provider health failing or leaderboard observation older than `LEADERBOARD_MAX_AGE_SECONDS` → refresh import. |
-| Badge RECONCILIATION                        | open reconciliation case → §6.                                                                                |
-| PAUSED_NO_TRADER                            | no chair is filled → nothing to do; the promotion queue and the demand-driven discovery fill it.              |
-| Entries never happen                        | check Audit → RISK REJECTIONS (rule names map to `.env` limits); check pause/emergency state.                 |
-| Helius 429                                  | rate limited — increase `LEADER_POLL_INTERVAL_MS`.                                                            |
-| `worker lock held by another process`       | a worker is already running; stop it or remove a stale `data/worker.lock`.                                    |
-| Webhook/robots/CAPTCHA errors from fomo-web | adapter failed closed by design; log in manually in the visible browser or import manually.                   |
+| Symptom                                     | Meaning / action                                                                                                                                      |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Badge STALE                                 | provider health failing or leaderboard observation older than `LEADERBOARD_MAX_AGE_SECONDS` → refresh import.                                         |
+| Badge RECONCILIATION                        | open reconciliation case → §6.                                                                                                                        |
+| PAUSED_NO_TRADER                            | no chair is filled → nothing to do; the promotion queue and the demand-driven discovery fill it.                                                      |
+| Entries never happen                        | check Audit → RISK REJECTIONS (rule names map to `.env` limits); check pause/emergency state.                                                         |
+| Board wallets active, no admissions         | check the `watch detail deferred (minute ceiling)` / `admission prefix … did not prove` audits; tune `WATCH_DETAIL_PER_MINUTE` or the admission gate. |
+| Helius 429                                  | rate limited — increase `LEADER_POLL_INTERVAL_MS`.                                                                                                    |
+| `worker lock held by another process`       | a worker is already running; stop it or remove a stale `data/worker.lock`.                                                                            |
+| Webhook/robots/CAPTCHA errors from fomo-web | adapter failed closed by design; log in manually in the visible browser or import manually.                                                           |
 
 ## 10. What ZCode Remote Control / chat channels are NOT
 

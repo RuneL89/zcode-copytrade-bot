@@ -7,8 +7,9 @@ export interface WatchlistRow {
   /**
    * watching: under observation; bench: on the bench, in hire order (best
    * shadow net first), waiting for a chair; hired: holds a roster chair (shadow
-   * continues, never a hire candidate); cooling: fired, back only after a
-   * funded buy observed post-fire; archived: evicted from the watch list.
+   * continues, never a hire candidate); cooling: fired, blocked until another
+   * trader is hired or the free-chair window opens; archived: evicted from the
+   * watch list.
    */
   status: 'watching' | 'cooling' | 'bench' | 'hired' | 'archived';
   profileUrl: string | null;

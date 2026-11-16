@@ -12,12 +12,13 @@ export const HIRE_BACKFILL_MAX_TX = 4;
 /** Helius getTransaction calls allowed for a hire/reconnect backfill in one minute. */
 export const HIRE_BACKFILL_PER_MINUTE = 6;
 /**
- * Watch-list detail fallback. One tick is a few seconds, so this is also the
- * per-tick cap. At a 5-minute poll that is 576 Helius getTransaction credits
- * a day when the public node cannot read a transaction, inside the 800-credit
- * watch expectation.
+ * Watch-list detail fallback burst cap. Admission spends this budget directly
+ * on Helius when a busy wallet needs a bounded prefix; the server reads the
+ * same default from `risk.WATCH_DETAIL_PER_MINUTE`, so the two must stay in
+ * sync. This is a per-minute ceiling, not a daily plan — the CreditGovernor's
+ * hard daily cap remains the stop.
  */
-export const WATCH_DETAIL_PER_MINUTE = 2;
+export const WATCH_DETAIL_PER_MINUTE = 120;
 
 export interface BackfillSignature {
   signature: string;

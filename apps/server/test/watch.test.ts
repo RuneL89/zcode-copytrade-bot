@@ -310,6 +310,7 @@ function readingFrom(
     fundedBuys24h: buys.length,
     lastFundedBuyAt: newest && newest.blockTime !== null ? iso(newest.blockTime * 1000) : null,
     measuredAt: iso(Date.now()),
+    partial: false,
     events,
   };
 }
@@ -685,51 +686,72 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     );
   });
 
-  it('re-entry: an old record cannot return a fired trader; a post-fire buy can (AC7)', async () => {
+  it('re-entry: another trader hired after the firing lifts the block (AC7)', async () => {
+    handle.sqlite.prepare('delete from trader_activations').run();
     seedCandidate('cand_reentry', 'reentry', 'WalletReentry');
     const h = harness(riskConfig());
     await h.svc.admit('cand_reentry', readingFrom([buy('r1', 60), buy('r2', 30), buy('r3', 5)]));
     recordBuys('cand_reentry', 'WalletReentry', 1, 5);
     seedRecord('cand_reentry', 3, 2_000_000n);
-    // The last funded buy is 5 minutes old, the firing happened 1 minute ago.
+    const firedAt = iso(Date.now() - 60_000);
     repo.insertFiringEvent(handle.db, {
       activationId: 'act_old',
       candidateId: 'cand_reentry',
       reason: 'idle',
       lossStreak: 0,
       positionPolicy: 'keep_positions',
-      firedAt: iso(Date.now() - 60_000),
+      firedAt,
       closeCompletedAt: null,
       handoffStatus: 'none',
     });
-    expect(h.svc.promotionDecision('cand_reentry').reason).toBe('REENTRY_BANNED');
-    expect(repo.listAudit(handle.db, 5).some((a) => /re-entry blocked/.test(a.message))).toBe(false); // audit comes from evaluate()
-
-    // The cooling rotation readmits him once a funded buy lands after the fire
-    // AND the cooldown has elapsed. A buy inside the cooldown does not.
     repo.setWatchStatus(handle.db, 'cand_reentry', 'cooling', 'fired');
+
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry')).toBe(false);
+    expect(h.svc.promotionDecision('cand_reentry').reason).toBe('REENTRY_BANNED');
     expect(await h.svc.coolingTick()).toBe(0);
-    repo.insertWatchEvent(handle.db, {
-      candidateId: 'cand_reentry',
-      address: 'WalletReentry',
-      signature: 'post-fire-buy',
-      side: 'buy',
-      mint: TOKEN,
-      tokenAmountBase: '6000000',
-      decimals: 6,
-      usdMicro: '6000000',
-      blockTime: NOW_SEC - 10,
-      observedAt: iso(Date.now() - 10_000),
-      source: 'test',
+
+    // Another trader is hired after the firing: the block lifts immediately,
+    // even though the 3h window has not elapsed.
+    repo.createActivation(handle.db, {
+      activationId: 'act_other_hire',
+      candidateId: 'cand_other_hire',
+      state: 'ACTIVE',
+      startedAt: iso(Date.now() - 30_000),
+      endedAt: null,
+      endReason: null,
+      lossStreak: 0,
+      firedReason: null,
+      source: 'manual',
     });
-    // The buy is after the fire, but the 36h cooldown has not elapsed.
-    expect(await h.svc.coolingTick()).toBe(0);
-    handle.sqlite
-      .prepare('update firing_events set fired_at = ? where candidate_id = ?')
-      .run(iso(Date.now() - 37 * HOUR), 'cand_reentry');
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry')).toBe(true);
     expect(await h.svc.coolingTick()).toBe(1);
     expect(repo.getWatchWallet(handle.db, 'cand_reentry')?.status).toBe('watching');
     expect(h.svc.promotionDecision('cand_reentry').ok).toBe(true);
+  });
+
+  it('re-entry: the cooldown with a free chair returns a fired trader (AC7)', async () => {
+    handle.sqlite.prepare('delete from trader_activations').run();
+    seedCandidate('cand_reentry_timed', 'reentry_timed', 'WalletReentryTimed');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_reentry_timed', readingFrom([buy('t1', 60), buy('t2', 30), buy('t3', 5)]));
+    recordBuys('cand_reentry_timed', 'WalletReentryTimed', 1, 5);
+    seedRecord('cand_reentry_timed', 3, 2_000_000n);
+    const firedAt = iso(Date.now() - 4 * HOUR);
+    repo.insertFiringEvent(handle.db, {
+      activationId: 'act_timed',
+      candidateId: 'cand_reentry_timed',
+      reason: 'idle',
+      lossStreak: 0,
+      positionPolicy: 'keep_positions',
+      firedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    repo.setWatchStatus(handle.db, 'cand_reentry_timed', 'cooling', 'fired');
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_reentry_timed')).toBe(false);
+    expect(await h.svc.coolingTick()).toBe(1);
+    expect(repo.getWatchWallet(handle.db, 'cand_reentry_timed')?.status).toBe('watching');
+    expect(h.svc.promotionDecision('cand_reentry_timed').ok).toBe(true);
   });
 
   it('evicts a wallet with no funded buy for the eviction window (AC8)', async () => {
@@ -1196,7 +1218,10 @@ describe('admission scan fail-closed', () => {
 
   it('does not record a partial detail scan as an ok reading', async () => {
     seedCandidate('cand_detail_deferred', 'detail_deferred', 'WalletDetailDeferred');
-    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    const h = harness(riskConfig({ WATCH_DETAIL_PER_MINUTE: 2 }), {
+      publicConfigured: true,
+      publicDetailFails: true,
+    });
     stampAllActivity();
     const oldAt = iso(Date.now() - 96 * HOUR);
     const lastBuy = iso(Date.now() - HOUR);
@@ -1209,9 +1234,9 @@ describe('admission scan fail-closed', () => {
       checkedAt: oldAt,
     });
 
-    // Three rows: the public detail ceiling allows two Helius fallbacks, then
-    // the third read is deferred. The scan must fail rather than return the
-    // two completed reads as a complete reading.
+    // Three rows with a two-detail minute budget: the first two paid reads are
+    // allowed, then the third is deferred. The scan must fail rather than
+    // return the two completed reads as a complete reading.
     for (let i = 1; i <= 3; i++) {
       h.page.push({ signature: `detail_${i}`, blockTime: NOW_SEC - i * 60 });
     }
@@ -1299,7 +1324,7 @@ describe('admission scan fail-closed', () => {
     expect(result.admitted).toBe(1);
   });
 
-  it('fails closed when the in-window set exceeds the bounded detail cap', async () => {
+  it('admits a busy wallet when its bounded prefix proves the gate', async () => {
     seedCandidate('cand_over_cap', 'over_cap', 'WalletOverCap');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
@@ -1314,26 +1339,102 @@ describe('admission scan fail-closed', () => {
       checkedAt: oldAt,
     });
 
-    // 101 signatures, all inside 24h: the bounded scan cannot detail them all
-    // and must keep the previous reading rather than write a truncated one.
+    // 101 signatures, all inside 24h. The full window no longer has to fit the
+    // detail cap: the newest 40 are classified, and three buys there prove the
+    // D4 gate. The reading is recorded as `partial`, never as an ok census.
+    const buys = new Set([0, 5, 10]);
     for (let i = 0; i < 101; i++) {
-      h.page.push({ signature: `over_cap_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+      const signature = `over_cap_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      if (buys.has(i)) {
+        h.summaries.set(
+          signature,
+          swapSummary({
+            signature,
+            minutesAgo: i + 1,
+            tokens: 6_000_000n,
+            usd: 6_000_000n,
+            side: 'buy',
+          }),
+        );
+      }
+    }
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_over_cap')!;
+    expect(candidate.activityCheckStatus).toBe('partial');
+    expect(candidate.buys24h).toBe(3);
+    expect(candidate.activityCheckedAt).not.toBe(oldAt);
+    expect(repo.getWatchWallet(handle.db, 'cand_over_cap')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_over_cap'))).toBeUndefined();
+  });
+
+  it('admits a >300-signature wallet from a prefix without claiming coverage', async () => {
+    seedCandidate('cand_hyper', 'hyper', 'WalletHyper');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_hyper', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // Three full pages still inside 24h: coverage is unprovable, but the
+    // newest prefix is enough to prove the gate.
+    for (let i = 0; i < 350; i++) {
+      const signature = `hyper_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 30 });
+      if (i < 3) {
+        h.summaries.set(
+          signature,
+          swapSummary({
+            signature,
+            minutesAgo: (i + 1) * 0.5,
+            tokens: 6_000_000n,
+            usd: 6_000_000n,
+            side: 'buy',
+          }),
+        );
+      }
+    }
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_hyper')!;
+    expect(candidate.activityCheckStatus).toBe('partial');
+    expect(candidate.buys24h).toBe(3);
+    expect(repo.getWatchWallet(handle.db, 'cand_hyper')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+  });
+
+  it('defers a busy wallet whose prefix cannot prove the gate and keeps the old census', async () => {
+    seedCandidate('cand_over_cap_neg', 'over_cap_neg', 'WalletOverCapNeg');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_over_cap_neg', {
+      swaps24h: 8,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 4,
+      checkedAt: oldAt,
+    });
+    for (let i = 0; i < 101; i++) {
+      h.page.push({ signature: `over_neg_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
     }
 
     await h.svc.evaluate();
-    const candidate = repo.getCandidate(handle.db, 'cand_over_cap')!;
+    const candidate = repo.getCandidate(handle.db, 'cand_over_cap_neg')!;
     expect(candidate.activityCheckStatus).toBe('failed');
     expect(candidate.buys24h).toBe(4);
     expect(candidate.swaps24h).toBe(8);
     expect(candidate.lastBuyAt).toBe(lastBuy);
     expect(candidate.activityCheckedAt).toBe(oldAt);
-    expect(repo.getWatchWallet(handle.db, 'cand_over_cap')).toBeUndefined();
-    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_over_cap'));
+    expect(repo.getWatchWallet(handle.db, 'cand_over_cap_neg')).toBeUndefined();
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_over_cap_neg'));
     expect(deferredUntil).toBeDefined();
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
   });
 
-  it('does not rescan a deferred overflow every tick, then retries after the window', async () => {
+  it('does not rescan a deferred prefix every tick, then retries after the window', async () => {
     seedCandidate('cand_overflow', 'overflow', 'WalletOverflow');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
@@ -1356,9 +1457,8 @@ describe('admission scan fail-closed', () => {
     expect(firstCalls).toBe(2); // 100 + the one remaining in-window page
     expect(repo.getCandidate(handle.db, 'cand_overflow')?.activityCheckStatus).toBe('failed');
     const auditCount = () =>
-      repo
-        .listAudit(handle.db, 200)
-        .filter((row) => row.message.includes('admission scan failed for overflow')).length;
+      repo.listAudit(handle.db, 200).filter((row) => row.message.includes('admission prefix for overflow'))
+        .length;
     expect(auditCount()).toBe(1);
 
     // The deferral is an eligibility signal, not a reading: the next tick must
@@ -1404,7 +1504,58 @@ describe('admission scan fail-closed', () => {
     expect(repo.getCandidate(handle.db, 'cand_transient')?.activityCheckStatus).toBe('failed');
   });
 
-  it('advances the remaining admission slots in the same tick as an overflow', async () => {
+  it('defers a spent detail budget briefly so one candidate cannot starve the queue', async () => {
+    seedCandidate('cand_ceil1', 'ceil1', 'WalletCeil1');
+    seedCandidate('cand_ceil2', 'ceil2', 'WalletCeil2');
+    const h = harness(
+      riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100, WATCH_DETAIL_PER_MINUTE: 2 }),
+    );
+    stampAllActivity();
+    const lastBuy = iso(Date.now() - HOUR);
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    for (const candidate of [
+      ['cand_ceil1', 'WalletCeil1'],
+      ['cand_ceil2', 'WalletCeil2'],
+    ] as Array<[string, string]>) {
+      setActivity(candidate[0], {
+        swaps24h: 5,
+        lastSwapAt: lastBuy,
+        lastBuyAt: lastBuy,
+        buys24h: 5,
+        sells24h: 0,
+        checkedAt: oldAt,
+      });
+      h.perAddress.set(candidate[1], {
+        page: Array.from({ length: 5 }, (_, i) => ({
+          signature: `${candidate[0]}_${i}`,
+          blockTime: NOW_SEC - (i + 1) * 60,
+        })),
+        summaries: new Map(),
+      });
+    }
+
+    await h.svc.evaluate();
+    const auditCount = () =>
+      repo
+        .listAudit(handle.db, 200)
+        .filter((row) => row.message.includes('watch detail deferred (minute ceiling)')).length;
+    for (const id of ['cand_ceil1', 'cand_ceil2']) {
+      expect(repo.getCandidate(handle.db, id)?.activityCheckStatus).toBe('failed');
+      const until = repo.kvGet(handle.db, repo.admissionDeferKey(id));
+      expect(until).toBeDefined();
+      expect(Date.parse(until!)).toBeGreaterThan(Date.now() + 5 * 60_000);
+    }
+    expect(auditCount()).toBeGreaterThanOrEqual(2);
+    const calls = (h.signatureCalls.get('WalletCeil1') ?? 0) + (h.signatureCalls.get('WalletCeil2') ?? 0);
+
+    // The deferral key keeps both out of the next scan, so the queue advances.
+    await h.svc.evaluate();
+    expect((h.signatureCalls.get('WalletCeil1') ?? 0) + (h.signatureCalls.get('WalletCeil2') ?? 0)).toBe(
+      calls,
+    );
+  });
+
+  it('advances the remaining admission slots after a partial prefix defers', async () => {
     seedCandidate('cand_slot_overflow', 'slot_overflow', 'WalletSlotOverflow');
     seedCandidate('cand_slot_good1', 'slot_good1', 'WalletSlotGood1');
     seedCandidate('cand_slot_good2', 'slot_good2', 'WalletSlotGood2');
