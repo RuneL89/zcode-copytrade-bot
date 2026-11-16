@@ -839,7 +839,7 @@ export class Runtime {
    * A pushed swap has a 2s public attempt, then one roster-bucket
    * getTransaction. Backfill may spend that Helius call only inside the
    * per-minute ceiling. Either way the buy is resolved while it is still
-   * inside the 90s copy window, not on the 300s safety poll.
+   * inside the 90s copy window, not on the 600s safety poll.
    */
   private async ingestLeaderSignature(
     address: string,

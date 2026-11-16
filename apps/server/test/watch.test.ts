@@ -107,6 +107,8 @@ interface Harness {
   hired: string[];
   /** Signature-page attempts per address (admission scan cadence). */
   signatureCalls: Map<string, number>;
+  /** Paid detail attempts per address (watch-list safety valve). */
+  heliusDetailCalls: Map<string, number>;
 }
 
 interface HarnessOptions {
@@ -130,6 +132,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
   const hired: string[] = [];
   const signatureCalls = new Map<string, number>();
+  const heliusDetailCalls = new Map<string, number>();
   const notePageCall = (address: string) =>
     signatureCalls.set(address, (signatureCalls.get(address) ?? 0) + 1);
 
@@ -175,6 +178,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
         return pageFor(address, limit, before);
       },
       transactionSummary: async (address: string, signature: string) => {
+        heliusDetailCalls.set(address, (heliusDetailCalls.get(address) ?? 0) + 1);
         if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
         return perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null;
       },
@@ -214,6 +218,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     prices,
     hired,
     signatureCalls,
+    heliusDetailCalls,
   };
 }
 
@@ -236,6 +241,23 @@ function seedCandidate(candidateId: string, candidateHandle: string, address: st
       verification: 'reported',
     });
   }
+}
+
+function seedWatching(candidateId: string, candidateHandle: string, address: string): void {
+  seedCandidate(candidateId, candidateHandle, address);
+  repo.upsertWatchWallet(handle.db, {
+    candidateId,
+    address,
+    status: 'watching',
+    reason: 'test',
+  });
+  repo.setWatchCursor(handle.db, {
+    address,
+    candidateId,
+    lastSignature: '',
+    lastSlot: 0,
+    lastTransactionIndex: 0,
+  });
 }
 
 function setActivity(
@@ -1605,5 +1627,128 @@ describe('admission scan fail-closed', () => {
     expect(repo.getCandidate(handle.db, 'cand_slot_good1')?.activityCheckStatus).toBe('ok');
     expect(repo.getCandidate(handle.db, 'cand_slot_good2')?.activityCheckStatus).toBe('ok');
     expect(result.admitted).toBe(2);
+  });
+});
+
+describe('watch-list detail fallback policy', () => {
+  it('keeps an idle watcher public-only when the public detail read fails', async () => {
+    seedWatching('cand_valve_idle', 'valve_idle', 'WalletValveIdle');
+    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    const page = [{ signature: 'idle_new', blockTime: NOW_SEC - 30 }];
+    const summaries = new Map<string, LeaderTxSummary>([
+      [
+        'idle_new',
+        swapSummary({
+          signature: 'idle_new',
+          minutesAgo: 0.5,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: 'buy',
+        }),
+      ],
+    ]);
+    h.perAddress.set('WalletValveIdle', { page, summaries });
+
+    await h.svc.tick();
+    expect(h.heliusDetailCalls.get('WalletValveIdle') ?? 0).toBe(0);
+    expect(repo.listWatchEvents(handle.db, 'cand_valve_idle')).toHaveLength(0);
+    expect(repo.getWatchCursor(handle.db, 'WalletValveIdle')?.lastSignature).toBe('');
+  });
+
+  it('uses the bounded valve for a wallet with an open shadow position', async () => {
+    seedWatching('cand_valve_open', 'valve_open', 'WalletValveOpen');
+    repo.openShadowTrade(handle.db, {
+      candidateId: 'cand_valve_open',
+      mint: 'ValveOpenMint1111111111111111111111111111',
+      openedAt: iso(Date.now() - 10 * 60_000),
+      entryPriceUsdMicro: '1000000',
+      notionalUsdMicro: '5000000',
+    });
+    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    const summary = swapSummary({
+      signature: 'open_new_buy',
+      minutesAgo: 0.5,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+      mint: 'ValveNewMint11111111111111111111111111111',
+    });
+    h.perAddress.set('WalletValveOpen', {
+      page: [{ signature: summary.signature, blockTime: summary.blockTime }],
+      summaries: new Map([[summary.signature, summary]]),
+    });
+
+    await h.svc.tick();
+    expect(h.heliusDetailCalls.get('WalletValveOpen')).toBe(1);
+    expect(repo.listWatchEvents(handle.db, 'cand_valve_open')).toHaveLength(1);
+    expect(repo.getWatchCursor(handle.db, 'WalletValveOpen')?.lastSignature).toBe('open_new_buy');
+  });
+
+  it('allows the valve for a recently funded watcher without an open lot', async () => {
+    seedWatching('cand_valve_recent', 'valve_recent', 'WalletValveRecent');
+    repo.insertWatchEvent(handle.db, {
+      candidateId: 'cand_valve_recent',
+      address: 'WalletValveRecent',
+      signature: 'recent_seed_buy',
+      side: 'buy',
+      mint: 'ValveSeedMint111111111111111111111111111111',
+      tokenAmountBase: '6000000',
+      decimals: 6,
+      usdMicro: '6000000',
+      blockTime: NOW_SEC - 120,
+      observedAt: iso(Date.now() - 60_000),
+      source: 'test',
+    });
+    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    const summary = swapSummary({
+      signature: 'recent_new_buy',
+      minutesAgo: 0.5,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+      mint: 'ValveRecentMint1111111111111111111111111111',
+    });
+    h.perAddress.set('WalletValveRecent', {
+      page: [{ signature: summary.signature, blockTime: summary.blockTime }],
+      summaries: new Map([[summary.signature, summary]]),
+    });
+
+    await h.svc.tick();
+    expect(h.heliusDetailCalls.get('WalletValveRecent')).toBe(1);
+    expect(repo.getWatchCursor(handle.db, 'WalletValveRecent')?.lastSignature).toBe('recent_new_buy');
+  });
+
+  it('caps the paid fallback and leaves the rest of the page for the next tick', async () => {
+    seedWatching('cand_valve_cap', 'valve_cap', 'WalletValveCap');
+    repo.openShadowTrade(handle.db, {
+      candidateId: 'cand_valve_cap',
+      mint: 'ValveCapMint111111111111111111111111111111',
+      openedAt: iso(Date.now() - 10 * 60_000),
+      entryPriceUsdMicro: '1000000',
+      notionalUsdMicro: '5000000',
+    });
+    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    const page: Array<{ signature: string; blockTime: number | null }> = [];
+    const summaries = new Map<string, LeaderTxSummary>();
+    for (let i = 0; i < 20; i++) {
+      const signature = `cap_${i}`;
+      const summary = swapSummary({
+        signature,
+        minutesAgo: i + 1,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+        mint: `ValveCapMint${i}11111111111111111111111111111`,
+      });
+      page.push({ signature, blockTime: summary.blockTime });
+      summaries.set(signature, summary);
+    }
+    h.perAddress.set('WalletValveCap', { page, summaries });
+
+    await h.svc.tick();
+    expect(h.heliusDetailCalls.get('WalletValveCap')).toBe(15);
+    expect(repo.listWatchEvents(handle.db, 'cand_valve_cap')).toHaveLength(15);
+    // Oldest-first processing stops after cap_5; cap_4..cap_0 retry next tick.
+    expect(repo.getWatchCursor(handle.db, 'WalletValveCap')?.lastSignature).toBe('cap_5');
   });
 });

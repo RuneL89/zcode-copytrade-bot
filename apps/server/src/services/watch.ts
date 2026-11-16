@@ -108,6 +108,13 @@ export interface WatchServiceDeps {
 
 /** How many new transactions one watch poll inspects per wallet. */
 const WATCH_TX_SCAN_LIMIT = 25;
+/**
+ * Watch-list detail reads are public-RPC first. Helius is a bounded safety
+ * valve only for wallets with an open shadow position or a funded buy inside
+ * the recent-buy window; idle watchers wait for the next public read.
+ */
+export const WATCH_LIST_FALLBACK_PER_MINUTE = 15;
+const WATCH_LIST_FALLBACK_RECENT_BUY_MS = 60 * 60_000;
 /** Candidates scanned for admission per tick (bounded spend). */
 export const ADMISSION_SCAN_PER_TICK = 3;
 /** A candidate measured inside this window is not read again on the next tick. */
@@ -126,10 +133,10 @@ const ADMISSION_PREFIX_DETAILS = 40;
 /** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
 const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
 
-/** The minute's Helius detail budget is spent; retry after a short deferral. */
+/** The detail budget is spent or the public reader failed; retry next tick. */
 class DetailDeferred extends Error {
-  constructor() {
-    super('watch detail deferred (minute ceiling)');
+  constructor(message = 'watch detail deferred') {
+    super(message);
     this.name = 'DetailDeferred';
   }
 }
@@ -137,10 +144,15 @@ class DetailDeferred extends Error {
 const ADMISSION_LOOKBACK_HOURS = 24;
 
 export class WatchService {
-  private readonly detailCeiling: MinuteCeiling;
+  /** Admission keeps its own budget; the watch-list safety valve is separate. */
+  private readonly admissionDetailCeiling: MinuteCeiling;
+  private readonly watchListDetailCeiling: MinuteCeiling;
 
   constructor(private deps: WatchServiceDeps) {
-    this.detailCeiling = new MinuteCeiling(deps.risk.WATCH_DETAIL_PER_MINUTE);
+    this.admissionDetailCeiling = new MinuteCeiling(deps.risk.WATCH_DETAIL_PER_MINUTE);
+    this.watchListDetailCeiling = new MinuteCeiling(
+      Math.min(WATCH_LIST_FALLBACK_PER_MINUTE, deps.risk.WATCH_DETAIL_PER_MINUTE),
+    );
   }
 
   private get db(): AppDatabase {
@@ -191,7 +203,14 @@ export class WatchService {
     return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
   }
 
-  private async txSummary(address: string, signature: string) {
+  /**
+   * Watch-list detail read. Public RPC is the default. Helius is allowed only
+   * when the wallet has exposure (open shadow position or recent funded buy)
+   * and only inside the small watch-list safety budget; everyone else waits
+   * for the next public read. With no public provider configured, Helius is
+   * the only detail source and remains bounded by the same safety budget.
+   */
+  private async txSummary(address: string, signature: string, allowHeliusFallback: boolean) {
     if (this.deps.publicSolana.configured) {
       try {
         // Null is an answer: the node read the transaction and it was not this
@@ -199,22 +218,31 @@ export class WatchService {
         // read is what pushed a quiet day to ~12k credits.
         return await this.deps.publicSolana.transactionSummary(address, signature);
       } catch {
-        if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
+        if (!allowHeliusFallback) {
+          throw new DetailDeferred('watch detail public RPC failed; retry next tick');
+        }
       }
     }
-    // A Helius error is a failed read, not "no swap". Let it reach the caller so
-    // the admission scan can mark the check failed and keep the previous reading.
-    return this.deps.helius.transactionSummary(address, signature, 'watch');
+    if (!this.watchListDetailCeiling.allow(Date.now())) {
+      throw new DetailDeferred('watch-list Helius fallback budget spent');
+    }
+    try {
+      return await this.deps.helius.transactionSummary(address, signature, 'watch');
+    } catch {
+      throw new DetailDeferred('watch-list Helius detail failed; retry next tick');
+    }
   }
 
   /**
-   * Admission detail read: the paid reader directly, bounded by the per-minute
-   * burst ceiling. Admission is the hire path; spending its window retrying a
-   * rate-limited public node is what left active wallets unscanned. The daily
-   * CreditGovernor cap remains the hard stop.
+   * Admission detail read: the paid reader directly, bounded by its own
+   * per-minute burst ceiling. Admission is the hire path; spending its window
+   * retrying a rate-limited public node is what left active wallets unscanned.
+   * The daily CreditGovernor cap remains the hard stop.
    */
   private async admissionTxSummary(address: string, signature: string) {
-    if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
+    if (!this.admissionDetailCeiling.allow(Date.now())) {
+      throw new DetailDeferred('watch detail deferred (minute ceiling)');
+    }
     return this.deps.helius.transactionSummary(address, signature, 'watch');
   }
 
@@ -629,6 +657,14 @@ export class WatchService {
     return result;
   }
 
+  /** Open shadow exposure or a funded buy inside the safety-valve window. */
+  private hasWatchExposure(candidateId: string): boolean {
+    if (repo.listOpenShadowTrades(this.db, candidateId).length > 0) return true;
+    const wallet = repo.getWatchWallet(this.db, candidateId);
+    const lastBuyMs = wallet?.lastFundedBuyAt ? Date.parse(wallet.lastFundedBuyAt) : Number.NaN;
+    return Number.isFinite(lastBuyMs) && Date.now() - lastBuyMs <= WATCH_LIST_FALLBACK_RECENT_BUY_MS;
+  }
+
   /** Read new signatures for one watched wallet and apply its funded swaps. */
   private async pollWallet(candidateId: string, address: string): Promise<number> {
     const cursor = repo.getWatchCursor(this.db, address);
@@ -641,10 +677,11 @@ export class WatchService {
     // next tick retries it instead of paying for the whole page again.
     let applied = 0;
     let advancedTo = cursor?.lastSignature ?? '';
+    let allowHeliusFallback = this.hasWatchExposure(candidateId);
     for (const row of [...fresh].reverse()) {
       let summary;
       try {
-        summary = await this.txSummary(address, row.signature);
+        summary = await this.txSummary(address, row.signature, allowHeliusFallback);
       } catch (error) {
         if (error instanceof DetailDeferred) break;
         throw error;
@@ -652,7 +689,12 @@ export class WatchService {
       advancedTo = row.signature;
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
-      if (swap && (await this.applyFundedSwap(candidateId, address, swap))) applied++;
+      if (swap && (await this.applyFundedSwap(candidateId, address, swap))) {
+        applied++;
+        // A newly observed buy opens exposure, so later details this tick may
+        // use the bounded safety valve if the public node keeps failing.
+        if (swap.side === 'buy') allowHeliusFallback = true;
+      }
     }
     if (advancedTo && advancedTo !== cursor?.lastSignature) {
       repo.setWatchCursor(this.db, {

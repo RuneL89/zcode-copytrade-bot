@@ -67,6 +67,10 @@ function harness(governor = new CreditGovernor()) {
 }
 
 describe('Helius roster stream', () => {
+  it('keeps the push-mode safety poll at ten minutes', () => {
+    expect(SAFETY_POLL_MS).toBe(10 * 60_000);
+  });
+
   it('subscribes at most five seats and fetches only swap logs', () => {
     const h = harness();
     h.push.start();

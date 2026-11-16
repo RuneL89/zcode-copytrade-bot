@@ -3,7 +3,7 @@ import { RosterStream } from './rosterStream.js';
 
 /** 0.1 MB, decimal, matching Helius's "2 credits per 0.1 MB" websocket price. */
 export const WSS_CHUNK_BYTES = 100_000;
-export const SAFETY_POLL_MS = 5 * 60_000;
+export const SAFETY_POLL_MS = 10 * 60_000;
 export const OUTAGE_POLL_MS = 45_000;
 export const OUTAGE_AFTER_MS = 60_000;
 export const MAX_STREAM_SEATS = 5;
@@ -66,7 +66,7 @@ export class HeliusRosterPush {
 
   /**
    * Subscribe any hired seat that joined after the socket opened. A hire that
-   * waits for the 5-minute safety poll only sees buys that are already older
+   * waits for the 10-minute safety poll only sees buys that are already older
    * than the 90s copy window.
    */
   refreshSeats(): string[] {

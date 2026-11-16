@@ -81,6 +81,11 @@ no LLM in the loop (D6).
   `kv`. A spent Helius detail budget (`WATCH_DETAIL_PER_MINUTE`) defers for
   10 minutes so one candidate cannot hold every admission slot. A genuinely
   empty read still records `ok` zeros and advances the queue.
+- **Watch-list detail reads are public-only by default.** Helius is a bounded
+  15-read/minute safety valve only for watched wallets with an open shadow
+  position or a funded buy inside the last hour; idle watchers retry on the
+  next 5-minute watch poll. The roster push stream's safety backstop is 10
+  minutes; the outage poll remains 45 seconds.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.

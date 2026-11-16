@@ -360,7 +360,7 @@ export class LeaderMonitor {
 
     for (const sig of sigs) {
       if (sig.err) continue;
-      // The 5-minute safety poll is a backstop. A buy already outside the copy
+      // The 10-minute safety poll is a backstop. A buy already outside the copy
       // window is not fetched: that getTransaction cannot become a fill, and
       // the push path is what copies a buy while it is still fresh.
       if (isEventTooOld(sig.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) continue;

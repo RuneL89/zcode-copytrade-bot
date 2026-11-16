@@ -133,7 +133,7 @@ For a phone on the same Wi-Fi, run `enable-phone-access.bat`. It asks for one UA
 
 ## How a copy happens
 
-**Monitoring.** With a Helius key, the roster uses a `logsSubscribe` WebSocket for up to five seats, with a hot spare and a five-minute signature-first safety poll. If both sockets stay down for 60 seconds, the desk switches to a 45-second signature-first poll on a separate outage budget. The watch list keeps its own five-minute poll. The trading monitor never uses the public RPC; that endpoint belongs to the candidate activity refresh.
+**Monitoring.** With a Helius key, the roster uses a `logsSubscribe` WebSocket for up to five seats, with a hot spare and a 10-minute signature-first safety poll. If both sockets stay down for 60 seconds, the desk switches to a 45-second signature-first poll on a separate outage budget. The watch list keeps its own five-minute poll; its detail reads are public-RPC first, with a bounded Helius safety valve only for watched wallets that have an open shadow position or a funded buy in the last hour. The trading monitor never uses the public RPC; that endpoint belongs to the candidate activity refresh.
 
 **Classification.** A leader event is accepted only when it is a swap the classifier can read. Duplicate events are dropped by `(chain, leader, signature, leg)`. Buys older than 90 seconds are rejected. Two buys of the same mint by the same leader inside 60 seconds are coalesced into the existing position. An ambiguous swap is skipped.
 
@@ -204,7 +204,8 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 | Max price age                      | 45 seconds                                                              | `PRICE_MAX_AGE_SECONDS`                                                           |
 | Admission                          | 3 funded buys in 24h, last within 24h                                   | `ADMISSION_MIN_BUYS_24H` / `ADMISSION_MAX_LAST_BUY_HOURS`                         |
 | Busy-wallet admission prefix       | newest 40 signatures when the 24h window exceeds 100; `partial` reading | code: `ADMISSION_PREFIX_DETAILS`                                                  |
-| Helius watch-detail burst          | 120 detail reads/minute when the public RPC cannot answer               | `WATCH_DETAIL_PER_MINUTE`                                                         |
+| Admission detail burst             | 120 detail reads/minute when the public RPC cannot answer               | `WATCH_DETAIL_PER_MINUTE`                                                         |
+| Watch-list detail fallback         | 15 reads/minute, only with open shadow exposure or a buy in the last 1h | code: `WATCH_LIST_FALLBACK_PER_MINUTE`                                            |
 | Promotion                          | 8 closed shadow trades, net above $3, last buy within 4h                | `PROMOTION_MIN_CLOSED` / `PROMOTION_MIN_NET_USD` / `PROMOTION_MAX_LAST_BUY_HOURS` |
 | Watch list / bench target / roster | 20 / 10 / 5                                                             | `WATCH_LIST_SIZE` / `BENCH_TARGET` / `ROSTER_SIZE`                                |
 | Idle fire                          | 8 hours                                                                 | `IDLE_FIRE_HOURS`                                                                 |

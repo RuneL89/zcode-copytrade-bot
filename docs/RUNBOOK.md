@@ -227,8 +227,10 @@ best record takes a freed chair.
   in **Audit**). `PER_MINT_CAP_PCT > 0` caps the roster-wide exposure to one
   mint at that percent of the deployment budget (`MAX_DEPLOYED_PCT`% of
   capital, D7; rule `PER_MINT_CAP`); `0` disables the cap.
-- **Poll cadence.** Every hired wallet is polled every `ROSTER_POLL_MS`
-  (default 45 s); the watch list keeps its own 5-minute clock.
+- **Poll cadence.** With the push stream healthy, the roster safety backstop
+  polls every 10 minutes; if both sockets stay down for 60 s it switches to a
+  45-second signature-first poll on the outage budget. The watch list keeps
+  its own 5-minute clock.
 
 ## 2c. Weekly performance review
 
@@ -385,7 +387,11 @@ The candidate activity refresh (the bursty part that once burned 429s) moved
 to the free public Solana RPC (`PUBLIC_SOLANA_RPC_URL`); Helius is only its
 fallback. The watch admission scan reads transaction details through Helius
 directly, bounded by `WATCH_DETAIL_PER_MINUTE` (default 120 reads/minute), so a
-429ing public node cannot stall the hire path. A failed page or detail read
+429ing public node cannot stall the hire path. Watch-list detail reads are
+public-RPC first; Helius is a 15-read/minute safety valve only for watched
+wallets with an open shadow position or a funded buy in the last hour, so an
+idle watcher waits for the next public read instead of spending credits. A
+failed page or detail read
 keeps the last good activity reading and retries the candidate next tick
 instead of recording zeros. A complete 24h window of at most 100 signatures is
 a census; a busier wallet (or one beyond three signature pages) is read through
