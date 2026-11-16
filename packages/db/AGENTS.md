@@ -38,6 +38,11 @@ and every repository function the server calls.
   last good reading and its freshness stamp survive a provider outage; the
   successful writer (`updateCandidateActivity`) is called only for a complete
   reading.
+- **Incomplete admission scans defer via `kv`.** `deferCandidateActivity`
+  records the failed status plus an `admission.defer:<candidateId>` eligibility
+  key; `listAdmissionScanCandidates` excludes an unexpired key, and a later
+  successful `updateCandidateActivity` deletes it. The key is not a freshness
+  stamp and never changes the activity columns.
 - **Read-only consumers use `openReadOnlyDatabase`.** The weekly report, audits
   and ad-hoc inspections must never open the live file read-write, create it, or
   migrate it.

@@ -59,6 +59,70 @@ describe('database', () => {
     expect(repo.listCandidateAddresses(handle.db, 'cand_a')).toHaveLength(1);
   });
 
+  it('defers an incomplete admission scan without touching its freshness', () => {
+    repo.upsertCandidate(handle.db, {
+      candidateId: 'cand_defer',
+      handle: 'deferred',
+      weeklyRank: null,
+      displayedWeeklyPnlUsdMicro: null,
+      profileUrl: null,
+      avatarUrl: null,
+      enabled: true,
+      source: 'manual',
+      observedAt: new Date().toISOString(),
+    });
+    repo.upsertCandidateAddress(handle.db, 'cand_defer', {
+      chain: 'solana',
+      address: 'AddrDefer',
+      verification: 'reported',
+    });
+
+    const checkedAt = '2026-11-16T08:55:08.000Z';
+    repo.updateCandidateActivity(handle.db, 'cand_defer', {
+      swaps24h: 5,
+      lastSwapAt: checkedAt,
+      lastBuyAt: checkedAt,
+      buys24h: 3,
+      sells24h: 2,
+      status: 'ok',
+      checkedAt,
+    });
+
+    const until = new Date(Date.now() + 30 * 60_000).toISOString();
+    repo.deferCandidateActivity(handle.db, 'cand_defer', until, new Date().toISOString());
+    const deferred = repo.getCandidate(handle.db, 'cand_defer')!;
+    expect(deferred.activityCheckStatus).toBe('failed');
+    expect(deferred.activityCheckedAt).toBe(checkedAt);
+    expect(deferred.buys24h).toBe(3);
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_defer'))).toBe(until);
+    expect(repo.listAdmissionScanCandidates(handle.db, 100).some((c) => c.candidateId === 'cand_defer')).toBe(
+      false,
+    );
+
+    // Once the stored window is past, the candidate is eligible again.
+    repo.deferCandidateActivity(
+      handle.db,
+      'cand_defer',
+      new Date(Date.now() - 1_000).toISOString(),
+      new Date().toISOString(),
+    );
+    expect(repo.listAdmissionScanCandidates(handle.db, 100).some((c) => c.candidateId === 'cand_defer')).toBe(
+      true,
+    );
+
+    // A successful reading clears the deferral.
+    repo.updateCandidateActivity(handle.db, 'cand_defer', {
+      swaps24h: 0,
+      lastSwapAt: null,
+      lastBuyAt: null,
+      buys24h: 0,
+      sells24h: 0,
+      status: 'ok',
+      checkedAt: new Date().toISOString(),
+    });
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_defer'))).toBeUndefined();
+  });
+
   it('scan import writes pnl24h + stats stamp and preserves Dawn stats', () => {
     const now = new Date().toISOString();
     // Dawn card first: rich stats + its own stamp.
