@@ -63,14 +63,15 @@ no LLM in the loop (D6).
   Dedupe key is `(chain, leader, signature, leg)`.
 - **Admission reads fail closed.** A failed signature page or transaction
   detail read (including a deferred detail) marks the activity check failed
-  via `markCandidateActivityFailed`. The last good activity columns and
-  `activity_checked_at` stay intact, no watch row is created, and the
-  candidate remains first in line for the next tick. Admission uses the
-  strict Helius page and pages backwards to the 24h cutoff; if it cannot prove
-  coverage or the in-window detail set exceeds the bounded cap, it fails the
-  scan instead of recording a truncated reading. Only a complete read writes
-  `ok`; a genuinely empty read still records `ok` zeros and advances the
-  queue.
+  via `markCandidateActivityFailed`; the last good activity columns and
+  `activity_checked_at` stay intact, no watch row is created, and a transient
+  failure stays first in line for the next tick. Admission uses the strict
+  Helius page and pages backwards to the 24h cutoff; if it cannot prove
+  coverage or the in-window detail set exceeds the bounded cap, that
+  deterministic incomplete scan is deferred for 30 minutes (a scan-eligibility
+  key in `kv`, not a freshness stamp) so it cannot occupy an admission slot
+  every tick. Only a complete read writes `ok`; a genuinely empty read still
+  records `ok` zeros and advances the queue.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.

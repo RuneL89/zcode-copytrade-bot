@@ -105,6 +105,8 @@ interface Harness {
   >;
   prices: Map<string, bigint>;
   hired: string[];
+  /** Signature-page attempts per address (admission scan cadence). */
+  signatureCalls: Map<string, number>;
 }
 
 interface HarnessOptions {
@@ -127,6 +129,9 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
   >();
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
   const hired: string[] = [];
+  const signatureCalls = new Map<string, number>();
+  const notePageCall = (address: string) =>
+    signatureCalls.set(address, (signatureCalls.get(address) ?? 0) + 1);
 
   const pageFor = (address: string, limit = 100, before?: string) => {
     const rows = perAddress.get(address)?.page ?? page;
@@ -142,6 +147,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     publicSolana: {
       configured: over.publicConfigured ?? false,
       recentSignatures: async (address: string, limit = 100, before?: string) => {
+        notePageCall(address);
         if (over.publicPageFails) throw new Error('public-solana: rate limited (HTTP 429)');
         return pageFor(address, limit, before);
       },
@@ -164,6 +170,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
       },
       // Admission uses the strict method, which throws instead of hiding failure.
       recentSignaturesStrict: async (address: string, limit = 100, before?: string) => {
+        notePageCall(address);
         if (over.heliusPageFailures?.includes(address)) throw new Error('helius: HTTP 429');
         return pageFor(address, limit, before);
       },
@@ -206,6 +213,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     perAddress,
     prices,
     hired,
+    signatureCalls,
   };
 }
 
@@ -1320,5 +1328,131 @@ describe('admission scan fail-closed', () => {
     expect(candidate.lastBuyAt).toBe(lastBuy);
     expect(candidate.activityCheckedAt).toBe(oldAt);
     expect(repo.getWatchWallet(handle.db, 'cand_over_cap')).toBeUndefined();
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_over_cap'));
+    expect(deferredUntil).toBeDefined();
+    expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
+  });
+
+  it('does not rescan a deferred overflow every tick, then retries after the window', async () => {
+    seedCandidate('cand_overflow', 'overflow', 'WalletOverflow');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_overflow', {
+      swaps24h: 9,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 5,
+      checkedAt: oldAt,
+    });
+    for (let i = 0; i < 101; i++) {
+      h.page.push({ signature: `overflow_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+    }
+
+    await h.svc.evaluate();
+    const firstCalls = h.signatureCalls.get('WalletOverflow') ?? 0;
+    expect(firstCalls).toBe(2); // 100 + the one remaining in-window page
+    expect(repo.getCandidate(handle.db, 'cand_overflow')?.activityCheckStatus).toBe('failed');
+    const auditCount = () =>
+      repo
+        .listAudit(handle.db, 200)
+        .filter((row) => row.message.includes('admission scan failed for overflow')).length;
+    expect(auditCount()).toBe(1);
+
+    // The deferral is an eligibility signal, not a reading: the next tick must
+    // not spend another page on this candidate or write another audit row.
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletOverflow')).toBe(firstCalls);
+    expect(auditCount()).toBe(1);
+
+    // Simulate the 30-minute window passing, with a now-successful empty page.
+    repo.deferCandidateActivity(handle.db, 'cand_overflow', iso(Date.now() - 1_000), iso(Date.now()));
+    h.page.length = 0;
+    await h.svc.evaluate();
+    const after = repo.getCandidate(handle.db, 'cand_overflow')!;
+    expect(after.activityCheckStatus).toBe('ok');
+    expect(after.activityCheckedAt).not.toBe(oldAt);
+    expect(after.buys24h).toBe(0);
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_overflow'))).toBeUndefined();
+    expect(h.signatureCalls.get('WalletOverflow')).toBeGreaterThan(firstCalls);
+  });
+
+  it('keeps a transient signature-page failure on the retry-next-tick path', async () => {
+    seedCandidate('cand_transient', 'transient', 'WalletTransient');
+    const h = harness(riskConfig(), { heliusPageFailures: ['WalletTransient'] });
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_transient', {
+      swaps24h: 6,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 3,
+      sells24h: 3,
+      checkedAt: oldAt,
+    });
+
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletTransient')).toBe(1);
+    expect(repo.getCandidate(handle.db, 'cand_transient')?.activityCheckStatus).toBe('failed');
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_transient'))).toBeUndefined();
+
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletTransient')).toBe(2);
+    expect(repo.getCandidate(handle.db, 'cand_transient')?.activityCheckStatus).toBe('failed');
+  });
+
+  it('advances the remaining admission slots in the same tick as an overflow', async () => {
+    seedCandidate('cand_slot_overflow', 'slot_overflow', 'WalletSlotOverflow');
+    seedCandidate('cand_slot_good1', 'slot_good1', 'WalletSlotGood1');
+    seedCandidate('cand_slot_good2', 'slot_good2', 'WalletSlotGood2');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_slot_overflow', {
+      swaps24h: 9,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 5,
+      checkedAt: iso(Date.now() - 96 * HOUR),
+    });
+    setActivity('cand_slot_good1', { checkedAt: iso(Date.now() - 95 * HOUR) });
+    setActivity('cand_slot_good2', { checkedAt: iso(Date.now() - 94 * HOUR) });
+
+    for (let i = 0; i < 101; i++) {
+      h.page.push({ signature: `slot_over_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+    }
+    for (const [candidate, address] of [
+      ['cand_slot_good1', 'WalletSlotGood1'],
+      ['cand_slot_good2', 'WalletSlotGood2'],
+    ] as Array<[string, string]>) {
+      const goodPage: Array<{ signature: string; blockTime: number | null }> = [];
+      const goodSummaries = new Map<string, LeaderTxSummary>();
+      for (let i = 0; i < 3; i++) {
+        const signature = `${candidate}_buy_${i}`;
+        const summary = swapSummary({
+          signature,
+          minutesAgo: 120 - i * 30,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: 'buy',
+        });
+        goodSummaries.set(signature, summary);
+        goodPage.push({ signature, blockTime: summary.blockTime });
+      }
+      h.perAddress.set(address, { page: goodPage, summaries: goodSummaries });
+    }
+
+    const result = await h.svc.evaluate();
+    expect(repo.getCandidate(handle.db, 'cand_slot_overflow')?.activityCheckStatus).toBe('failed');
+    expect(repo.getWatchWallet(handle.db, 'cand_slot_good1')?.status).toBe('watching');
+    expect(repo.getWatchWallet(handle.db, 'cand_slot_good2')?.status).toBe('watching');
+    expect(repo.getCandidate(handle.db, 'cand_slot_good1')?.activityCheckStatus).toBe('ok');
+    expect(repo.getCandidate(handle.db, 'cand_slot_good2')?.activityCheckStatus).toBe('ok');
+    expect(result.admitted).toBe(2);
   });
 });

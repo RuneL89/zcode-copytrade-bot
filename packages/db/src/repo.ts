@@ -35,6 +35,17 @@ export function kvSet(db: Db, key: string, value: string): void {
     .run();
 }
 
+export function kvDelete(db: Db, key: string): void {
+  db.delete(schema.kv).where(eq(schema.kv.key, key)).run();
+}
+
+/** Per-candidate admission-scan deferral (an eligibility signal, not freshness). */
+export const ADMISSION_DEFER_KEY_PREFIX = 'admission.defer:';
+
+export function admissionDeferKey(candidateId: string): string {
+  return `${ADMISSION_DEFER_KEY_PREFIX}${candidateId}`;
+}
+
 // --- audit / control ---------------------------------------------------------
 
 export function audit(db: Db, category: string, message: string, data?: unknown): void {
@@ -179,6 +190,9 @@ export function listAdmissionScanCandidates(db: Db, limit: number) {
                AND a.chain = 'solana')`,
         sql`NOT EXISTS (SELECT 1 FROM ${schema.watchWallets} w
              WHERE w.candidate_id = ${schema.traderCandidates.candidateId})`,
+        sql`NOT EXISTS (SELECT 1 FROM kv d
+             WHERE d.key = ${ADMISSION_DEFER_KEY_PREFIX} || ${schema.traderCandidates.candidateId}
+               AND datetime(d.value) > datetime('now'))`,
       ),
     )
     .orderBy(
@@ -273,6 +287,7 @@ export function updateCandidateActivity(
     })
     .where(eq(schema.traderCandidates.candidateId, candidateId))
     .run();
+  kvDelete(db, admissionDeferKey(candidateId));
 }
 
 /**
@@ -280,12 +295,29 @@ export function updateCandidateActivity(
  * freshness stamp: the previous reading stays usable (with status 'failed' the
  * snapshot degrades activelyTrading to unknown), and an un-advanced
  * activity_checked_at keeps the candidate first in line for the next refresh.
+ * Deterministic incomplete scans use deferCandidateActivity instead.
  */
 export function markCandidateActivityFailed(db: Db, candidateId: string, checkedAt: string): void {
   db.update(schema.traderCandidates)
     .set({ activityCheckStatus: 'failed', updatedAt: checkedAt })
     .where(eq(schema.traderCandidates.candidateId, candidateId))
     .run();
+}
+
+/**
+ * Record a deterministic incomplete scan (overflow/coverage cap) and move the
+ * candidate behind its peers until `untilIso`. Activity columns and
+ * `activity_checked_at` are untouched: this is a scan-eligibility deferral,
+ * not a successful reading. `updateCandidateActivity` clears it on success.
+ */
+export function deferCandidateActivity(
+  db: Db,
+  candidateId: string,
+  untilIso: string,
+  attemptedAt: string,
+): void {
+  markCandidateActivityFailed(db, candidateId, attemptedAt);
+  kvSet(db, admissionDeferKey(candidateId), untilIso);
 }
 
 /**

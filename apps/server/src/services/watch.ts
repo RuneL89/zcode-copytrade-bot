@@ -657,9 +657,11 @@ export class WatchService {
     //
     // Failure policy: a successful read (including a genuinely empty wallet)
     // records the reading and moves the candidate to the back of the queue. A
-    // failed or incomplete read records NOTHING as ok; markCandidateActivityFailed
-    // preserves the last good columns and leaves activity_checked_at unchanged,
-    // which deliberately keeps the candidate first in line for the next tick.
+    // failed or incomplete read records NOTHING as ok. Transient failures keep
+    // the candidate first in line for the next tick; a deterministic overflow
+    // / coverage cap gets a 30-minute scan deferral so it cannot occupy a slot
+    // every tick. Both preserve the last good activity columns and their true
+    // freshness.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
       const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
@@ -673,14 +675,24 @@ export class WatchService {
         reading = await this.scanWallet(address);
       } catch (e) {
         const failedAt = new Date().toISOString();
-        repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
+        const deferred = e instanceof AdmissionScanIncomplete;
+        const deferredUntil = deferred ? new Date(Date.now() + ADMISSION_RESCAN_MS).toISOString() : null;
+        if (deferredUntil !== null) {
+          repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, failedAt);
+        } else {
+          repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
+        }
         repo.audit(
           this.db,
           'watch',
           `admission scan failed for ${candidate.handle} (fail closed): ${
             e instanceof Error ? e.message : e
           }`,
-          { candidateId: candidate.candidateId, address },
+          {
+            candidateId: candidate.candidateId,
+            address,
+            ...(deferredUntil === null ? {} : { deferredUntil }),
+          },
         );
         continue;
       }
