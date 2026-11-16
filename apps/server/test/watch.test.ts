@@ -107,8 +107,18 @@ interface Harness {
   hired: string[];
 }
 
-function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
-  void over;
+interface HarnessOptions {
+  /** Simulate the public RPC being configured (Helius fallback stays the answer). */
+  publicConfigured?: boolean;
+  /** Every public signature/detail call throws (e.g. HTTP 429). */
+  publicPageFails?: boolean;
+  publicDetailFails?: boolean;
+  /** Per-address Helius failures. */
+  heliusPageFailures?: string[];
+  heliusDetailFailures?: string[];
+}
+
+function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
   const summaries = new Map<string, LeaderTxSummary>();
   const page: Array<{ signature: string; blockTime: number | null }> = [];
   const perAddress = new Map<
@@ -121,7 +131,17 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
   const deps: WatchServiceDeps = {
     db: handle.db,
     risk,
-    publicSolana: { configured: false } as unknown as WatchServiceDeps['publicSolana'],
+    publicSolana: {
+      configured: over.publicConfigured ?? false,
+      recentSignatures: async (address: string) => {
+        if (over.publicPageFails) throw new Error('public-solana: rate limited (HTTP 429)');
+        return (perAddress.get(address)?.page ?? page).map((r) => ({ ...r }));
+      },
+      transactionSummary: async (address: string, signature: string) => {
+        if (over.publicDetailFails) throw new Error('public-solana: rate limited (HTTP 429)');
+        return perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null;
+      },
+    } as unknown as WatchServiceDeps['publicSolana'],
     helius: {
       latestCursor: async () => ({
         lastSignature: '',
@@ -129,10 +149,14 @@ function harness(risk: RiskConfig, over: { risk?: RiskConfig } = {}): Harness {
         lastTransactionIndex: 0,
         lastBlockTime: null,
       }),
-      recentSignatures: async (address: string) =>
-        (perAddress.get(address)?.page ?? page).map((r) => ({ ...r })),
-      transactionSummary: async (address: string, signature: string) =>
-        perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null,
+      recentSignatures: async (address: string) => {
+        if (over.heliusPageFailures?.includes(address)) throw new Error('helius: HTTP 429');
+        return (perAddress.get(address)?.page ?? page).map((r) => ({ ...r }));
+      },
+      transactionSummary: async (address: string, signature: string) => {
+        if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
+        return perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null;
+      },
     } as unknown as WatchServiceDeps['helius'],
     prices: {
       priceOf: async (mint: string) => {
@@ -189,6 +213,36 @@ function seedCandidate(candidateId: string, candidateHandle: string, address: st
       address,
       verification: 'reported',
     });
+  }
+}
+
+function setActivity(
+  candidateId: string,
+  over: Partial<{
+    swaps24h: number;
+    lastSwapAt: string | null;
+    lastBuyAt: string | null;
+    buys24h: number;
+    sells24h: number;
+    checkedAt: string;
+  }> = {},
+): void {
+  repo.updateCandidateActivity(handle.db, candidateId, {
+    swaps24h: 0,
+    lastSwapAt: null,
+    lastBuyAt: null,
+    buys24h: 0,
+    sells24h: 0,
+    status: 'ok',
+    checkedAt: iso(Date.now()),
+    ...over,
+  });
+}
+
+/** Give every candidate a fresh reading so one deliberately stale target is first in line. */
+function stampAllActivity(checkedAt = iso(Date.now())): void {
+  for (const candidate of repo.listCandidates(handle.db)) {
+    setActivity(candidate.candidateId, { checkedAt });
   }
 }
 
@@ -1037,5 +1091,142 @@ describe('admission scan rotation', () => {
     await h.svc.tick();
     expect(repo.getWatchWallet(handle.db, 'cand_rot_good')?.status).toBe('watching');
     expect(repo.getCandidate(handle.db, 'cand_rot_good')?.buys24h).toBe(3);
+  });
+});
+
+/**
+ * The admission scan must never turn a failed provider read into a successful
+ * empty reading: that overwrote good activity columns with zeros and dropped
+ * the candidate out of the queue. A successful empty read must still advance.
+ */
+describe('admission scan fail-closed', () => {
+  it('preserves the previous reading when the signature page fails everywhere', async () => {
+    seedCandidate('cand_fail_closed', 'fail_closed', 'WalletFailClosed');
+    const h = harness(riskConfig(), { heliusPageFailures: ['WalletFailClosed'] });
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_fail_closed', {
+      swaps24h: 9,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 5,
+      checkedAt: oldAt,
+    });
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_fail_closed')!;
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.swaps24h).toBe(9);
+    expect(candidate.buys24h).toBe(4);
+    expect(candidate.sells24h).toBe(5);
+    expect(candidate.lastBuyAt).toBe(lastBuy);
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    expect(repo.getWatchWallet(handle.db, 'cand_fail_closed')).toBeUndefined();
+    expect(result.admitted).toBe(0);
+    expect(
+      repo
+        .listAudit(handle.db, 50)
+        .some((row) => row.message.includes('admission scan failed for fail_closed')),
+    ).toBe(true);
+  });
+
+  it('falls back to Helius for the page and details when the public RPC fails', async () => {
+    seedCandidate('cand_fallback', 'fallback', 'WalletFallback');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 2, WATCH_LIST_SIZE: 100 }), {
+      publicConfigured: true,
+      publicPageFails: true,
+      publicDetailFails: true,
+    });
+    stampAllActivity();
+    setActivity('cand_fallback', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    const page: Array<{ signature: string; blockTime: number | null }> = [];
+    const summaries = new Map<string, LeaderTxSummary>();
+    for (const [signature, minutesAgo] of [
+      ['fallback_buy_1', 120],
+      ['fallback_buy_2', 30],
+    ] as Array<[string, number]>) {
+      const summary = swapSummary({
+        signature,
+        minutesAgo,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+      });
+      summaries.set(signature, summary);
+      page.push({ signature, blockTime: summary.blockTime });
+    }
+    h.perAddress.set('WalletFallback', { page, summaries });
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_fallback')!;
+    expect(candidate.activityCheckStatus).toBe('ok');
+    expect(candidate.buys24h).toBe(2);
+    expect(candidate.swaps24h).toBe(2);
+    expect(candidate.lastBuyAt).not.toBeNull();
+    expect(repo.getWatchWallet(handle.db, 'cand_fallback')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+  });
+
+  it('does not record a partial detail scan as an ok reading', async () => {
+    seedCandidate('cand_detail_deferred', 'detail_deferred', 'WalletDetailDeferred');
+    const h = harness(riskConfig(), { publicConfigured: true, publicDetailFails: true });
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_detail_deferred', {
+      swaps24h: 7,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 3,
+      sells24h: 4,
+      checkedAt: oldAt,
+    });
+
+    // Three rows: the public detail ceiling allows two Helius fallbacks, then
+    // the third read is deferred. The scan must fail rather than return the
+    // two completed reads as a complete reading.
+    for (let i = 1; i <= 3; i++) {
+      h.page.push({ signature: `detail_${i}`, blockTime: NOW_SEC - i * 60 });
+    }
+
+    await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_detail_deferred')!;
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.buys24h).toBe(3);
+    expect(candidate.swaps24h).toBe(7);
+    expect(candidate.lastBuyAt).toBe(lastBuy);
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    expect(repo.getWatchWallet(handle.db, 'cand_detail_deferred')).toBeUndefined();
+  });
+
+  it('records a successful empty read as ok and advances the queue', async () => {
+    seedCandidate('cand_empty_ok', 'empty_ok', 'WalletEmptyOk');
+    const h = harness(riskConfig());
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    setActivity('cand_empty_ok', {
+      swaps24h: 5,
+      lastSwapAt: iso(Date.now() - HOUR),
+      lastBuyAt: iso(Date.now() - HOUR),
+      buys24h: 2,
+      sells24h: 3,
+      checkedAt: oldAt,
+    });
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_empty_ok')!;
+    expect(candidate.activityCheckStatus).toBe('ok');
+    expect(candidate.swaps24h).toBe(0);
+    expect(candidate.buys24h).toBe(0);
+    expect(candidate.sells24h).toBe(0);
+    expect(candidate.lastSwapAt).toBeNull();
+    expect(candidate.lastBuyAt).toBeNull();
+    expect(candidate.activityCheckedAt).not.toBe(oldAt);
+    expect(Date.parse(candidate.activityCheckedAt!)).toBeGreaterThan(Date.now() - 60_000);
+    expect(repo.getWatchWallet(handle.db, 'cand_empty_ok')).toBeUndefined();
+    expect(result.admitted).toBe(0);
   });
 });

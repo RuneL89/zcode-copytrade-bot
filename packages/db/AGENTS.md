@@ -33,6 +33,11 @@ and every repository function the server calls.
   amount.
 - **No business logic here.** Repositories read and write; decisions belong in
   `packages/core` and the server services.
+- **A failed activity check never writes activity columns.**
+  `markCandidateActivityFailed` sets only the status and `updated_at`, so the
+  last good reading and its freshness stamp survive a provider outage; the
+  successful writer (`updateCandidateActivity`) is called only for a complete
+  reading.
 - **Read-only consumers use `openReadOnlyDatabase`.** The weekly report, audits
   and ad-hoc inspections must never open the live file read-write, create it, or
   migrate it.

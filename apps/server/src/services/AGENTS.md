@@ -61,6 +61,13 @@ no LLM in the loop (D6).
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
   Dedupe key is `(chain, leader, signature, leg)`.
+- **Admission reads fail closed.** A failed signature page or transaction
+  detail read (including a deferred detail) marks the activity check failed
+  via `markCandidateActivityFailed`. The last good activity columns and
+  `activity_checked_at` stay intact, no watch row is created, and the
+  candidate remains first in line for the next tick. Only a complete read
+  writes `ok`; a genuinely empty read still records `ok` zeros and advances
+  the queue.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.

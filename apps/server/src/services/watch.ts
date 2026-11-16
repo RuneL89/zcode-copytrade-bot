@@ -104,7 +104,12 @@ export const ADMISSION_SCAN_PER_TICK = 3;
 const ADMISSION_RESCAN_MS = 30 * 60_000;
 
 /** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
-class DetailDeferred extends Error {}
+class DetailDeferred extends Error {
+  constructor() {
+    super('watch detail deferred (minute ceiling)');
+    this.name = 'DetailDeferred';
+  }
+}
 /** Admission reads look back 24h (D4's window). */
 const ADMISSION_LOOKBACK_HOURS = 24;
 
@@ -150,7 +155,9 @@ export class WatchService {
         if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
       }
     }
-    return this.deps.helius.transactionSummary(address, signature, 'watch').catch(() => null);
+    // A Helius error is a failed read, not "no swap". Let it reach the caller so
+    // the admission scan can mark the check failed and keep the previous reading.
+    return this.deps.helius.transactionSummary(address, signature, 'watch');
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -250,22 +257,25 @@ export class WatchService {
     return { ok: true, reason: 'ADMITTED' };
   }
 
-  /** Scan one wallet for funded swaps over the lookback window. */
+  /**
+   * Scan one wallet for funded swaps over the lookback window.
+   *
+   * Throws when the signature page or any transaction detail read fails: a
+   * partial scan must never be recorded as an `ok` reading. A successful read
+   * with no funded swaps returns an empty reading (and advances the queue).
+   * The caller (`evaluate`) marks a thrown scan failed and preserves the last
+   * good columns; the unchanged `activity_checked_at` keeps this candidate
+   * first in line for the next tick.
+   */
   async scanWallet(address: string, lookbackHours = ADMISSION_LOOKBACK_HOURS): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
-    const rows = await this.signaturePage(address, 100).catch(() => []);
+    const rows = await this.signaturePage(address, 100);
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
 
     const events: FundedSwap[] = [];
     for (const row of inWindow.slice(0, WATCH_TX_SCAN_LIMIT)) {
-      let summary;
-      try {
-        summary = await this.txSummary(address, row.signature);
-      } catch (error) {
-        if (error instanceof DetailDeferred) break;
-        throw error;
-      }
+      const summary = await this.txSummary(address, row.signature);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -574,9 +584,13 @@ export class WatchService {
 
     // --- admission: candidates with a wallet that are not already on the list ---
     // The list is ordered least-recently-measured first (never-measured ahead of
-    // everything), so the bounded scan advances through the pool. A scan that
-    // finds nothing still records its reading, which is what moves the candidate
-    // to the back of the queue for the next tick.
+    // everything), so the bounded scan advances through the pool.
+    //
+    // Failure policy: a successful read (including a genuinely empty wallet)
+    // records the reading and moves the candidate to the back of the queue. A
+    // failed or incomplete read records NOTHING as ok; markCandidateActivityFailed
+    // preserves the last good columns and leaves activity_checked_at unchanged,
+    // which deliberately keeps the candidate first in line for the next tick.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
       const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
@@ -585,27 +599,44 @@ export class WatchService {
         .listCandidateAddresses(this.db, candidate.candidateId)
         .find((a) => a.chain === 'solana')?.address;
       if (!address) continue;
+      let reading: AdmissionReading;
       try {
-        const reading = await this.scanWallet(address);
-        const newestEvent = reading.events[reading.events.length - 1] ?? null;
-        repo.updateCandidateActivity(this.db, candidate.candidateId, {
-          swaps24h: reading.events.length,
-          lastSwapAt:
-            newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
-          lastBuyAt: reading.lastFundedBuyAt,
-          buys24h: reading.fundedBuys24h,
-          sells24h: reading.events.filter((e) => e.side === 'sell').length,
-          status: 'ok',
-          checkedAt: reading.measuredAt,
-        });
-        const verdict = await this.admit(candidate.candidateId, reading);
-        if (verdict.ok) admitted++;
+        reading = await this.scanWallet(address);
       } catch (e) {
+        const failedAt = new Date().toISOString();
+        repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
         repo.audit(
           this.db,
           'watch',
-          `admission scan failed for ${candidate.handle} (fail closed): ${e instanceof Error ? e.message : e}`,
-          {},
+          `admission scan failed for ${candidate.handle} (fail closed): ${
+            e instanceof Error ? e.message : e
+          }`,
+          { candidateId: candidate.candidateId, address },
+        );
+        continue;
+      }
+      const newestEvent = reading.events[reading.events.length - 1] ?? null;
+      repo.updateCandidateActivity(this.db, candidate.candidateId, {
+        swaps24h: reading.events.length,
+        lastSwapAt:
+          newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
+        lastBuyAt: reading.lastFundedBuyAt,
+        buys24h: reading.fundedBuys24h,
+        sells24h: reading.events.filter((e) => e.side === 'sell').length,
+        status: 'ok',
+        checkedAt: reading.measuredAt,
+      });
+      try {
+        const verdict = await this.admit(candidate.candidateId, reading);
+        if (verdict.ok) admitted++;
+      } catch (e) {
+        // The reading itself was good; a seat-side failure must not be recorded
+        // as a failed activity check.
+        repo.audit(
+          this.db,
+          'watch',
+          `admission failed for ${candidate.handle}: ${e instanceof Error ? e.message : e}`,
+          { candidateId: candidate.candidateId, address },
         );
       }
     }
