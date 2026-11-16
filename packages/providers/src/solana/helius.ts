@@ -174,22 +174,47 @@ export class HeliusProvider {
     }
   }
 
-  /** Newest signatures touching an address, most recent first. */
+  private async signatureRows(
+    address: string,
+    limit: number,
+    before?: string,
+  ): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    const rows = await this.rpc<Array<{ signature: string; blockTime: number | null }>>(
+      'getSignaturesForAddress',
+      [address, { limit, ...(before ? { before } : {}) }],
+      'watch',
+      address,
+    );
+    return rows ?? [];
+  }
+
+  /**
+   * Newest signatures touching an address, most recent first.
+   *
+   * Tolerant on purpose: the fee ledger and other best-effort readers treat an
+   * outage as "nothing found". Admission MUST NOT use this method; it uses
+   * `recentSignaturesStrict` so a failed page is never mistaken for an empty
+   * wallet.
+   */
   async recentSignatures(
     address: string,
     limit = 100,
+    before?: string,
   ): Promise<Array<{ signature: string; blockTime: number | null }>> {
     try {
-      const rows = await this.rpc<Array<{ signature: string; blockTime: number | null }>>(
-        'getSignaturesForAddress',
-        [address, { limit }],
-        'watch',
-        address,
-      );
-      return rows ?? [];
+      return await this.signatureRows(address, limit, before);
     } catch {
       return [];
     }
+  }
+
+  /** Strict signature page: throws on a transport/governor failure. */
+  async recentSignaturesStrict(
+    address: string,
+    limit = 100,
+    before?: string,
+  ): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    return this.signatureRows(address, limit, before);
   }
 
   /**

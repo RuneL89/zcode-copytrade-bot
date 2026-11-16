@@ -31,6 +31,10 @@ notifications. This is the only package allowed to talk to the outside world.
   `getTransaction` for an unseen signature. `getTransactionsForAddress` is a
   vetting scan only and is rejected by the credit governor on every other
   path. Enhanced Transactions stays retired.
+- **A failed signature page is not an empty wallet.** `recentSignatures` is the
+  tolerant method (`[]` on an outage) for best-effort readers; admission must
+  use `recentSignaturesStrict`, which throws. Both accept an optional `before`
+  signature so a caller can page backwards to its cutoff.
 - **The public Solana RPC is the bulk-refresh workhorse (2026-10-31).**
   Candidate activity refreshes run often and in bursts; they hit the free
   public RPC first (`PublicSolanaProvider.walletActivity`, IP-throttled, never

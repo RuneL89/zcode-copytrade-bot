@@ -379,9 +379,13 @@ Helius free plan = 1M credits/month. Credit costs: standard RPC (`getBalance`,
 (~2,400 polls + health + SOL balance) → the free million lasts ~36 days.
 The candidate activity refresh (the bursty part that once burned 429s) moved
 to the free public Solana RPC (`PUBLIC_SOLANA_RPC_URL`); Helius is only its
-fallback. Live mode starts on the same free plan; if credits ever get
-tight (higher capital, faster copying wanted), the options are a slower poll
-or the Developer tier ($49/mo, 10M credits — ~3+ months at 8 s polling).
+fallback. The watch admission scan uses the same path and fails closed: a
+failed page or detail read, or a scan that cannot page back across the full
+24h window within its bounded caps, keeps the last good activity reading and
+retries the candidate next tick instead of recording zeros. Live mode starts
+on the same free plan; if credits ever get tight (higher capital, faster
+copying wanted), the options are a slower poll or the Developer tier
+($49/mo, 10M credits — ~3+ months at 8 s polling).
 Watch per-method usage in the Helius dashboard; a burnt budget shows up as
 HELIUS DOWN in the dashboard health row.
 

@@ -96,15 +96,32 @@ export interface WatchServiceDeps {
   onStateChanged: () => void;
 }
 
-/** How many transactions one poll / scan inspects per wallet. */
+/** How many new transactions one watch poll inspects per wallet. */
 const WATCH_TX_SCAN_LIMIT = 25;
 /** Candidates scanned for admission per tick (bounded spend). */
 export const ADMISSION_SCAN_PER_TICK = 3;
 /** A candidate measured inside this window is not read again on the next tick. */
 const ADMISSION_RESCAN_MS = 30 * 60_000;
+/** Admission needs the whole 24h window, not just the newest page. */
+const ADMISSION_SIGNATURE_PAGE = 100;
+const ADMISSION_MAX_PAGES = 3;
+const ADMISSION_MAX_DETAILS = 100;
 
 /** Public detail failed and the Helius fallback is over its minute ceiling. Retry next tick. */
-class DetailDeferred extends Error {}
+class DetailDeferred extends Error {
+  constructor() {
+    super('watch detail deferred (minute ceiling)');
+    this.name = 'DetailDeferred';
+  }
+}
+
+/** The scan cannot prove it covered the full lookback window; retry, never record zeros. */
+class AdmissionScanIncomplete extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdmissionScanIncomplete';
+  }
+}
 /** Admission reads look back 24h (D4's window). */
 const ADMISSION_LOOKBACK_HOURS = 24;
 
@@ -139,6 +156,28 @@ export class WatchService {
     return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
   }
 
+  /**
+   * Strict page used only by admission. Public failure falls back to Helius;
+   * a Helius failure throws instead of returning [] (the tolerant
+   * `recentSignatures` method would hide an outage as an empty wallet).
+   */
+  private async signaturePageStrict(
+    address: string,
+    limit: number,
+    before?: string,
+  ): Promise<Array<{ signature: string; blockTime: number | null }>> {
+    if (this.deps.publicSolana.configured) {
+      try {
+        const rows = await this.deps.publicSolana.recentSignatures(address, limit, before);
+        return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
+      } catch {
+        // Public node unavailable: the strict paid fallback below answers or throws.
+      }
+    }
+    const rows = await this.deps.helius.recentSignaturesStrict(address, limit, before);
+    return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
+  }
+
   private async txSummary(address: string, signature: string) {
     if (this.deps.publicSolana.configured) {
       try {
@@ -150,7 +189,9 @@ export class WatchService {
         if (!this.detailCeiling.allow(Date.now())) throw new DetailDeferred();
       }
     }
-    return this.deps.helius.transactionSummary(address, signature, 'watch').catch(() => null);
+    // A Helius error is a failed read, not "no swap". Let it reach the caller so
+    // the admission scan can mark the check failed and keep the previous reading.
+    return this.deps.helius.transactionSummary(address, signature, 'watch');
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -250,22 +291,60 @@ export class WatchService {
     return { ok: true, reason: 'ADMITTED' };
   }
 
-  /** Scan one wallet for funded swaps over the lookback window. */
+  /**
+   * Scan one wallet for funded swaps over the lookback window.
+   *
+   * Throws when the signature page or any transaction detail read fails, or
+   * when the bounded page/detail caps cannot prove the whole lookback window
+   * was read: a partial scan must never be recorded as an `ok` reading. A
+   * successful read with no funded swaps returns an empty reading (and
+   * advances the queue). The caller (`evaluate`) marks a thrown scan failed
+   * and preserves the last good columns; the unchanged `activity_checked_at`
+   * keeps this candidate first in line for the next tick.
+   */
   async scanWallet(address: string, lookbackHours = ADMISSION_LOOKBACK_HOURS): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
-    const rows = await this.signaturePage(address, 100).catch(() => []);
+
+    // Page backwards until the 24h cutoff (bounded). A full page whose oldest
+    // row is still inside the window does not prove coverage.
+    const rows: Array<{ signature: string; blockTime: number | null }> = [];
+    let before: string | undefined;
+    let covered = false;
+    for (let page = 0; page < ADMISSION_MAX_PAGES; page++) {
+      const batch = await this.signaturePageStrict(address, ADMISSION_SIGNATURE_PAGE, before);
+      if (batch.length === 0) {
+        covered = true;
+        break;
+      }
+      rows.push(...batch);
+      const oldest = batch[batch.length - 1]!;
+      if (batch.length < ADMISSION_SIGNATURE_PAGE) {
+        covered = true;
+        break;
+      }
+      if (oldest.blockTime !== null && oldest.blockTime < cutoffSec) {
+        covered = true;
+        break;
+      }
+      before = oldest.signature;
+    }
+    if (!covered) {
+      throw new AdmissionScanIncomplete(
+        `signature page still inside the ${lookbackHours}h window after ${ADMISSION_MAX_PAGES} pages`,
+      );
+    }
+
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
+    if (inWindow.length > ADMISSION_MAX_DETAILS) {
+      throw new AdmissionScanIncomplete(
+        `${inWindow.length} in-window signatures exceed the ${ADMISSION_MAX_DETAILS}-detail admission cap`,
+      );
+    }
 
     const events: FundedSwap[] = [];
-    for (const row of inWindow.slice(0, WATCH_TX_SCAN_LIMIT)) {
-      let summary;
-      try {
-        summary = await this.txSummary(address, row.signature);
-      } catch (error) {
-        if (error instanceof DetailDeferred) break;
-        throw error;
-      }
+    for (const row of inWindow) {
+      const summary = await this.txSummary(address, row.signature);
       if (!summary) continue;
       const swap = classifyFundedSwap(summary);
       if (swap) events.push(swap);
@@ -574,9 +653,13 @@ export class WatchService {
 
     // --- admission: candidates with a wallet that are not already on the list ---
     // The list is ordered least-recently-measured first (never-measured ahead of
-    // everything), so the bounded scan advances through the pool. A scan that
-    // finds nothing still records its reading, which is what moves the candidate
-    // to the back of the queue for the next tick.
+    // everything), so the bounded scan advances through the pool.
+    //
+    // Failure policy: a successful read (including a genuinely empty wallet)
+    // records the reading and moves the candidate to the back of the queue. A
+    // failed or incomplete read records NOTHING as ok; markCandidateActivityFailed
+    // preserves the last good columns and leaves activity_checked_at unchanged,
+    // which deliberately keeps the candidate first in line for the next tick.
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK);
     for (const candidate of candidates) {
       const checkedAt = candidate.activityCheckedAt ? Date.parse(candidate.activityCheckedAt) : null;
@@ -585,27 +668,44 @@ export class WatchService {
         .listCandidateAddresses(this.db, candidate.candidateId)
         .find((a) => a.chain === 'solana')?.address;
       if (!address) continue;
+      let reading: AdmissionReading;
       try {
-        const reading = await this.scanWallet(address);
-        const newestEvent = reading.events[reading.events.length - 1] ?? null;
-        repo.updateCandidateActivity(this.db, candidate.candidateId, {
-          swaps24h: reading.events.length,
-          lastSwapAt:
-            newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
-          lastBuyAt: reading.lastFundedBuyAt,
-          buys24h: reading.fundedBuys24h,
-          sells24h: reading.events.filter((e) => e.side === 'sell').length,
-          status: 'ok',
-          checkedAt: reading.measuredAt,
-        });
-        const verdict = await this.admit(candidate.candidateId, reading);
-        if (verdict.ok) admitted++;
+        reading = await this.scanWallet(address);
       } catch (e) {
+        const failedAt = new Date().toISOString();
+        repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
         repo.audit(
           this.db,
           'watch',
-          `admission scan failed for ${candidate.handle} (fail closed): ${e instanceof Error ? e.message : e}`,
-          {},
+          `admission scan failed for ${candidate.handle} (fail closed): ${
+            e instanceof Error ? e.message : e
+          }`,
+          { candidateId: candidate.candidateId, address },
+        );
+        continue;
+      }
+      const newestEvent = reading.events[reading.events.length - 1] ?? null;
+      repo.updateCandidateActivity(this.db, candidate.candidateId, {
+        swaps24h: reading.events.length,
+        lastSwapAt:
+          newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
+        lastBuyAt: reading.lastFundedBuyAt,
+        buys24h: reading.fundedBuys24h,
+        sells24h: reading.events.filter((e) => e.side === 'sell').length,
+        status: 'ok',
+        checkedAt: reading.measuredAt,
+      });
+      try {
+        const verdict = await this.admit(candidate.candidateId, reading);
+        if (verdict.ok) admitted++;
+      } catch (e) {
+        // The reading itself was good; a seat-side failure must not be recorded
+        // as a failed activity check.
+        repo.audit(
+          this.db,
+          'watch',
+          `admission failed for ${candidate.handle}: ${e instanceof Error ? e.message : e}`,
+          { candidateId: candidate.candidateId, address },
         );
       }
     }
