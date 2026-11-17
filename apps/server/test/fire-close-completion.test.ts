@@ -212,7 +212,12 @@ function seedQualifiedBench(candidateId = 'cand_bench'): void {
 
 function seedSummary(
   activationId: string,
-  opts: { kind?: string; marker?: boolean; signature?: string | null } = {},
+  opts: {
+    kind?: string;
+    marker?: boolean;
+    signature?: string | null;
+    createdAt?: string;
+  } = {},
 ): number {
   return repo.insertReconciliationCase(handle.db, {
     kind: opts.kind ?? 'close_failed',
@@ -223,7 +228,7 @@ function seedSummary(
     detail:
       'fire close-out incomplete: 0 closed, 0 unknown, 1 failed after retries' +
       (opts.marker === false ? '' : ` [activation:${activationId}]`),
-    createdAt: new Date().toISOString(),
+    createdAt: opts.createdAt ?? new Date().toISOString(),
     resolvedAt: null,
   });
 }
@@ -363,6 +368,73 @@ describe('startup recovery for an already-closed blocked fire', () => {
     expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(false);
     expect(repo.listPnlLots(handle.db, 10).filter((l) => l.positionId === target.positionId)).toHaveLength(1);
     expect(executor.specs).toHaveLength(0);
+  });
+
+  it('resolves an orphaned legacy summary for an activation already marked FIRED', async () => {
+    const target = seedTarget('act_fired_orphan', 'cand_fired_orphan');
+    const endedAt = new Date().toISOString();
+    repo.updateActivation(handle.db, target.activationId, {
+      state: 'FIRED',
+      endedAt,
+      endReason: 'fired',
+    });
+    repo.updatePosition(handle.db, target.positionId, {
+      status: 'closed',
+      remainingTokenBase: '0',
+      closedAt: endedAt,
+      closeReason: 'fire_close_all',
+    });
+    repo.insertFiringEvent(handle.db, {
+      activationId: target.activationId,
+      candidateId: target.candidateId,
+      reason: 'stall: test',
+      lossStreak: 0,
+      positionPolicy: 'close_all_before_switch',
+      firedAt: endedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    const caseId = seedSummary(target.activationId, { marker: false, createdAt: endedAt });
+    const { lifecycle } = engineWith(new ScriptedExecutor([]));
+
+    await lifecycle.recoverBlockedFires('test-startup');
+
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(false);
+  });
+
+  it('attributes a legacy summary by its firing-event time, not desk-wide cleanup', async () => {
+    const target = seedTarget('act_legacy_match', 'cand_legacy_match');
+    repo.updateActivation(handle.db, target.activationId, { state: 'REQUIRES_RECONCILIATION' });
+    repo.updatePosition(handle.db, target.positionId, {
+      status: 'closed',
+      remainingTokenBase: '0',
+      closedAt: new Date().toISOString(),
+      closeReason: 'fire_close_all',
+    });
+    const firedAt = new Date().toISOString();
+    repo.insertFiringEvent(handle.db, {
+      activationId: target.activationId,
+      candidateId: target.candidateId,
+      reason: 'stall: test',
+      lossStreak: 0,
+      positionPolicy: 'close_all_before_switch',
+      firedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    const ownCase = seedSummary(target.activationId, { marker: false, createdAt: firedAt });
+    const unrelatedCase = seedSummary('act_unrelated_legacy', {
+      marker: false,
+      createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+    const { lifecycle } = engineWith(new ScriptedExecutor([]));
+
+    await lifecycle.recoverBlockedFires('test-startup');
+
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === ownCase)).toBe(false);
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === unrelatedCase)).toBe(true);
   });
 
   it('never completes a blocked fire with an unknown summary case', async () => {
