@@ -494,9 +494,10 @@ function buildHireMoments(
     candidate_id: string;
     closed_at: string | null;
     pnl_usd_micro: string | null;
+    backfilled: number | null;
   }>(
     sqlite,
-    'select candidate_id, closed_at, pnl_usd_micro from shadow_trades where status = ' +
+    'select candidate_id, closed_at, pnl_usd_micro, backfilled from shadow_trades where status = ' +
       "'closed' and closed_at is not null order by closed_at",
   );
   const watchBuys = all<{ candidate_id: string; block_time: number }>(
@@ -509,6 +510,9 @@ function buildHireMoments(
   );
   const byCandidate = new Map<string, typeof shadow>();
   for (const row of shadow) {
+    // The live gate judges forward closes only; the admission backfill is
+    // ledger evidence, not promotion proof.
+    if (row.backfilled === 1) continue;
     const list = byCandidate.get(row.candidate_id) ?? [];
     list.push(row);
     byCandidate.set(row.candidate_id, list);

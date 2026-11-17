@@ -43,6 +43,13 @@
       "when": 1793572856695,
       "tag": "0005_thankful_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794915173956,
+      "tag": "0006_forward_shadow_gate",
+      "breakpoints": true
     }
   ]
 }

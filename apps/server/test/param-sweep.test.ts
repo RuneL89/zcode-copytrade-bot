@@ -59,13 +59,14 @@ function insertShadow(input: {
   exitReason?: string;
   exitPrice?: string;
   pnl?: string;
+  backfilled?: boolean;
 }) {
   handle.sqlite
     .prepare(
       `insert into shadow_trades
          (candidate_id, mint, opened_at, entry_price_usd_micro, notional_usd_micro, status,
-          closed_at, exit_reason, exit_price_usd_micro, pnl_usd_micro)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          closed_at, exit_reason, exit_price_usd_micro, pnl_usd_micro, backfilled)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.candidateId,
@@ -78,6 +79,7 @@ function insertShadow(input: {
       input.exitReason ?? null,
       input.exitPrice ?? null,
       input.pnl ?? null,
+      input.backfilled ? 1 : 0,
     );
 }
 
@@ -312,6 +314,44 @@ describe('buildSweepReport', () => {
     } finally {
       empty.close();
       rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('forward-only shadow evidence', () => {
+  it('never hires a wallet whose only closed record is the admission backfill', () => {
+    const id = 'cand_backfilled_only';
+    insertCandidate(id, 'BackfilledOnly');
+    insertWatchBuy(id, M2, Math.floor(T0 / 1000), '100000000');
+    // A strong record on paper, but every lot is backfilled: the live gate
+    // judges forward closes, so the replay must ignore it too.
+    for (let i = 0; i < 8; i++) {
+      insertShadow({
+        candidateId: id,
+        mint: M2,
+        openedAt: new Date(T0 - (10 + i) * HOUR).toISOString(),
+        entryPrice: '500000',
+        notional: '5000000',
+        status: 'closed',
+        closedAt: new Date(T0 - (2 + i) * HOUR).toISOString(),
+        exitReason: 'leader_sell',
+        exitPrice: '550000',
+        pnl: '10000000',
+        backfilled: true,
+      });
+    }
+    try {
+      const dataset = loadSweepDataset(handle, options());
+      const report = buildSweepReport(dataset, options());
+      const hiredHandles = report.hiringAlternatives.flatMap((alt) =>
+        alt.hires.map((hire) => hire.alternativeHandle),
+      );
+      expect(hiredHandles).not.toContain('BackfilledOnly');
+    } finally {
+      // Keep the shared fixture unchanged for any later suite.
+      handle.sqlite.prepare('delete from shadow_trades where candidate_id = ?').run(id);
+      handle.sqlite.prepare('delete from watch_events where candidate_id = ?').run(id);
+      handle.sqlite.prepare('delete from trader_candidates where candidate_id = ?').run(id);
     }
   });
 });

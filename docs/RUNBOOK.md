@@ -228,7 +228,9 @@ POSITION_GRACE_HOURS`, a confirmed Jupiter no-route closes the lot at zero
   skipped and appears on the tape as a `MAX_DEPLOYED_PCT: bankroll cap`.
 - **Reconciliation isolation.** A seat stuck in `REQUIRES_RECONCILIATION`
   freezes only itself: it keeps its chair, the other seats keep being polled
-  and can be fired. Resolve the case (section 6) to unfreeze it.
+  and can be fired. Its positions still get the risk-reducing code exits; a
+  full exit completes the blocked fire and frees the chair (section 6). A
+  signed or unknown outcome still needs the case resolved manually.
 - **Entry shaping.** One position per mint per leader; same-mint buys inside
   60 s are coalesced into the existing position (`COALESCED_SAME_MINT_BURST`
   in **Audit**). `PER_MINT_CAP_PCT > 0` caps the roster-wide exposure to one
@@ -329,24 +331,27 @@ outcomes. Failures that provably never left the wallet (Jupiter quote or build
 errors, RPC preflight/simulation rejections, insufficient SOL for fees) are
 recorded as `failed` instead, and a fire retries them up to three times with
 backoff before it gives up. If a position is still open after those retries the
-handoff is blocked with a `close_failed` case, because the monitor only manages
-the active trader's positions and a FIRED trader would strand them.
+handoff is blocked with a `close_failed` case, because a FIRED trader would
+strand it. The frozen seat's bag is not abandoned: the monitor still runs the
+risk-reducing code exits (stop, trail, time/grace) on its open or partially
+closed positions. The idle and stall watchers do **not** run on that seat.
 
 A failed exit also queues itself in `exit.queue:<positionId>` with its original
 amount and reason. The worker drains that queue every 30 seconds: it retries
 only intents that are still `failed` with no `tx_signature`, only while the
 position is open/partially closed and its remaining base is unchanged, and only
 up to four attempts with 30/60/120-second backoff. Exhaustion is audited and
-the normal code exits remain the backstop. Signed, submitted, unknown, or
-reconciliation-owned intents are never retried. This closes the gap where a
-transient Jupiter 429 left a copied position open after the leader had sold.
-When a retry fills a `fire_close`, the engine calls
-`lifecycle.completeBlockedFire`: the activation becomes FIRED, its cooling row
-is set, and the freed chair is filled from the bench. The `close_failed`
-summary case is tagged with its activation and resolved only for that
-activation. On startup, an activation in `REQUIRES_RECONCILIATION` whose
-positions are already closed is repaired the same way. Signed, unknown, or
-still-held cases keep the fire blocked.
+the normal code exits remain the backstop — on the reconciling seat too. Signed,
+submitted, unknown, or reconciliation-owned intents are never retried. This
+closes the gap where a transient Jupiter 429 left a copied position open after
+the leader had sold. When a retry fills a `fire_close`, the engine calls
+`lifecycle.completeBlockedFire`. A **full** code exit on the reconciling seat
+calls it as well: the activation becomes FIRED, its cooling row is set, and the
+freed chair is filled from the bench without a restart. A partial, unknown or
+signed close leaves it blocked. The `close_failed` summary case is tagged with
+its activation and resolved only for that activation. On startup, an activation
+in `REQUIRES_RECONCILIATION` whose positions are already closed is repaired the
+same way. Signed, unknown, or still-held cases keep the fire blocked.
 
 Exits also sell **what the wallet holds**, not the recorded amount: the copied
 size comes from quoted outputs at entry and can exceed the delivered balance
@@ -374,11 +379,16 @@ To resolve a case (paper or live):
 
 ## 7. Arming live mode (checklist)
 
-1. `.env`: `MODE=live`, valid `HELIUS_API_KEY`, `JUPITER_BASE_URL=https://api.jup.ag`,
+1. `.env`: `MODE=live`, `LIVE_TRADING=true`, valid `HELIUS_API_KEY`,
+   `JUPITER_BASE_URL=https://api.jup.ag`,
    `JUPITER_API_KEY=...`, `LIVE_TRADING_ACK=I UNDERSTAND LIVE MODE SIGNS AND SUBMITS REAL SOLANA TRANSACTIONS WITH REAL FUNDS`
    (exact string), restart.
-2. `pnpm wallet:create` (if not yet); fund the **dedicated** wallet with a
-   limited operating balance only.
+2. Wallet: the dedicated encrypted wallet must exist at the configured
+   `WALLET_FILE` (default `DATA_DIR/wallet/zcode-bot-wallet.json`).
+   `pnpm wallet:create` writes to `WALLET_FILE` when it is set and **refuses to
+   overwrite an existing file** — back it up and remove it only to replace it.
+   Fund it with a limited operating balance only; the readiness wallet item
+   shows its public key (a missing/unreadable file is a blocker).
 3. Settings → LIVE READINESS: every item must be ✅ (mode, ack string, wallet,
    Helius, Jupiter prod key, worker, no reconciliation cases, no emergency
    stop, setup completed).

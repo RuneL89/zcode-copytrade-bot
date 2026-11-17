@@ -1052,6 +1052,154 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
     expect(promoted).toEqual({ ok: true, reason: 'HIRED' });
     expect(h.hired).toContain('cand_manual');
   });
+
+  it('judges promotion recency on the leader block time, not the ingestion time', async () => {
+    seedCandidate('cand_blockclock', 'blockclock', 'WalletBlockClock');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_blockclock', readingFrom([buy('bc1', 60), buy('bc2', 30), buy('bc3', 5)]));
+    seedRecord('cand_blockclock', 3, 2_000_000n); // a forward record that clears K and net
+    // A backfilled-style observation: the leader bought 6.5h ago, we ingested it now.
+    repo.insertWatchEvent(handle.db, {
+      candidateId: 'cand_blockclock',
+      address: 'WalletBlockClock',
+      signature: 'blockclock-old-buy',
+      side: 'buy',
+      mint: TOKEN,
+      tokenAmountBase: '6000000',
+      decimals: 6,
+      usdMicro: '6000000',
+      blockTime: NOW_SEC - 390 * 60,
+      observedAt: iso(Date.now()),
+      source: 'backfill',
+    });
+    const onChain = iso((NOW_SEC - 390 * 60) * 1000);
+    expect(repo.lastFundedBuyAt(handle.db, 'cand_blockclock')).toBe(onChain);
+    expect(repo.getWatchWallet(handle.db, 'cand_blockclock')?.lastFundedBuyAt).toBe(onChain);
+    expect(h.svc.promotionDecision('cand_blockclock').reason).toBe('LAST_BUY_TOO_OLD');
+  });
+});
+
+describe('WatchService — forward-only shadow gates', () => {
+  const fundedSwap = (over: {
+    signature: string;
+    side: 'buy' | 'sell';
+    minutesAgo: number;
+    usd: bigint;
+    tokens?: bigint;
+  }): FundedSwap => {
+    const tokens = over.tokens ?? 6_000_000n;
+    return {
+      side: over.side,
+      signature: over.signature,
+      slot: 1,
+      transactionIndex: 0,
+      blockTime: NOW_SEC - over.minutesAgo * 60,
+      mint: TOKEN,
+      decimals: 6,
+      tokenDeltaBase: over.side === 'buy' ? tokens : -tokens,
+      fundingMint: USDC,
+      fundingDecimals: 6,
+      fundingDeltaBase: over.usd,
+    };
+  };
+
+  it('does not bench or archive a wallet on its admission backfill alone', async () => {
+    seedCandidate('cand_backfill_only', 'backfillonly', 'WalletBackfillOnly');
+    const h = harness(riskConfig({ SHADOW_BACKFILL_ON_ADMIT: true }));
+    const reading = readingFrom([
+      buy('bf-b1', 300, 6_000_000n, 6_000_000n),
+      sell('bf-s1', 290, 6_000_000n, 5_000_000n),
+      buy('bf-b2', 280, 6_000_000n, 6_000_000n),
+      sell('bf-s2', 270, 6_000_000n, 5_000_000n),
+      buy('bf-b3', 200, 6_000_000n, 6_000_000n),
+      sell('bf-s3', 190, 6_000_000n, 5_000_000n),
+    ]);
+    expect((await h.svc.admit('cand_backfill_only', reading)).ok).toBe(true);
+
+    // The backfill is in the ledger, but not in the forward sample.
+    expect(repo.shadowAggregates(handle.db, 'cand_backfill_only').closedCount).toBe(0);
+    expect(
+      repo.shadowAggregates(handle.db, 'cand_backfill_only', { includeBackfilled: true }).closedCount,
+    ).toBe(3);
+    expect(repo.getWatchWallet(handle.db, 'cand_backfill_only')?.status).toBe('watching');
+
+    await h.svc.evaluate();
+    expect(repo.getWatchWallet(handle.db, 'cand_backfill_only')?.status).toBe('watching');
+    expect(h.svc.promotionDecision('cand_backfill_only').reason).toBe('FEWER_THAN_K_CLOSED');
+  });
+
+  it('archives only after K negative forward closes, not the backfilled ones', async () => {
+    seedCandidate('cand_backfill_fwd', 'backfillfwd', 'WalletBackfillFwd');
+    const h = harness(riskConfig({ SHADOW_BACKFILL_ON_ADMIT: true }));
+    await h.svc.admit(
+      'cand_backfill_fwd',
+      readingFrom([
+        buy('bf2-b1', 300, 6_000_000n, 6_000_000n),
+        sell('bf2-s1', 290, 6_000_000n, 5_000_000n),
+        buy('bf2-b2', 280, 6_000_000n, 6_000_000n),
+        sell('bf2-s2', 270, 6_000_000n, 5_000_000n),
+        buy('bf2-b3', 200, 6_000_000n, 6_000_000n),
+        sell('bf2-s3', 190, 6_000_000n, 5_000_000n),
+      ]),
+    );
+    await h.svc.evaluate();
+    expect(repo.getWatchWallet(handle.db, 'cand_backfill_fwd')?.status).toBe('watching');
+
+    for (let i = 0; i < 3; i++) {
+      await h.svc.applyFundedSwap(
+        'cand_backfill_fwd',
+        'WalletBackfillFwd',
+        fundedSwap({ signature: `fw2-b${i}`, side: 'buy', minutesAgo: 50 - i * 10, usd: 6_000_000n }),
+      );
+      await h.svc.applyFundedSwap(
+        'cand_backfill_fwd',
+        'WalletBackfillFwd',
+        fundedSwap({ signature: `fw2-s${i}`, side: 'sell', minutesAgo: 45 - i * 10, usd: 5_000_000n }),
+      );
+    }
+    const forward = repo.shadowAggregates(handle.db, 'cand_backfill_fwd');
+    expect(forward.closedCount).toBe(3);
+    expect(forward.netPnlUsdMicro).toBeLessThan(0n);
+
+    const evaluation = await h.svc.evaluate();
+    expect(evaluation.demoted).toBe(1);
+    expect(repo.getWatchWallet(handle.db, 'cand_backfill_fwd')?.status).toBe('archived');
+  });
+
+  it('does not archive while a forward lot is still open', async () => {
+    seedCandidate('cand_open_guard', 'openguard', 'WalletOpenGuard');
+    const h = harness(riskConfig({ SHADOW_BACKFILL_ON_ADMIT: false }));
+    await h.svc.admit('cand_open_guard', readingFrom([buy('og1', 60), buy('og2', 30), buy('og3', 5)]));
+    for (let i = 0; i < 3; i++) {
+      await h.svc.applyFundedSwap(
+        'cand_open_guard',
+        'WalletOpenGuard',
+        fundedSwap({ signature: `og-fw-b${i}`, side: 'buy', minutesAgo: 50 - i * 10, usd: 6_000_000n }),
+      );
+      await h.svc.applyFundedSwap(
+        'cand_open_guard',
+        'WalletOpenGuard',
+        fundedSwap({ signature: `og-fw-s${i}`, side: 'sell', minutesAgo: 45 - i * 10, usd: 5_000_000n }),
+      );
+    }
+    // One lot still open: the sample is not full, so the archive must wait.
+    await h.svc.applyFundedSwap(
+      'cand_open_guard',
+      'WalletOpenGuard',
+      fundedSwap({ signature: 'og-open-buy', side: 'buy', minutesAgo: 10, usd: 6_000_000n }),
+    );
+    await h.svc.evaluate();
+    expect(repo.getWatchWallet(handle.db, 'cand_open_guard')?.status).toBe('watching');
+
+    await h.svc.applyFundedSwap(
+      'cand_open_guard',
+      'WalletOpenGuard',
+      fundedSwap({ signature: 'og-open-sell', side: 'sell', minutesAgo: 5, usd: 5_000_000n }),
+    );
+    const evaluation = await h.svc.evaluate();
+    expect(evaluation.demoted).toBe(1);
+    expect(repo.getWatchWallet(handle.db, 'cand_open_guard')?.status).toBe('archived');
+  });
 });
 
 describe('WatchService — restart safety (AC10)', () => {

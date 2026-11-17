@@ -202,15 +202,27 @@ and promotion.
 Decided: **K = 8, net > $3**, both configurable in risk settings. The PnL mark
 from fomo/Dawn is context only — never the gate.
 
+**Forward-only amendment (2026-11-17).** The admission backfill is ledger
+evidence, not promotion proof. Its events are recorded with
+`source='backfill'` and its lots with `backfilled=1`; the promotion/demotion
+aggregates exclude them, so a wallet is judged on the trades observed after
+admission. The recency clock is the leader's on-chain block time, never our
+ingestion time (the backfill used to stamp old buys as fresh). A negative
+archive requires a completed forward sample: `closedCount >= K`, net ≤ 0, and
+**zero open shadow lots** — an open lot can flip the record, and the archive is
+irreversible.
+
 **Watch list.** **20 watched wallets, bench target 10.** Discovery runs when
 fewer than 10 promotable wallets sit on the bench (D5).
 
 **Re-entry (operator decision, revised 2026-11-15).** A fired trader cannot be
 rehired immediately. The block lifts when **another trader is hired after the
 firing**, or after **`COOLDOWN_HOURS` (default 3)** with a roster chair still
-free. The fired trader keeps his shadow record and the normal promotion gates
-apply (8 closed, net above $3, last funded buy inside 4h); the same block
-applies to a manual activation. There is no repeat-fire archive.
+free. The automatic hand-off hire that fills the fired trader's own chair does
+**not** count; a later independent hire does. The fired trader keeps his shadow
+record and the normal promotion gates apply (8 closed, net above $3, last funded
+buy inside 4h); the same block applies to a manual activation. There is no
+repeat-fire archive.
 
 **Admission (2026-11-16; rate-capped 2026-11-17).** Admission is a bounded scan,
 not a census-or-nothing gate. It scans one candidate per watch tick and allows
@@ -233,6 +245,12 @@ idle fires. Replacements are taken from the promotion queue within one watch tic
 (≤5 min) or immediately on the slot-free event. **An empty slot is acceptable** —
 there is no emergency hire from an unproven pool. If a fire's close-out needs
 reconciliation, that slot freezes; the others keep trading.
+
+**Blocked-fire amendment (2026-11-17).** A frozen seat is not an unmanaged bag:
+the monitor continues the risk-reducing code exits (stop, trail, time/grace) on
+its open or partially closed positions. A **full** code exit completes the
+blocked fire and frees the chair; a partial, unknown or signed outcome leaves it
+blocked for reconciliation.
 
 **Capital and position rules.** Roster of **5 leaders sharing one budget pool**
 (no fixed per-leader slice; first-come). Promotion must verify free capital in

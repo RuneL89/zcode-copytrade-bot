@@ -412,8 +412,8 @@ export class OpsRunner {
       workerRunning: Boolean(this.rt.monitor?.running) || this.rt.config.mode === 'demo',
       lockHeld: Boolean(this.rt.lock),
       dbBytes,
-      walletExists: walletExists(dataDir),
-      walletPublicKey: walletPublicKey(dataDir),
+      walletExists: walletExists(dataDir, this.rt.config.env.WALLET_FILE),
+      walletPublicKey: walletPublicKey(dataDir, this.rt.config.env.WALLET_FILE),
       dataDir,
       backups,
     };
@@ -535,13 +535,18 @@ export class OpsRunner {
     if (!secret || secret.length < 16)
       return { ok: false, error: 'encryption secret must be at least 16 characters' };
     if (secret !== confirm) return { ok: false, error: 'secret and confirmation do not match' };
-    if (walletExists(this.rt.config.env.DATA_DIR)) {
+    if (walletExists(this.rt.config.env.DATA_DIR, this.rt.config.env.WALLET_FILE)) {
       return {
         ok: false,
-        error: 'a wallet already exists; delete data/wallet/ first (and make sure you have a backup)',
+        error: 'a wallet already exists; delete the configured wallet file first (keep a backup)',
       };
     }
-    const { publicKey } = generateWalletFile(this.rt.config.env.DATA_DIR, secret);
+    const { publicKey } = generateWalletFile(
+      this.rt.config.env.DATA_DIR,
+      secret,
+      new Date(),
+      this.rt.config.env.WALLET_FILE,
+    );
     repo.audit(this.db, 'wallet', 'wallet created from Operations console', { publicKey });
     return { ok: true, publicKey };
   }

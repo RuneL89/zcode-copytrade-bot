@@ -347,6 +347,7 @@ describe('foundation schema (plan 02)', () => {
       'exit_reason',
       'exit_price_usd_micro',
       'pnl_usd_micro',
+      'backfilled',
     ]);
     expect(indexNamesOn('shadow_trades')).toContain('idx_shadow_status');
 
@@ -392,7 +393,8 @@ describe('foundation schema (plan 02)', () => {
     expect(repo.findCandidateByWallet(handle.db, 'WalletNowhere')).toBeUndefined();
   });
 
-  it('watch events are idempotent and the funded stamps never move backwards', () => {
+  it('watch events are idempotent and the funded stamps follow block time, not ingestion time', () => {
+    const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
     repo.upsertWatchWallet(handle.db, {
       candidateId: 'cand_u1',
       userId: 'u1',
@@ -409,14 +411,16 @@ describe('foundation schema (plan 02)', () => {
       tokenAmountBase: '1000',
       decimals: 6,
       usdMicro: '5000000',
-      blockTime: 100,
-      observedAt: '2026-11-01T10:00:00.000Z',
+      // The leader bought on chain at 10:00; we ingested it the next day.
+      blockTime: sec('2026-11-01T10:00:00.000Z'),
+      observedAt: '2026-11-02T09:00:00.000Z',
       source: 'watch-poll',
     };
     expect(repo.insertWatchEvent(handle.db, buy)).toBe(true);
     expect(repo.insertWatchEvent(handle.db, buy)).toBe(false); // same (candidate, sig, side)
     expect(repo.listWatchEvents(handle.db, 'cand_u1')).toHaveLength(1);
     expect(repo.lastFundedBuyAt(handle.db, 'cand_u1')).toBe('2026-11-01T10:00:00.000Z');
+    expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedBuyAt).toBe('2026-11-01T10:00:00.000Z');
     expect(repo.lastFundedSellAt(handle.db, 'cand_u1')).toBeNull();
     expect(repo.lastFundedBuyAt(handle.db, 'cand_never_seen')).toBeNull();
 
@@ -425,21 +429,48 @@ describe('foundation schema (plan 02)', () => {
       repo.insertWatchEvent(handle.db, {
         ...buy,
         signature: 'sigBuyOld',
-        observedAt: '2026-11-01T09:00:00.000Z',
+        blockTime: sec('2026-11-01T09:00:00.000Z'),
+        observedAt: '2026-11-02T10:00:00.000Z',
       }),
     ).toBe(true);
     expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedBuyAt).toBe('2026-11-01T10:00:00.000Z');
+
+    // A newer on-chain buy advances the stamp even though it is observed last.
+    expect(
+      repo.insertWatchEvent(handle.db, {
+        ...buy,
+        signature: 'sigBuyNew',
+        blockTime: sec('2026-11-01T11:00:00.000Z'),
+        observedAt: '2026-11-02T11:00:00.000Z',
+      }),
+    ).toBe(true);
+    expect(repo.lastFundedBuyAt(handle.db, 'cand_u1')).toBe('2026-11-01T11:00:00.000Z');
+    expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedBuyAt).toBe('2026-11-01T11:00:00.000Z');
 
     expect(
       repo.insertWatchEvent(handle.db, {
         ...buy,
         signature: 'sigSellA',
         side: 'sell',
-        observedAt: '2026-11-01T11:00:00.000Z',
+        blockTime: sec('2026-11-01T11:30:00.000Z'),
+        observedAt: '2026-11-02T12:00:00.000Z',
       }),
     ).toBe(true);
-    expect(repo.lastFundedSellAt(handle.db, 'cand_u1')).toBe('2026-11-01T11:00:00.000Z');
-    expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedSellAt).toBe('2026-11-01T11:00:00.000Z');
+    expect(repo.lastFundedSellAt(handle.db, 'cand_u1')).toBe('2026-11-01T11:30:00.000Z');
+    expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedSellAt).toBe('2026-11-01T11:30:00.000Z');
+
+    // No usable block time: the event is stored, but the recency stamp fails
+    // closed instead of reading the ingestion time as the leader's buy time.
+    expect(
+      repo.insertWatchEvent(handle.db, {
+        ...buy,
+        signature: 'sigBuyNoBlock',
+        blockTime: 0,
+        observedAt: '2026-11-03T00:00:00.000Z',
+      }),
+    ).toBe(true);
+    expect(repo.lastFundedBuyAt(handle.db, 'cand_u1')).toBe('2026-11-01T11:00:00.000Z');
+    expect(repo.getWatchWallet(handle.db, 'cand_u1')?.lastFundedBuyAt).toBe('2026-11-01T11:00:00.000Z');
   });
 
   it('watch status transitions stay queryable', () => {
@@ -484,6 +515,29 @@ describe('foundation schema (plan 02)', () => {
     expect(agg.lastClosedAt).toBe('2026-11-01T13:00:00.000Z');
     expect(repo.listOpenShadowTrades(handle.db, 'cand_u1')).toHaveLength(1);
     expect(repo.shadowAggregates(handle.db, 'cand_no_shadow').closedCount).toBe(0);
+
+    // The admission backfill is ledger evidence but not forward proof: the
+    // default aggregate excludes it, the explicit view includes it.
+    const backfilled = repo.openShadowTrade(handle.db, {
+      candidateId: 'cand_u1',
+      mint: 'MINTBACKFILL',
+      openedAt: '2026-11-01T08:00:00.000Z',
+      entryPriceUsdMicro: '1000000',
+      notionalUsdMicro: '5000000',
+      backfilled: true,
+    });
+    repo.closeShadowTrade(handle.db, backfilled, {
+      closedAt: '2026-11-01T14:00:00.000Z',
+      exitReason: 'leader_sell',
+      exitPriceUsdMicro: '3000000',
+      pnlUsdMicro: '9000000',
+    });
+    expect(repo.shadowAggregates(handle.db, 'cand_u1').closedCount).toBe(2);
+    expect(repo.shadowAggregates(handle.db, 'cand_u1').netPnlUsdMicro).toBe(0n);
+    const all = repo.shadowAggregates(handle.db, 'cand_u1', { includeBackfilled: true });
+    expect(all.closedCount).toBe(3);
+    expect(all.netPnlUsdMicro).toBe(9000000n);
+    expect(all.lastClosedAt).toBe('2026-11-01T14:00:00.000Z');
   });
 
   it('watch cursor round-trips', () => {
@@ -545,6 +599,59 @@ describe('foundation schema (plan 02)', () => {
     expect(repo.hasHireSince(handle.db, startedAt, 'cand_fired_since')).toBe(false);
     // The fired trader's own activation does not lift his own block.
     expect(repo.hasHireSince(handle.db, '2099-01-01T00:00:00.000Z', 'cand_hire_since')).toBe(false);
+  });
+
+  it("the hand-off replacement hire does not lift the fired trader's block", () => {
+    const firedAt = '2100-01-01T00:00:00.000Z';
+    repo.createActivation(handle.db, {
+      activationId: 'act_repl_fired',
+      candidateId: 'cand_repl_fired',
+      state: 'FIRED',
+      startedAt: '2100-01-01T00:00:00.000Z',
+      endedAt: '2100-01-01T00:00:00.000Z',
+      endReason: 'fired',
+      lossStreak: 0,
+      firedReason: 'stall',
+      source: 'test',
+    });
+    repo.insertFiringEvent(handle.db, {
+      activationId: 'act_repl_fired',
+      candidateId: 'cand_repl_fired',
+      reason: 'stall',
+      lossStreak: 0,
+      positionPolicy: 'keep_positions',
+      firedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    // The hand-off hire made by this firing.
+    repo.createActivation(handle.db, {
+      activationId: 'act_repl_replacement',
+      candidateId: 'cand_repl_replacement',
+      state: 'FIRED',
+      startedAt: '2100-01-01T00:00:00.100Z',
+      endedAt: '2100-01-01T00:00:00.100Z',
+      endReason: 'fired',
+      lossStreak: 0,
+      firedReason: null,
+      source: 'watch_promotion',
+      replacesActivationId: 'act_repl_fired',
+    });
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_repl_fired')).toBe(false);
+
+    // A later, independent hire DOES lift it.
+    repo.createActivation(handle.db, {
+      activationId: 'act_repl_independent',
+      candidateId: 'cand_repl_independent',
+      state: 'FIRED',
+      startedAt: '2100-01-01T00:00:01.000Z',
+      endedAt: '2100-01-01T00:00:01.000Z',
+      endReason: 'fired',
+      lossStreak: 0,
+      firedReason: null,
+      source: 'watch_promotion',
+    });
+    expect(repo.hasHireSince(handle.db, firedAt, 'cand_repl_fired')).toBe(true);
   });
 
   it('roster helpers list every active chair, not one', () => {

@@ -176,6 +176,12 @@ export const traderActivations = sqliteTable(
     lossStreak: integer('loss_streak').notNull().default(0),
     firedReason: text('fired_reason'),
     source: text('source').notNull().default('manual'), // manual|watch_promotion (legacy rows carry retired values)
+    /**
+     * The activation whose firing this hire replaced (the hand-off hire from
+     * `fire()`/`completeBlockedFire()`). Such a hire does not lift the fired
+     * trader's re-entry block; an independent later hire still does.
+     */
+    replacesActivationId: text('replaces_activation_id'),
   },
   (t) => [index('idx_activation_candidate').on(t.candidateId)],
 );
@@ -464,6 +470,13 @@ export const shadowTrades = sqliteTable(
     exitReason: text('exit_reason'), // leader_sell|ceiling|unpriceable
     exitPriceUsdMicro: text('exit_price_usd_micro'),
     pnlUsdMicro: text('pnl_usd_micro'),
+    /**
+     * Provenance: true when the lot was replayed from the admission scan's
+     * historical events (the backfill seed). Backfilled lots are ledger
+     * evidence but are excluded from the promotion/demotion aggregates, which
+     * judge the wallet on forward closes only.
+     */
+    backfilled: integer('backfilled', { mode: 'boolean' }).notNull().default(false),
   },
   (t) => [index('idx_shadow_status').on(t.candidateId, t.status)],
 );

@@ -252,8 +252,8 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         fomoApiBaseUrl: rt.config.env.FOMOAPI_BASE_URL,
       },
       wallet: {
-        exists: Boolean(walletPublicKey(rt.config.env.DATA_DIR)),
-        publicKey: walletPublicKey(rt.config.env.DATA_DIR),
+        exists: Boolean(walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)),
+        publicKey: walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE),
       },
       readiness: rt.readiness(),
       control: rt.control.flags,
@@ -1002,7 +1002,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   });
 
   app.get('/api/wallet/public-key', requireAuth(sessions), (c) => {
-    const pk = walletPublicKey(rt.config.env.DATA_DIR);
+    const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE);
     return c.json({ publicKey: pk });
   });
 

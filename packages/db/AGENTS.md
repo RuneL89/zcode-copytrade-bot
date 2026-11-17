@@ -33,6 +33,15 @@ and every repository function the server calls.
   amount.
 - **No business logic here.** Repositories read and write; decisions belong in
   `packages/core` and the server services.
+- **Shadow provenance and the funded clock.** `shadow_trades.backfilled` marks
+  lots replayed from the admission scan (default false);
+  `shadowAggregates` excludes them unless `includeBackfilled` is set. The
+  denormalised `watch_wallets.last_funded_buy_at` / `last_funded_sell_at` and
+  `lastFundedBuyAt` / `lastFundedSellAt` use the leader's
+  `watch_events.block_time`, never `observed_at`; a block time of 0 never
+  advances the stamp (the recency gate fails closed).
+  `trader_activations.replaces_activation_id` tags the hand-off hire that
+  replaces a firing; `hasHireSince` ignores that specific hire.
 - **A failed activity check never writes activity columns.**
   `markCandidateActivityFailed` sets only the status and `updated_at`, so the
   last good reading and its freshness stamp survive a provider outage. The

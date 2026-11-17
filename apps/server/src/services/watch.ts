@@ -328,9 +328,11 @@ export class WatchService {
     let backfilled = 0;
     if (this.risk.SHADOW_BACKFILL_ON_ADMIT) {
       // Seed the shadow record from the admission scan's OBSERVED events only:
-      // they are real on-chain trades, replayed oldest-first.
+      // they are real on-chain trades, replayed oldest-first. The events and
+      // lots are marked `backfill`/`backfilled`: they are ledger evidence, not
+      // forward performance, so the promotion/demotion gates ignore them.
       for (const event of reading.events) {
-        if (await this.applyFundedSwap(candidateId, address, event)) backfilled++;
+        if (await this.applyFundedSwap(candidateId, address, event, { backfilled: true })) backfilled++;
       }
     }
 
@@ -424,15 +426,23 @@ export class WatchService {
   /**
    * Record one observed funded swap: idempotent event row, then the shadow
    * effect (open a lot on a buy, close FIFO on a sell). Returns true when the
-   * event was new.
+   * event was new. `opts.backfilled` marks the admission replay: the lot is
+   * still booked (with its real history and ceiling) but never counts toward
+   * the forward-only promotion/demotion sample.
    */
-  async applyFundedSwap(candidateId: string, address: string, swap: FundedSwap): Promise<boolean> {
+  async applyFundedSwap(
+    candidateId: string,
+    address: string,
+    swap: FundedSwap,
+    opts: { backfilled?: boolean } = {},
+  ): Promise<boolean> {
     const key = `${candidateId}|${swap.signature}|${swap.side}`;
     // The unique key in watch_events is the durable guarantee; this set also
     // blocks a double-apply inside one run while a slow price lookup is in
     // flight.
     if (this.seenShadowEvents.has(key)) return false;
     const observedAt = new Date().toISOString();
+    const backfilled = opts.backfilled === true;
     const tokens = swap.tokenDeltaBase < 0n ? -swap.tokenDeltaBase : swap.tokenDeltaBase;
     const inserted = repo.insertWatchEvent(this.db, {
       candidateId,
@@ -445,12 +455,12 @@ export class WatchService {
       usdMicro: '0',
       blockTime: swap.blockTime ?? 0,
       observedAt,
-      source: 'watch-poll',
+      source: backfilled ? 'backfill' : 'watch-poll',
     });
     if (!inserted) return false;
     this.seenShadowEvents.add(key);
 
-    if (swap.side === 'buy') await this.openShadowFromBuy(candidateId, swap);
+    if (swap.side === 'buy') await this.openShadowFromBuy(candidateId, swap, backfilled);
     else await this.closeShadowFromSell(candidateId, swap, observedAt);
     return true;
   }
@@ -458,7 +468,7 @@ export class WatchService {
   /** In-run dedupe so a slow price lookup cannot double-apply the same event. */
   private seenShadowEvents = new Set<string>();
 
-  private async openShadowFromBuy(candidateId: string, swap: FundedSwap): Promise<void> {
+  private async openShadowFromBuy(candidateId: string, swap: FundedSwap, backfilled: boolean): Promise<void> {
     const tokens = swap.tokenDeltaBase > 0n ? swap.tokenDeltaBase : -swap.tokenDeltaBase;
     if (tokens <= 0n) return;
     let inputUsdMicro: bigint | null = null;
@@ -481,6 +491,7 @@ export class WatchService {
       openedAt: new Date((swap.blockTime ?? Math.floor(Date.now() / 1000)) * 1000).toISOString(),
       entryPriceUsdMicro: entryPriceUsdMicro.toString(),
       notionalUsdMicro: notional.toString(),
+      backfilled,
     });
     repo.audit(this.db, 'watch', 'shadow opened at our notional (D1 clamp)', {
       candidateId,
@@ -488,6 +499,7 @@ export class WatchService {
       mint: swap.mint,
       notionalUsdMicro: notional.toString(),
       entryPriceUsdMicro: entryPriceUsdMicro.toString(),
+      backfilled,
     });
     this.deps.onStateChanged();
   }
@@ -543,6 +555,8 @@ export class WatchService {
           openedAt: lot.openedAt,
           entryPriceUsdMicro: entry.toString(),
           notionalUsdMicro: closedNotional.toString(),
+          // The closed slice keeps the provenance of the lot it came from.
+          backfilled: lot.backfilled,
         });
         repo.closeShadowTrade(this.db, closedId, {
           closedAt,
@@ -883,14 +897,23 @@ export class WatchService {
         continue;
       }
       const aggregates = repo.shadowAggregates(this.db, wallet.candidateId);
-      if (aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED && aggregates.netPnlUsdMicro <= 0n) {
+      const openLots = repo.listOpenShadowTrades(this.db, wallet.candidateId).length;
+      // "Full sample" means the forward record is complete: K forward closes
+      // with a negative net AND nothing still open. An open lot can flip the
+      // record (cand_heat finished +$171.69 after an early archive), and the
+      // archive is irreversible.
+      if (
+        aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED &&
+        aggregates.netPnlUsdMicro <= 0n &&
+        openLots === 0
+      ) {
         repo.setWatchStatus(
           this.db,
           wallet.candidateId,
           'archived',
-          'negative shadow record with a full sample',
+          'negative forward shadow record with a full sample',
         );
-        repo.audit(this.db, 'watch', 'watch demoted: negative shadow record with a full sample', {
+        repo.audit(this.db, 'watch', 'watch demoted: negative forward shadow record with a full sample', {
           candidateId: wallet.candidateId,
           closedCount: aggregates.closedCount,
           netPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
@@ -907,14 +930,19 @@ export class WatchService {
     // hired the moment a chair frees.
     for (const wallet of repo.listWatchWallets(this.db, 'bench')) {
       const aggregates = repo.shadowAggregates(this.db, wallet.candidateId);
-      if (aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED && aggregates.netPnlUsdMicro <= 0n) {
+      const openLots = repo.listOpenShadowTrades(this.db, wallet.candidateId).length;
+      if (
+        aggregates.closedCount >= this.risk.PROMOTION_MIN_CLOSED &&
+        aggregates.netPnlUsdMicro <= 0n &&
+        openLots === 0
+      ) {
         repo.setWatchStatus(
           this.db,
           wallet.candidateId,
           'archived',
-          'negative shadow record with a full sample',
+          'negative forward shadow record with a full sample',
         );
-        repo.audit(this.db, 'watch', 'bench demoted: negative shadow record with a full sample', {
+        repo.audit(this.db, 'watch', 'bench demoted: negative forward shadow record with a full sample', {
           candidateId: wallet.candidateId,
           closedCount: aggregates.closedCount,
           netPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),

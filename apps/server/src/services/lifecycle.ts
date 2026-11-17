@@ -110,13 +110,16 @@ export class TraderLifecycle {
   /** Outbound notice when a seat is left empty. Must not throw into the fire. */
   onSeatOpen: ((event: { activationId: string; candidateId: string; reason: string }) => void) | null = null;
 
-  private async fillOrWait(holdEmpty = false): Promise<{ hired: string[]; reason: string }> {
+  private async fillOrWait(
+    holdEmpty = false,
+    replacesActivationId: string | null = null,
+  ): Promise<{ hired: string[]; reason: string }> {
     // Qualified watchers join the bench before anyone is hired, so a fire can
     // refill from the watching pool. Agent mode still leaves the seat empty.
     this.promoteQualifiedWatchers();
     if (holdEmpty) return { hired: [], reason: 'seat held empty' };
     if (this.hireApproval === 'agent') return { hired: [], reason: 'waiting for agent hire decision' };
-    return this.fillRoster();
+    return this.fillRoster(replacesActivationId);
   }
 
   /** Move a watching wallet onto the bench when it already passes promotion. */
@@ -184,6 +187,7 @@ export class TraderLifecycle {
   async activate(
     candidateId: string,
     source: 'manual' | 'watch_promotion',
+    opts: { replacesActivationId?: string | null } = {},
   ): Promise<{ ok: boolean; reason?: string; activationId?: string }> {
     // One chair per leader. The watch record keeps a hired wallet on the bench
     // (its shadow record stays useful), so every hire path must refuse a
@@ -294,6 +298,7 @@ export class TraderLifecycle {
       lossStreak: 0,
       firedReason: null,
       source,
+      replacesActivationId: opts.replacesActivationId ?? null,
     });
     // The watch record follows the leader into the chair. A distinct status
     // keeps him off the bench (he is not waiting for anything) while the shadow
@@ -312,8 +317,11 @@ export class TraderLifecycle {
    * proved leader takes a chair and copies once room frees. Individual entries
    * are still capped by the deployed-% limit, so nothing overspends meanwhile.
    */
-  async hireFromWatch(candidateId: string): Promise<{ ok: boolean; reason?: string; activationId?: string }> {
-    return this.activate(candidateId, 'watch_promotion');
+  async hireFromWatch(
+    candidateId: string,
+    opts: { replacesActivationId?: string | null } = {},
+  ): Promise<{ ok: boolean; reason?: string; activationId?: string }> {
+    return this.activate(candidateId, 'watch_promotion', opts);
   }
 
   /**
@@ -322,7 +330,7 @@ export class TraderLifecycle {
    * the queue is empty, or the shared pool has no room — an empty chair is an
    * acceptable outcome (D4), never a reason to hire something unproven.
    */
-  async fillRoster(): Promise<{ hired: string[]; reason: string }> {
+  async fillRoster(replacesActivationId: string | null = null): Promise<{ hired: string[]; reason: string }> {
     const hired: string[] = [];
     const promotionConfig = {
       promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
@@ -363,7 +371,12 @@ export class TraderLifecycle {
       if (!next) {
         return { hired, reason: hired.length > 0 ? 'roster filled' : 'no promotable wallet' };
       }
-      const attempt = await this.hireFromWatch(next.wallet.candidateId);
+      const attempt = await this.hireFromWatch(next.wallet.candidateId, {
+        // The first hire fills the chair this call just freed; it is the
+        // hand-off replacement and must not lift the fired trader's block.
+        // Extra hires (pre-existing free chairs) are independent.
+        replacesActivationId: hired.length === 0 ? replacesActivationId : null,
+      });
       if (!attempt.ok) return { hired, reason: attempt.reason ?? 'hire refused' };
       hired.push(next.wallet.candidateId);
     }
@@ -487,7 +500,7 @@ export class TraderLifecycle {
 
     // A fire frees exactly one chair. Auto mode fills it from the bench.
     // Agent mode, and an overrule, leave it empty and post the opening.
-    const filled = await this.fillOrWait(opts.holdEmpty === true);
+    const filled = await this.fillOrWait(opts.holdEmpty === true, activationId);
     this.notifySeat(activationId, activation.candidateId, reason, filled.hired);
     const outcome: HandoffOutcome =
       filled.hired.length > 0
@@ -850,7 +863,7 @@ export class TraderLifecycle {
       activation.firedReason ?? 'firing completed after reconciliation',
     );
 
-    const filled = await this.fillOrWait();
+    const filled = await this.fillOrWait(false, activationId);
     this.notifySeat(activationId, activation.candidateId, 'reconciliation complete', filled.hired);
     const outcome: HandoffOutcome =
       filled.hired.length > 0

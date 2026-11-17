@@ -65,7 +65,7 @@ function sol(base: bigint): string {
 async function main(): Promise<number> {
   const config = loadAppConfig();
   const dataDir = config.env.DATA_DIR;
-  if (!walletExists(dataDir)) {
+  if (!walletExists(dataDir, config.env.WALLET_FILE)) {
     console.error('No wallet found. Create one first (pnpm wallet:create or OPS → Create wallet).');
     return 1;
   }

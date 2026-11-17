@@ -15,8 +15,11 @@ operator CLIs.
   `src/services/AGENTS.md`).
 - Runtime wiring and lifecycle: `src/runtime.ts`, `src/bootstrap.ts`.
 - Wallet file handling: `src/wallet.ts` — generation, encryption, secret
-  loading, public-key lookup, and file-permission checks. It never signs;
-  signing happens only in the executor/withdrawal paths.
+  loading, public-key lookup, and file-permission checks. Every path resolves
+  through `walletFilePath(DATA_DIR, WALLET_FILE)`; the default is
+  `DATA_DIR/wallet/zcode-bot-wallet.json`, and a WALLET_FILE outside DATA_DIR
+  is valid. It never signs; signing happens only in the executor/withdrawal
+  paths.
 - Operator CLIs: `src/cli/` — `wallet-create`, `wallet-send`, `setup-token`,
   `demo`, `fomo-import`, `dawn-lookup`, `candidate-activity` (`--source
 public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
@@ -58,6 +61,12 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
 - **Leader data import is operator-driven.** `fomo-import` and `dawn-lookup`
   follow `docs/FOMO_DAWN_FETCHING.md` exactly: clipboard-verified slugs, no
   guessed URLs, built-in pacing, WAL-safe writes while the server runs.
+- **The configured wallet file is the only wallet.** Readiness, bootstrap, the
+  engine taker, the fee ledger, withdrawals, OPS and both wallet CLIs pass
+  `WALLET_FILE`; a custom file outside DATA_DIR is valid. `wallet:create`
+  writes to it and refuses to overwrite an existing file (back it up and
+  remove it only to replace it), and readiness reports its public key or a
+  blocker — never the secret.
 - Secrets (`.env`, wallet file, encryption secret) are never logged, returned
   by an API, or written into audit rows.
 

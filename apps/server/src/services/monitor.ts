@@ -30,18 +30,21 @@ const OUTAGE_DETAIL_BUDGET = 25;
  * signature becomes the cursor — activity before activation is NEVER copied.
  * After restart, reconciliation resumes forward from the saved cursor.
  *
- * Day-trader discipline sweep (hour-capped, inside the tick):
+ * Day-trader discipline sweep (inside the tick):
  * - Time exits: a position older than MAX_POSITION_AGE_HOURS sells when its
  *   unrealized PnL (mark − entry cost, excl. fees) is positive; past
  *   MAX_POSITION_AGE_HOURS + POSITION_GRACE_HOURS it force-closes regardless.
  *   Uses the same full-close path as a leader exit, so lots and the loss
- *   streak are booked identically.
+ *   streak are booked identically. These risk-reducing exits also run for a
+ *   REQUIRES_RECONCILIATION seat, whose bag would otherwise be unmanaged; a
+ *   full close completes the blocked fire.
  * - Idle fire: an activation with zero open positions for IDLE_FIRE_HOURS
  *   (measured from the hire or the last held position) is fired — a day
- *   trader who gives us nothing to copy loses the slot.
+ *   trader who gives us nothing to copy loses the slot. ACTIVE only.
  * - Stall watcher: a hired leader whose wallet shows no on-chain activity for
  *   LEADER_STALL_FIRE_HOURS while we hold is fired and replaced, even with
  *   open positions. Judged only when the Helius activity stamp is fresh.
+ *   ACTIVE only: fire() on a blocked activation could bypass reconciliation.
  */
 export class LeaderMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -99,9 +102,11 @@ export class LeaderMonitor {
 
   /**
    * One pass over the ROSTER (plan 05): every ACTIVE/FIRING/
-   * REQUIRES_RECONCILIATION activation is polled and disciplined on its own, and
-   * a failure in one (provider error, bad data) is audited without stopping the
-   * others. A stuck reconciliation keeps its own chair frozen and nothing else.
+   * REQUIRES_RECONCILIATION activation is polled on its own, and a failure in
+   * one (provider error, bad data) is audited without stopping the others.
+   * Risk-reducing code exits run for ACTIVE and reconciling seats; the idle and
+   * stall watchers stay ACTIVE-only. A stuck reconciliation keeps its own chair
+   * frozen and nothing else.
    */
   async tick(now = new Date()): Promise<void> {
     if (this.ticking) return;
@@ -180,20 +185,40 @@ export class LeaderMonitor {
         });
       }
     }
-    // Day-trader exits run on every tick. A stuck token must not wait an hour
-    // for its stop. Only a plainly ACTIVE activation qualifies.
-    if (activation.state === 'ACTIVE') {
+    // Risk-reducing code exits run for a plainly ACTIVE seat AND for a frozen
+    // REQUIRES_RECONCILIATION seat: a blocked fire must not leave its bag
+    // unmanaged. The stall/idle watchers stay ACTIVE-only — calling fire() on a
+    // blocked activation could bypass the signed/unknown case checks.
+    if (activation.state === 'ACTIVE' || activation.state === 'REQUIRES_RECONCILIATION') {
       this.lastSweepCheckAt.set(activation.activationId, now.getTime());
-      await this.sweep(activation.activationId, now);
+      await this.sweepPositions(activation.activationId, now);
+    }
+    if (activation.state === 'ACTIVE') {
+      await this.checkStall(activation.activationId, now);
     }
   }
 
   /**
-   * Code exits on every tick: stop, trail, partial take-profit, sell-on-green,
-   * and the grace deadline. The idle fire is NOT here — it runs on every tick
-   * (checkIdle) so it lands when the dashboard countdown reaches zero.
+   * Test-facing wrapper: run the ACTIVE seat's position exits and then its
+   * stall watcher, exactly as the pre-split sweep did. Production
+   * `tickActivation` calls the two halves separately so a reconciling seat gets
+   * code exits without the stall fire.
    */
   private async sweep(activationId: string, now: Date): Promise<void> {
+    await this.sweepPositions(activationId, now);
+    const activation = repo.getActivation(this.db, activationId);
+    if (activation?.state === 'ACTIVE') await this.checkStall(activationId, now);
+  }
+
+  /**
+   * Risk-reducing code exits on every tick: stop, trail, partial take-profit,
+   * sell-on-green, and the grace deadline. Runs for ACTIVE and
+   * REQUIRES_RECONCILIATION seats; a full close on a reconciling seat completes
+   * the blocked fire so its chair can refill. The idle fire is NOT here — it
+   * runs on every tick (checkIdle) so it lands when the dashboard countdown
+   * reaches zero.
+   */
+  private async sweepPositions(activationId: string, now: Date): Promise<void> {
     const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
     const nowMs = now.getTime();
 
@@ -267,18 +292,55 @@ export class LeaderMonitor {
             return 'failed' as const;
           });
         if (result === 'partial' || result === 'closed') repo.kvSet(this.db, partialKey, '1');
+        // A partial fill leaves the fire blocked; only a full close completes it.
+        if (result === 'closed') await this.completeBlockedFireAfterClose(activationId);
       } else {
-        await this.engine.closePosition(p.positionId, 'time_exit').catch((e: Error) => {
+        const result = await this.engine.closePosition(p.positionId, 'time_exit').catch((e: Error) => {
           repo.audit(this.db, 'monitor', `code exit failed: ${e.message}`, {});
+          return 'failed' as const;
         });
         repo.kvSet(this.db, graceKey, '');
+        if (result === 'closed') await this.completeBlockedFireAfterClose(activationId);
       }
       this.onStateChange();
     }
 
-    // Stall watcher. The clock is the newer of the shadow funded buy (what
-    // promotion used) and a fresh activity sample. A seat younger than the
-    // stall window is in its hire grace and is not fired on pre-hire history.
+    const lastOpenKey = `monitor.lastOpenAt:${activationId}`;
+    const stillOpen = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    if (stillOpen.length > 0) {
+      repo.kvSet(this.db, lastOpenKey, now.toISOString());
+    }
+  }
+
+  /**
+   * A full code exit on a blocked fire settles the bag; finish the fire so the
+   * chair can refill. `completeBlockedFire` still refuses while any other
+   * position or attributable case is open, so a signed/unknown outcome keeps
+   * the chair frozen (fail closed).
+   */
+  private async completeBlockedFireAfterClose(activationId: string): Promise<void> {
+    const activation = repo.getActivation(this.db, activationId);
+    if (!activation || activation.state !== 'REQUIRES_RECONCILIATION') return;
+    try {
+      const result = await this.lifecycle.completeBlockedFire(activationId);
+      repo.audit(this.db, 'reconciliation', `code exit completed blocked fire: ${result.status}`, {
+        activationId,
+      });
+      if (result.status !== 'NOT_BLOCKED' && result.status !== 'STILL_BLOCKED') this.onStateChange();
+    } catch (e) {
+      repo.audit(this.db, 'reconciliation', `blocked-fire completion failed: ${(e as Error).message}`, {
+        activationId,
+      });
+    }
+  }
+
+  /**
+   * Stall watcher (ACTIVE only). The clock is the newer of the shadow funded
+   * buy (what promotion used) and a fresh activity sample. A seat younger than
+   * the stall window is in its hire grace and is not fired on pre-hire history.
+   */
+  private async checkStall(activationId: string, now: Date): Promise<void> {
+    const nowMs = now.getTime();
     const activation = repo.getActivation(this.db, activationId);
     const candidate = activation ? repo.getCandidate(this.db, activation.candidateId) : null;
     if (activation && candidate) {
@@ -305,12 +367,6 @@ export class LeaderMonitor {
           });
         return;
       }
-    }
-
-    const lastOpenKey = `monitor.lastOpenAt:${activationId}`;
-    const stillOpen = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
-    if (stillOpen.length > 0) {
-      repo.kvSet(this.db, lastOpenKey, now.toISOString());
     }
   }
 

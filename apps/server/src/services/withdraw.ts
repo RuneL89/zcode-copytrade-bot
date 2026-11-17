@@ -214,7 +214,7 @@ export class WithdrawalService {
   }
 
   async available(): Promise<WithdrawableInfo> {
-    const pk = walletPublicKey(this.config.env.DATA_DIR);
+    const pk = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
     const cash = this.cashUsdMicro();
     if (!pk) {
       return {
@@ -259,7 +259,7 @@ export class WithdrawalService {
     if (this.config.mode === 'demo') {
       return { ok: false, code: 'MODE_UNSUPPORTED', error: 'demo mode has no real wallet' };
     }
-    if (!walletExists(this.config.env.DATA_DIR)) {
+    if (!walletExists(this.config.env.DATA_DIR, this.config.env.WALLET_FILE)) {
       return { ok: false, code: 'NO_WALLET', error: 'no wallet; create one in OPS first' };
     }
     const asset: WithdrawAsset = request.asset === 'SOL' ? 'SOL' : 'USDC';
@@ -267,7 +267,7 @@ export class WithdrawalService {
     const parsed = parseAmountToBase(request.amount, decimals);
     if (!parsed.ok) return { ok: false, code: parsed.code, error: parsed.detail };
 
-    const sourcePublicKey = walletPublicKey(this.config.env.DATA_DIR);
+    const sourcePublicKey = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
     if (!sourcePublicKey) {
       return { ok: false, code: 'NO_WALLET', error: 'wallet file unreadable' };
     }
@@ -283,7 +283,11 @@ export class WithdrawalService {
 
     let secretKey: Uint8Array;
     try {
-      secretKey = loadWalletSecret(this.config.env.DATA_DIR, request.walletSecret ?? '');
+      secretKey = loadWalletSecret(
+        this.config.env.DATA_DIR,
+        request.walletSecret ?? '',
+        this.config.env.WALLET_FILE,
+      );
     } catch (e) {
       return { ok: false, code: 'WALLET_UNLOCK_FAILED', error: (e as Error).message };
     }

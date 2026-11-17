@@ -160,9 +160,18 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   then position policy, then `fillRoster()` from the promotion queue (see
   `apps/server/src/services/lifecycle.ts`). A fired trader cannot be rehired
   immediately: the block lifts when another trader is hired after the firing,
-  or after `COOLDOWN_HOURS` (default 3) with a roster chair still free. He keeps
-  his shadow record and passes the same promotion gates; manual activation obeys
-  the block too. A stuck close freezes only its own chair.
+  or after `COOLDOWN_HOURS` (default 3) with a roster chair still free. The
+  hand-off hire that fills the freed chair is tagged with
+  `replaces_activation_id` and does **not** lift the block; a later independent
+  hire does. He keeps his shadow record and passes the same promotion gates;
+  manual activation obeys the block too. A stuck close freezes only its own
+  chair, but its bag still gets risk-reducing code exits from the monitor; a
+  full code exit completes the blocked fire and frees the chair.
+- The watch/shadow gate is forward-only: admission-replayed trades are recorded
+  with `backfilled` provenance and excluded from promotion/demotion; the
+  funded-buy recency clock is the leader's on-chain block time (never the
+  ingestion time); a negative archive requires a completed forward sample (zero
+  open lots).
 - The dashboard state (`apps/server/src/services/state.ts`) is the SSE/REST
   contract; every number must trace to fixtures, paper calc, or persisted
   evidence with source + freshness labels.

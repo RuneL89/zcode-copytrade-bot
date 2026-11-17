@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import nacl from 'tweetnacl';
 
 /**
@@ -33,10 +33,16 @@ const b64 = {
   decode: (s: string) => new Uint8Array(Buffer.from(s, 'base64')),
 };
 
+/**
+ * Create the encrypted wallet. `walletFile` wins over the default
+ * `DATA_DIR/wallet/zcode-bot-wallet.json`; every reader (readiness, bootstrap,
+ * engine, fee ledger, withdrawal, CLIs) must pass the same configured path.
+ */
 export function generateWalletFile(
   dataDir: string,
   encryptionSecret: string,
   now = new Date(),
+  walletFile?: string,
 ): GeneratedWallet {
   if (encryptionSecret.trim().length < 16) {
     throw new Error('encryption secret must be at least 16 characters');
@@ -60,9 +66,13 @@ export function generateWalletFile(
     authTag: b64.encode(cipher.getAuthTag()),
     ciphertext: ciphertext.toString('base64'),
   };
-  const walletDir = join(dataDir, 'wallet');
-  mkdirSync(walletDir, { recursive: true });
-  const path = join(walletDir, 'zcode-bot-wallet.json');
+  const path = walletFilePath(dataDir, walletFile);
+  if (existsSync(path)) {
+    throw new Error(
+      `wallet file already exists; refusing to overwrite (back it up and remove it first): ${path}`,
+    );
+  }
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(file, null, 2) + '\n', { mode: 0o600 });
   try {
     chmodSync(path, 0o600);

@@ -28,6 +28,10 @@ Everything is re-exported from `src/index.ts`.
   the $100 bankroll, so $80). A remainder under the $2 floor is skipped.
   Exit quantities are proportional to the copied share. Code exits (stop,
   trail, sell-on-green, 5h plus 1.5h grace) live in `dayTradeExitDecision`.
+  The hard stop and trail run before the clock; the unconditional grace
+  deadline runs before the partial take-profit, so past
+  `MAX_POSITION_AGE_HOURS + POSITION_GRACE_HOURS` the position fully exits and
+  a failed partial cannot preempt the force-close.
 - **Watch/bench gates return exact, stable reason codes** (`FEWER_THAN_K_CLOSED`,
   `NET_BELOW_THRESHOLD`, `LAST_BUY_TOO_OLD`, `REENTRY_BANNED`).
   The dashboard shows them verbatim; rename only with a coordinated change.

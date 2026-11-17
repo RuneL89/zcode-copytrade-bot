@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { AppDatabase } from './connection.js';
 import { schema } from './connection.js';
 
@@ -893,18 +893,35 @@ export function lastFiredAt(db: Db, candidateId: string): string | null {
 /**
  * True when a trader other than `excludeCandidateId` was activated strictly
  * after `firedAtIso` — the event that lifts a fired trader's re-entry block.
- * Source and chair do not matter; any hire of another trader counts.
+ * Source and chair do not matter, with one exception: the hand-off hire that
+ * replaced the firing itself (`replacesActivationId` = the fired activation)
+ * does not lift that fired trader's block. A later independent hire still does.
  */
 export function hasHireSince(db: Db, firedAtIso: string, excludeCandidateId: string): boolean {
+  // The firing this block belongs to: the newest firing event for the candidate.
+  const lastFiring = db
+    .select({ activationId: schema.firingEvents.activationId })
+    .from(schema.firingEvents)
+    .where(eq(schema.firingEvents.candidateId, excludeCandidateId))
+    .orderBy(desc(schema.firingEvents.firedAt), desc(schema.firingEvents.id))
+    .limit(1)
+    .get();
+  const conditions = [
+    gt(schema.traderActivations.startedAt, firedAtIso),
+    ne(schema.traderActivations.candidateId, excludeCandidateId),
+  ];
+  if (lastFiring) {
+    conditions.push(
+      or(
+        isNull(schema.traderActivations.replacesActivationId),
+        ne(schema.traderActivations.replacesActivationId, lastFiring.activationId),
+      )!,
+    );
+  }
   const row = db
     .select({ activationId: schema.traderActivations.activationId })
     .from(schema.traderActivations)
-    .where(
-      and(
-        gt(schema.traderActivations.startedAt, firedAtIso),
-        ne(schema.traderActivations.candidateId, excludeCandidateId),
-      ),
-    )
+    .where(and(...conditions))
     .limit(1)
     .get();
   return row !== undefined;
@@ -972,27 +989,33 @@ export function setWatchStatus(db: Db, candidateId: string, status: string, reas
 /**
  * Record a funded swap. Idempotent on (candidate, signature, side): a
  * re-scanned signature inserts nothing and returns false. On a fresh insert
- * the denormalised last-funded stamp on `watch_wallets` advances — monotonic,
- * so an older re-observation can never move it backwards.
+ * the denormalised last-funded stamp on `watch_wallets` advances to the
+ * leader's ON-CHAIN block time (not our ingestion time) — monotonic, so an
+ * older re-observation can never move it backwards. An event without a usable
+ * block time never advances the stamp: the recency gate fails closed rather
+ * than reading an old buy as fresh.
  */
 export function insertWatchEvent(db: Db, input: WatchEventInsert): boolean {
   const res = db.insert(schema.watchEvents).values(input).onConflictDoNothing().run();
   if (res.changes === 0) return false;
-  const stamp =
-    input.side === 'buy'
-      ? { lastFundedBuyAt: input.observedAt, updatedAt: nowIso() }
-      : { lastFundedSellAt: input.observedAt, updatedAt: nowIso() };
-  const stampColumn =
-    input.side === 'buy' ? schema.watchWallets.lastFundedBuyAt : schema.watchWallets.lastFundedSellAt;
-  db.update(schema.watchWallets)
-    .set(stamp)
-    .where(
-      and(
-        eq(schema.watchWallets.candidateId, input.candidateId),
-        sql`(${stampColumn} is null or ${stampColumn} < ${input.observedAt})`,
-      ),
-    )
-    .run();
+  if (input.blockTime > 0) {
+    const stampAt = new Date(input.blockTime * 1000).toISOString();
+    const stamp =
+      input.side === 'buy'
+        ? { lastFundedBuyAt: stampAt, updatedAt: nowIso() }
+        : { lastFundedSellAt: stampAt, updatedAt: nowIso() };
+    const stampColumn =
+      input.side === 'buy' ? schema.watchWallets.lastFundedBuyAt : schema.watchWallets.lastFundedSellAt;
+    db.update(schema.watchWallets)
+      .set(stamp)
+      .where(
+        and(
+          eq(schema.watchWallets.candidateId, input.candidateId),
+          sql`(${stampColumn} is null or ${stampColumn} < ${stampAt})`,
+        ),
+      )
+      .run();
+  }
   return true;
 }
 
@@ -1006,25 +1029,31 @@ export function listWatchEvents(db: Db, candidateId: string, limit = 100) {
     .all();
 }
 
-/** Newest observed funded buy for the candidate, or null when none exists. */
+/** Newest funded buy by the leader's on-chain block time, or null when none exists. */
 export function lastFundedBuyAt(db: Db, candidateId: string): string | null {
   return newestWatchEventAt(db, candidateId, 'buy');
 }
 
-/** Newest observed funded sell for the candidate, or null when none exists. */
+/** Newest funded sell by the leader's on-chain block time, or null when none exists. */
 export function lastFundedSellAt(db: Db, candidateId: string): string | null {
   return newestWatchEventAt(db, candidateId, 'sell');
 }
 
 function newestWatchEventAt(db: Db, candidateId: string, side: string): string | null {
   const row = db
-    .select({ observedAt: schema.watchEvents.observedAt })
+    .select({ blockTime: schema.watchEvents.blockTime })
     .from(schema.watchEvents)
-    .where(and(eq(schema.watchEvents.candidateId, candidateId), eq(schema.watchEvents.side, side)))
-    .orderBy(desc(schema.watchEvents.observedAt))
+    .where(
+      and(
+        eq(schema.watchEvents.candidateId, candidateId),
+        eq(schema.watchEvents.side, side),
+        gt(schema.watchEvents.blockTime, 0),
+      ),
+    )
+    .orderBy(desc(schema.watchEvents.blockTime), desc(schema.watchEvents.observedAt))
     .limit(1)
     .get();
-  return row?.observedAt ?? null;
+  return row ? new Date(row.blockTime * 1000).toISOString() : null;
 }
 
 /**
@@ -1082,15 +1111,30 @@ export interface ShadowAggregates {
   lastClosedAt: string | null;
 }
 
-/** D4 promotion evidence: how many shadow trades closed and how they netted. */
-export function shadowAggregates(db: Db, candidateId: string): ShadowAggregates {
+/**
+ * D4 promotion evidence: how many shadow trades closed and how they netted.
+ * By default only forward closes count — the admission backfill is ledger
+ * evidence, not proof the wallet performs for us. Pass
+ * `{ includeBackfilled: true }` for display/audit views that want the whole
+ * historical record.
+ */
+export function shadowAggregates(
+  db: Db,
+  candidateId: string,
+  opts: { includeBackfilled?: boolean } = {},
+): ShadowAggregates {
+  const conditions = [
+    eq(schema.shadowTrades.candidateId, candidateId),
+    eq(schema.shadowTrades.status, 'closed'),
+  ];
+  if (!opts.includeBackfilled) conditions.push(eq(schema.shadowTrades.backfilled, false));
   const rows = db
     .select({
       pnlUsdMicro: schema.shadowTrades.pnlUsdMicro,
       closedAt: schema.shadowTrades.closedAt,
     })
     .from(schema.shadowTrades)
-    .where(and(eq(schema.shadowTrades.candidateId, candidateId), eq(schema.shadowTrades.status, 'closed')))
+    .where(and(...conditions))
     .all();
   let net = 0n;
   let lastClosedAt: string | null = null;

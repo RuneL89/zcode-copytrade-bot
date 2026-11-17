@@ -179,6 +179,9 @@ describe('day-trade exits', () => {
   it('takes a partial at +40% before the trail is hit', () => {
     expect(day(1, 140_000_000n, { peakUsdMicro: 140_000_000n })).toBe('partial_take_profit');
     expect(day(1, 140_000_000n, { peakUsdMicro: 140_000_000n, partialTaken: true })).toBe('none');
+    // Past the unconditional grace deadline the FULL exit wins, even above the
+    // partial TP: a failed partial must not preempt the force-close forever.
+    expect(day(6.5, 140_000_000n, { peakUsdMicro: 140_000_000n })).toBe('grace_expired');
   });
 
   it('sells on green at 5h, waits through red grace, and force-closes at 6.5h', () => {

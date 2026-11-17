@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { generateWalletFile, checkWalletFilePermissions } from '../wallet.js';
+import { generateWalletFile, checkWalletFilePermissions, walletExists } from '../wallet.js';
 import { loadAppConfig } from '../bootstrap.js';
 
 function promptSecret(question: string): Promise<string> {
@@ -27,6 +27,11 @@ function promptSecret(question: string): Promise<string> {
 
 async function main() {
   const config = loadAppConfig();
+  if (walletExists(config.env.DATA_DIR, config.env.WALLET_FILE)) {
+    console.error('A wallet already exists at the configured WALLET_FILE; refusing to overwrite it.');
+    console.error('Back it up and remove the file first if you really mean to replace it.');
+    process.exit(1);
+  }
   console.log('Copydesk — dedicated Solana hot wallet creation\n');
   console.log('The wallet is encrypted locally (AES-256-GCM, scrypt-derived key).');
   console.log('The encryption secret is ONLY in your head — losing it means losing the wallet.\n');
@@ -40,7 +45,12 @@ async function main() {
     process.exit(1);
   }
 
-  const { publicKey, file } = generateWalletFile(config.env.DATA_DIR, secret);
+  const { publicKey, file } = generateWalletFile(
+    config.env.DATA_DIR,
+    secret,
+    new Date(),
+    config.env.WALLET_FILE,
+  );
   const perms = checkWalletFilePermissions(file);
 
   console.log('\nWallet created.');
@@ -50,7 +60,8 @@ async function main() {
   console.log('\nBackup procedure:');
   console.log('  1. Copy the encrypted wallet file to TWO offline locations (USB, encrypted drive).');
   console.log('  2. Store the encryption secret separately from the file (password manager / paper).');
-  console.log('  3. To restore: install Copydesk anywhere, place the file under DATA_DIR/wallet/,');
+  console.log('  3. To restore: install Copydesk anywhere, place the file at the configured');
+  console.log('     WALLET_FILE path (default DATA_DIR/wallet/zcode-bot-wallet.json),');
   console.log('     and provide the encryption secret when arming live mode.');
   console.log('\nFund this dedicated hot wallet with a LIMITED operating balance only.');
 }

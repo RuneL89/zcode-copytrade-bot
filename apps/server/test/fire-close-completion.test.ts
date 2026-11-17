@@ -9,6 +9,7 @@ import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type AppConfig } from '@zcode-bot/config';
 import { CopyEngine } from '../src/services/engine.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
+import { LeaderMonitor } from '../src/services/monitor.js';
 import { ControlService } from '../src/services/control.js';
 import type { ExecOutcome, Executor, IntentSpec, QuoteCheck } from '../src/services/executors.js';
 import type { PriceProvider } from '@zcode-bot/providers';
@@ -471,5 +472,88 @@ describe('startup recovery for an already-closed blocked fire', () => {
 
     expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('REQUIRES_RECONCILIATION');
     expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(true);
+  });
+});
+
+describe('monitor code exits on a blocked fire', () => {
+  const fakeHelius = {
+    latestCursor: async () => ({
+      lastSignature: 'tip',
+      lastSlot: 1,
+      lastTransactionIndex: 0,
+      lastBlockTime: null,
+    }),
+    signaturesSince: async () => [],
+    transactionSummary: async () => null,
+  } as never;
+
+  function blockedTarget(activationId: string, candidateId: string) {
+    const target = seedTarget(activationId, candidateId);
+    repo.updateActivation(handle.db, target.activationId, {
+      state: 'REQUIRES_RECONCILIATION',
+      firedReason: 'stall: test',
+    });
+    // The bag is still partly held and past its max hold: exactly the live
+    // WANTED shape. The old monitor never time-exited it.
+    repo.updatePosition(handle.db, target.positionId, {
+      status: 'partially_closed',
+      openedAt: new Date(Date.now() - 6 * 3_600_000).toISOString(),
+      remainingTokenBase: '1000',
+    });
+    repo.insertFiringEvent(handle.db, {
+      activationId: target.activationId,
+      candidateId: target.candidateId,
+      reason: 'stall: test',
+      lossStreak: 0,
+      positionPolicy: 'keep_positions',
+      firedAt: new Date().toISOString(),
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    // A legacy unmarked close_failed summary: the case that blocked the fire.
+    seedSummary(target.activationId, { marker: false });
+    return target;
+  }
+
+  function monitorFor(engine: CopyEngine, lifecycle: TraderLifecycle) {
+    return new LeaderMonitor(
+      handle.db,
+      fakeHelius,
+      engine,
+      config.risk,
+      lifecycle,
+      () => {},
+      45_000,
+      () => ({ valueUsdMicro: 12_000_000n, observedAt: Date.now() }),
+    );
+  }
+
+  it('closes the position on a code exit, then completes the blocked fire', async () => {
+    const target = blockedTarget('act_recon_mon', 'cand_recon_mon');
+    seedQualifiedBench('cand_bench_mon');
+    const { engine, lifecycle } = engineWith(new ScriptedExecutor([]));
+
+    await monitorFor(engine, lifecycle).tick(new Date());
+
+    expect(repo.getPosition(handle.db, target.positionId)!.status).toBe('closed');
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db)).toHaveLength(0);
+    expect(repo.getWatchWallet(handle.db, target.candidateId)?.status).toBe('cooling');
+    expect(repo.getWatchWallet(handle.db, 'cand_bench_mon')?.status).toBe('hired');
+    // No second firing event from the stall watcher on a blocked seat.
+    expect(repo.listRecentFirings(handle.db, 10)).toHaveLength(1);
+  });
+
+  it('keeps the chair frozen when the code exit is ambiguous', async () => {
+    const target = blockedTarget('act_recon_unknown', 'cand_recon_unknown');
+    const { engine, lifecycle } = engineWith(
+      new ScriptedExecutor([{ kind: 'unknown', detail: 'confirmation unknown' }]),
+    );
+
+    await monitorFor(engine, lifecycle).tick(new Date());
+
+    expect(repo.getPosition(handle.db, target.positionId)!.status).toBe('requires_reconciliation');
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('REQUIRES_RECONCILIATION');
+    expect(repo.openReconciliationCases(handle.db).length).toBeGreaterThan(0);
   });
 });

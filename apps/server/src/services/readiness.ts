@@ -46,11 +46,29 @@ export function readinessReport(
   });
 
   items.push({
+    id: 'live_trading',
+    ok: env.LIVE_TRADING,
+    label: 'LIVE_TRADING hard switch is true',
+    detail: env.LIVE_TRADING ? 'ok' : 'set LIVE_TRADING=true in .env; false never signs, even in MODE=live',
+  });
+
+  const walletPresent = walletExists(env.DATA_DIR, env.WALLET_FILE);
+  let walletKey: string | null = null;
+  if (walletPresent) {
+    try {
+      walletKey = walletPublicKey(env.DATA_DIR, env.WALLET_FILE);
+    } catch {
+      walletKey = null; // unreadable/corrupt file: a blocker, never a crash
+    }
+  }
+  items.push({
     id: 'wallet',
-    ok: walletExists(env.DATA_DIR),
+    ok: walletPresent && typeof walletKey === 'string' && walletKey.length > 0,
     label: 'Dedicated encrypted wallet exists',
-    detail: walletExists(env.DATA_DIR)
-      ? `public key ${walletPublicKey(env.DATA_DIR)} (only a limited operating balance should fund it)`
+    detail: walletPresent
+      ? walletKey !== null
+        ? `public key ${walletKey} (only a limited operating balance should fund it)`
+        : 'wallet file is unreadable; restore a backup before arming'
       : 'run `pnpm wallet:create` and fund it with a LIMITED amount',
   });
 

@@ -100,9 +100,12 @@ function shiftBps(base: bigint, bps: number, direction: 1 | -1): bigint {
 }
 
 /**
- * Code exit for one open position. Price rules run before the clock.
- * A missing mark never invents a stop or a trail; the grace deadline still
- * force-closes, because that close does not need a price to be owed.
+ * Code exit for one open position. The hard stop and the trail run before the
+ * clock. The unconditional grace deadline runs before the partial take-profit:
+ * past the deadline the position must fully exit, or a failed partial would
+ * preempt the force-close on every tick. A missing mark never invents a stop or
+ * a trail; the grace deadline still force-closes, because that close does not
+ * need a price to be owed.
  */
 export function dayTradeExitDecision(input: DayTradeExitInput): DayTradeExit {
   const openedAt = Date.parse(input.openedAtIso);
@@ -121,14 +124,18 @@ export function dayTradeExitDecision(input: DayTradeExitInput): DayTradeExit {
       const trail = shiftBps(peak, input.trailDistanceBps, -1);
       if (mark <= trail) return 'trailing_stop';
     }
-
-    if (!input.partialTaken && input.partialTpBps > 0) {
-      const tp = shiftBps(input.entryUsdMicro, input.partialTpBps, 1);
-      if (mark >= tp) return 'partial_take_profit';
-    }
   }
 
+  // The grace deadline is an unconditional full exit. It must win over a
+  // partial take-profit, otherwise a failed partial (e.g. a Jupiter 429) would
+  // be re-selected every tick and the bag would never reach the full close.
   if (ageHours >= graceEnd) return 'grace_expired';
+
+  if (mark !== null && mark > 0n && !input.partialTaken && input.partialTpBps > 0) {
+    const tp = shiftBps(input.entryUsdMicro, input.partialTpBps, 1);
+    if (mark >= tp) return 'partial_take_profit';
+  }
+
   if (ageHours < input.maxAgeHours) return 'none';
 
   if (mark !== null && mark > input.entryUsdMicro) {

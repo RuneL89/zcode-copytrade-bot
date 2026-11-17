@@ -259,7 +259,7 @@ export class Runtime {
           }
         },
       },
-      walletPublicKey(config.env.DATA_DIR),
+      walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE),
       this.equityStartUsdMicro,
       config.mode === 'live',
     );
@@ -1052,7 +1052,7 @@ export class Runtime {
         jupiter: j.ok ? 'OK' : 'DOWN',
       });
       // Fee wallet runway: SOL pays every network fee, so surface its balance.
-      const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
+      const feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
       let solLamports = feeAddress
         ? await this.publicSolana.getBalanceLamports(feeAddress).catch(() => null)
         : null;
@@ -1104,7 +1104,7 @@ export class Runtime {
   private async refreshFeeLedger(throttleMs = 0): Promise<void> {
     if (this.config.mode === 'demo') return;
     if (throttleMs > 0 && Date.now() - this.lastFeeScanAt < throttleMs) return;
-    const feeAddress = walletPublicKey(this.config.env.DATA_DIR);
+    const feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
     if (!feeAddress) return;
     this.lastFeeScanAt = Date.now();
     await this.feeLedger.refresh(feeAddress).catch(() => undefined);

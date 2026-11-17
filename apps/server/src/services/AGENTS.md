@@ -8,8 +8,8 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | File                   | Owns                                                                                                                                                                                                                                                            |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                                                                                                                     |
-| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the re-entry block (`canReenter` + `COOLDOWN_HOURS`), and the seat-open webhook.                                                                                    |
-| `monitor.ts`           | Signature-first roster polling, code exits on every tick, cursor persistence per hire, dedupe, restart reconciliation.                                                                                                                                          |
+| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the re-entry block (`canReenter` + `COOLDOWN_HOURS`), hand-off replacement tagging (`replacesActivationId`), and the seat-open webhook.                             |
+| `monitor.ts`           | Signature-first roster polling, risk-reducing code exits on ACTIVE and reconciling seats, completion of blocked fires after a full code exit, cursor persistence per hire, dedupe, restart reconciliation.                                                      |
 | `rosterStream.ts`      | Push filter: swap-program logs only, and the 60s outage switch back to the signature-first poll.                                                                                                                                                                |
 | `heliusStream.ts`      | Live Helius `logsSubscribe` for five seats, hot spare, roster-bucket byte meter, capped gap-fill (60s lookback, 4 transactions, 6 Helius calls per minute), a seat hired later is subscribed without waiting for the safety poll, and the outage poll switch.   |
 | `agentHooks.ts`        | Hire decision and tighten-only exit plan. Neither route can arm, sign, or withdraw.                                                                                                                                                                             |
@@ -23,7 +23,7 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | `builder.ts`           | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                                                                                                                         |
 | `state.ts`             | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                                                                                                                          |
 | `control.ts`           | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                                                                                                             |
-| `readiness.ts`         | The live-readiness checklist.                                                                                                                                                                                                                                   |
+| `readiness.ts`         | The live-readiness checklist; the wallet item follows the configured `WALLET_FILE`.                                                                                                                                                                             |
 | `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                                                                       |
 | `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                       |
 | `weeklyReview.ts`      | Read-only weekly "promised vs actual" report: DB queries, gap attribution, exit groups, hiring-rule/fired-trader checks, markdown/JSON, and the Monday 08:00 scheduler. Never writes trading state or calls providers.                                          |
@@ -59,14 +59,30 @@ no LLM in the loop (D6).
   order. A fired trader is blocked until another trader is hired after the
   firing, or until `COOLDOWN_HOURS` (default 3) elapse with a free roster
   chair; his shadow record is kept and the normal promotion gates apply.
-  Manual activation obeys the same block. `HIRE_APPROVAL=agent` leaves the
-  seat empty and posts the seat-open webhook instead of hiring. A crash must
-  not leave a half-fired trader. A fire blocked by failed closes writes a
-  `close_failed` summary case tagged with its activation. When the exit-queue
-  retry later fills a `fire_close`, the engine callback calls
-  `completeBlockedFire`; startup recovery does the same for an activation whose
-  positions are already closed. Signed, unknown, or attributable open cases
-  keep it blocked.
+  Manual activation obeys the same block. The hand-off hire that fills the
+  fired chair is tagged with `replaces_activation_id` and does **not** lift
+  the fired trader's block; a later independent hire still does.
+  `HIRE_APPROVAL=agent` leaves the seat empty and posts the seat-open webhook
+  instead of hiring. A crash must not leave a half-fired trader. A fire blocked
+  by failed closes writes a `close_failed` summary case tagged with its
+  activation. When the exit-queue retry later fills a `fire_close`, the engine
+  callback calls `completeBlockedFire`; a **full code exit on the reconciling
+  seat** does the same from the monitor, and startup recovery covers a
+  position that is already closed. Signed, unknown, or attributable open
+  cases keep it blocked.
+- **Risk-reducing code exits also run on a frozen seat.** The monitor's
+  position sweep runs for `ACTIVE` and `REQUIRES_RECONCILIATION` so a blocked
+  fire cannot leave its bag unmanaged past the time/stop rules. The idle and
+  stall watchers stay `ACTIVE`-only: calling `fire()` on a blocked activation
+  could bypass the signed/unknown case checks.
+- **The shadow gate is forward-only.** Admission-replayed events are written
+  with `source='backfill'` and their lots with `backfilled=1`;
+  `shadowAggregates` excludes backfilled lots by default. Promotion/demotion
+  judge forward closes only. A negative archive also requires **zero open
+  lots** ("full sample" means the forward record is complete). The funded-buy
+  stamps and `lastFundedBuyAt` use the leader's on-chain block time, never the
+  ingestion time; a missing block time fails closed rather than reading an old
+  buy as fresh.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
@@ -77,7 +93,8 @@ no LLM in the loop (D6).
   still be `failed` with no `tx_signature`, the position to be open or
   partially closed, and the remaining base to equal the queued base. It retries
   at most `EXIT_QUEUE_MAX_ATTEMPTS` (4) with 30/60/120-second backoff, then
-  audits exhaustion and leaves the code exits as the backstop. A signed,
+  audits exhaustion and leaves the code exits as the backstop — the monitor
+  sweeps a `REQUIRES_RECONCILIATION` seat too. A signed,
   submitted, unknown, or reconciliation-owned intent is never retried; a retry
   never freezes the chair.
 - **Admission reads fail closed, but a busy wallet is not disqualified.** A
