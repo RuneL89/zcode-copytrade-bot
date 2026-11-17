@@ -74,18 +74,6 @@ const FIELDS: FieldDef[] = [
     step: 1,
   },
   {
-    key: 'MAX_DAILY_REALIZED_LOSS_USD',
-    label: 'Daily loss stop',
-    desc: 'Entries pause when today’s realised loss reaches this',
-    group: 'sizing',
-    unit: '$',
-    kind: 'int',
-    min: 1,
-    max: 500,
-    step: 1,
-  },
-
-  {
     key: 'MAX_SLIPPAGE_BPS',
     label: 'Entry slippage',
     desc: 'Jupiter quote slippage limit',
@@ -450,7 +438,6 @@ const HIGHER_IS_RISKIER = new Set([
   'MAX_PER_BUY_USD',
   'MAX_OPEN_PER_TRADER_USD',
   'MAX_DEPLOYED_PCT',
-  'MAX_DAILY_REALIZED_LOSS_USD',
   'STOP_LOSS_BPS',
   'TRAIL_DISTANCE_BPS',
   'TRAIL_ARM_BPS',

@@ -231,7 +231,6 @@ describe('activation + dashboard states', () => {
 describe('entry risk gate', () => {
   const baseInput = {
     entryUsdMicro: usdToMicro(10),
-    realizedPnlTodayUsdMicro: 0n,
     eventAgeSeconds: 10,
     priceAgeSeconds: 5,
     leaderboardAgeSeconds: 100,
@@ -254,12 +253,6 @@ describe('entry risk gate', () => {
     expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(11) }).rule).toBe(
       'MAX_PER_BUY_USD',
     );
-    expect(
-      evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, realizedPnlTodayUsdMicro: -15_000_000n }).rule,
-    ).toBe('MAX_DAILY_REALIZED_LOSS_USD');
-    expect(
-      evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, realizedPnlTodayUsdMicro: -14_999_999n }).allowed,
-    ).toBe(true);
     expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, eventAgeSeconds: 120 }).rule).toBe(
       'MAX_COPY_EVENT_AGE_SECONDS',
     );

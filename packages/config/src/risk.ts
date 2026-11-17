@@ -48,7 +48,6 @@ export const riskConfigSchema = z
       .int('MAX_DEPLOYED_PCT must be an integer')
       .min(1, 'MAX_DEPLOYED_PCT must be at least 1')
       .max(100, 'MAX_DEPLOYED_PCT must be at most 100'),
-    MAX_DAILY_REALIZED_LOSS_USD: positiveInt('MAX_DAILY_REALIZED_LOSS_USD'),
     /** Day-trader discipline: max hold before the grace window (hours). */
     MAX_POSITION_AGE_HOURS: positiveInt('MAX_POSITION_AGE_HOURS'),
     /** Grace window added on top before the unconditional close (hours). May be fractional. */
@@ -196,7 +195,6 @@ export const DEFAULT_RISK: RiskConfig = {
   MAX_PER_BUY_USD: 10,
   MAX_OPEN_PER_TRADER_USD: 40,
   MAX_DEPLOYED_PCT: 80,
-  MAX_DAILY_REALIZED_LOSS_USD: 15,
   // D4's day-trader ceiling: force-close at 8h, +3h grace when the mark is not
   // positive. (D4's 8h+3h working assumption is the shipped default; a saved
   // .env value still wins for an installation that set one.)
@@ -266,7 +264,6 @@ const settingsPatchObjectSchema = z
     MAX_PER_BUY_USD: z.number().int().positive().optional(),
     MAX_OPEN_PER_TRADER_USD: z.number().int().positive().optional(),
     MAX_DEPLOYED_PCT: z.number().int().min(1).max(100).optional(),
-    MAX_DAILY_REALIZED_LOSS_USD: z.number().int().positive().optional(),
     MAX_POSITION_AGE_HOURS: z.number().int().positive().optional(),
     POSITION_GRACE_HOURS: z.number().positive().optional(),
     STOP_LOSS_BPS: z.number().int().positive().optional(),

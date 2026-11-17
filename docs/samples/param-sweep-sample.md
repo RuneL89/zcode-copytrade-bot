@@ -10,11 +10,11 @@
 
 ## Baseline (current parameters)
 
-| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade | Daily stop days |
-| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: | --------------: |
-| Full   |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |               0 |
-| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |               0 |
-| Test   |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |               0 |
+| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade |
+| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: |
+| Full   |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |
+| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |
+| Test   |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |
 
 ### Baseline replay coverage
 

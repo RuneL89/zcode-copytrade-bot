@@ -189,7 +189,7 @@
   margin-top: 1px;
 }
 
-.cdx .headroom {
+.cdx .helius-kpi {
   width: 170px;
 }
 
@@ -1897,7 +1897,7 @@
     display: none !important;
   }
 
-  .cdx .headroom {
+  .cdx .helius-kpi {
     width: auto;
     flex: 1;
   }
@@ -3783,7 +3783,7 @@
   .cdx .kpis {
     gap: 16px;
   }
-  .cdx .headroom {
+  .cdx .helius-kpi {
     width: 140px;
   }
   .cdx .cmini {
@@ -3872,7 +3872,7 @@
     flex: 1 1 30%;
   }
 
-  .cdx .kpis .headroom {
+  .cdx .kpis .helius-kpi {
     flex: 1 1 100%;
     order: 9;
   }

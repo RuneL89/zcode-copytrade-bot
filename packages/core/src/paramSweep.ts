@@ -165,7 +165,6 @@ export interface SimMetrics {
   worstDayUsdMicro: bigint;
   maxDrawdownUsdMicro: bigint;
   worstTradeUsdMicro: bigint;
-  dailyLossStopDays: number;
   openPositions: number;
   feesUsdMicro: bigint;
 }
@@ -470,7 +469,6 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
   let exitUnits = 0;
   const daily = new Map<string, bigint>();
   const entryRejections = new Map<string, number>();
-  const dailyStopDays = new Set<string>();
   const coverage: SweepCoverage = {
     signalsSeen: 0,
     signalsCopied: 0,
@@ -613,7 +611,6 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
     const notional = sized.finalUsdMicro;
     const riskDecision = evaluateEntryRisk(risk, {
       entryUsdMicro: notional,
-      realizedPnlTodayUsdMicro: daily.get(utcDay(atMs)) ?? 0n,
       eventAgeSeconds: sim.delaySeconds,
       priceAgeSeconds: 0,
       leaderboardAgeSeconds: 0,
@@ -625,9 +622,6 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
     if (!riskDecision.allowed) {
       coverage.skippedRisk++;
       entryRejections.set(riskDecision.rule, (entryRejections.get(riskDecision.rule) ?? 0) + 1);
-      if (riskDecision.rule === 'MAX_DAILY_REALIZED_LOSS_USD') {
-        dailyStopDays.add(utcDay(atMs));
-      }
       continue;
     }
     const entryPrice = adjustedPrice(signal.entryPriceUsdMicro, sim.entrySlippageBps, 1);
@@ -692,10 +686,6 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
     openPositions++;
   }
 
-  const maxDailyLoss = usdToMicro(risk.MAX_DAILY_REALIZED_LOSS_USD);
-  for (const [day, pnl] of daily) {
-    if (pnl < 0n && -pnl >= maxDailyLoss) dailyStopDays.add(day);
-  }
   const dailyValues = [...daily.values()];
   const worstDay = dailyValues.length > 0 ? dailyValues.reduce((a, b) => (b < a ? b : a)) : 0n;
   const closed = positions.filter((trade) => !trade.open);
@@ -744,7 +734,6 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
       worstDayUsdMicro: worstDay,
       maxDrawdownUsdMicro: maxDrawdown,
       worstTradeUsdMicro: worstTrade,
-      dailyLossStopDays: dailyStopDays.size,
       openPositions,
       feesUsdMicro: fees,
     },
@@ -773,7 +762,6 @@ const HIGHER_IS_RISKIER = [
   'MAX_PER_BUY_USD',
   'MAX_OPEN_PER_TRADER_USD',
   'MAX_DEPLOYED_PCT',
-  'MAX_DAILY_REALIZED_LOSS_USD',
   'STOP_LOSS_BPS',
   'TRAIL_ARM_BPS',
   'TRAIL_DISTANCE_BPS',

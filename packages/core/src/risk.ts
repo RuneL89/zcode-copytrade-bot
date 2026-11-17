@@ -6,7 +6,6 @@ export type RiskRule =
   | 'MIN_PER_BUY_USD'
   | 'MAX_PER_BUY_USD'
   | 'MAX_DEPLOYED_PCT'
-  | 'MAX_DAILY_REALIZED_LOSS_USD'
   | 'MAX_SLIPPAGE_BPS'
   | 'MAX_PRICE_IMPACT_BPS'
   | 'MAX_COPY_EVENT_AGE_SECONDS'
@@ -16,8 +15,6 @@ export type RiskRule =
 export interface RiskCheckInput {
   /** Notional this entry would add, micro-USD (already sized and headroom-capped). */
   entryUsdMicro: MicroUsd;
-  /** Net realized PnL today, micro-USD (negative when losing). */
-  realizedPnlTodayUsdMicro: MicroUsd;
   /** Age of the leader event, seconds. */
   eventAgeSeconds: number;
   /** Age of the price quote used for notional, seconds. */
@@ -42,22 +39,12 @@ export type RiskDecision =
 export function evaluateEntryRisk(config: RiskConfig, input: RiskCheckInput): RiskDecision {
   const min = usdToMicro(config.MIN_PER_BUY_USD);
   const max = usdToMicro(config.MAX_PER_BUY_USD);
-  const maxDailyLoss = usdToMicro(config.MAX_DAILY_REALIZED_LOSS_USD);
 
   if (input.entryUsdMicro < min) {
     return reject('MIN_PER_BUY_USD', min, input.entryUsdMicro, input, 'sized notional below minimum');
   }
   if (input.entryUsdMicro > max) {
     return reject('MAX_PER_BUY_USD', max, input.entryUsdMicro, input, 'sized notional above maximum');
-  }
-  if (input.realizedPnlTodayUsdMicro < 0n && -input.realizedPnlTodayUsdMicro >= maxDailyLoss) {
-    return reject(
-      'MAX_DAILY_REALIZED_LOSS_USD',
-      maxDailyLoss,
-      -input.realizedPnlTodayUsdMicro,
-      input,
-      'daily loss limit',
-    );
   }
   if (input.eventAgeSeconds > config.MAX_COPY_EVENT_AGE_SECONDS) {
     return reject(

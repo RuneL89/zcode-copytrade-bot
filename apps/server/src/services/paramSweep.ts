@@ -860,7 +860,6 @@ export interface SweepMetricsJson {
   worstDayUsdMicro: string;
   maxDrawdownUsdMicro: string;
   worstTradeUsdMicro: string;
-  dailyLossStopDays: number;
   openPositions: number;
   feesUsdMicro: string;
 }
@@ -977,7 +976,6 @@ export function metricsJson(metrics: SimMetrics): SweepMetricsJson {
     worstDayUsdMicro: metrics.worstDayUsdMicro.toString(),
     maxDrawdownUsdMicro: metrics.maxDrawdownUsdMicro.toString(),
     worstTradeUsdMicro: metrics.worstTradeUsdMicro.toString(),
-    dailyLossStopDays: metrics.dailyLossStopDays,
     openPositions: metrics.openPositions,
     feesUsdMicro: metrics.feesUsdMicro.toString(),
   };
@@ -1446,7 +1444,6 @@ export function defaultSweepGrid(): SweepGrid {
       MAX_PER_BUY_USD: [5, 10, 20, 40],
       MAX_OPEN_PER_TRADER_USD: [10, 20, 40, 80],
       MAX_DEPLOYED_PCT: [25, 50, 80, 100],
-      MAX_DAILY_REALIZED_LOSS_USD: [5, 10, 15, 25, 50],
       IDLE_FIRE_HOURS: [4, 8, 12, 24],
       COOLDOWN_HOURS: [1, 6, 12, 24],
       PROMOTION_MIN_CLOSED: [4, 8, 12, 20],
@@ -1519,16 +1516,16 @@ export function renderSweepMarkdown(report: ParamSweepReport): string {
     lines.push('');
   } else {
     lines.push(
-      '| # | Change | Risk | Train net | Test net | Full net | Trades | Win rate | Worst day | Max DD | Worst trade | Daily stop days | Robust |',
+      '| # | Change | Risk | Train net | Test net | Full net | Trades | Win rate | Worst day | Max DD | Worst trade | Robust |',
     );
-    lines.push('|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|');
+    lines.push('|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|');
     report.alternatives.forEach((run, index) => {
       lines.push(
         `| ${index + 1} | ${escapeCell(run.label)} | ${run.riskLabel} | ${formatUsd(BigInt(run.train.netPnlUsdMicro))} | ` +
           `${formatUsd(BigInt(run.test.netPnlUsdMicro))} | ${formatUsd(BigInt(run.full.netPnlUsdMicro))} | ` +
           `${run.full.trades} | ${pct(run.full.winRatePct)} | ${formatUsd(BigInt(run.full.worstDayUsdMicro))} | ` +
           `${formatUsd(BigInt(run.full.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.full.worstTradeUsdMicro))} | ` +
-          `${run.full.dailyLossStopDays} | ${run.robust ? 'YES' : 'no'} |`,
+          `${run.robust ? 'YES' : 'no'} |`,
       );
     });
     lines.push('');
@@ -1672,11 +1669,11 @@ export function renderSweepMarkdown(report: ParamSweepReport): string {
 
 function metricsTable(run: RunReport): string {
   return [
-    '| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade | Daily stop days |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|',
-    `| Full | ${formatUsd(BigInt(run.full.netPnlUsdMicro))} | ${run.full.trades} | ${pct(run.full.winRatePct)} | ${formatUsd(BigInt(run.full.worstDayUsdMicro))} | ${formatUsd(BigInt(run.full.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.full.worstTradeUsdMicro))} | ${run.full.dailyLossStopDays} |`,
-    `| Train | ${formatUsd(BigInt(run.train.netPnlUsdMicro))} | ${run.train.trades} | ${pct(run.train.winRatePct)} | ${formatUsd(BigInt(run.train.worstDayUsdMicro))} | ${formatUsd(BigInt(run.train.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.train.worstTradeUsdMicro))} | ${run.train.dailyLossStopDays} |`,
-    `| Test | ${formatUsd(BigInt(run.test.netPnlUsdMicro))} | ${run.test.trades} | ${pct(run.test.winRatePct)} | ${formatUsd(BigInt(run.test.worstDayUsdMicro))} | ${formatUsd(BigInt(run.test.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.test.worstTradeUsdMicro))} | ${run.test.dailyLossStopDays} |`,
+    '| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade |',
+    '|---|---:|---:|---:|---:|---:|---:|',
+    `| Full | ${formatUsd(BigInt(run.full.netPnlUsdMicro))} | ${run.full.trades} | ${pct(run.full.winRatePct)} | ${formatUsd(BigInt(run.full.worstDayUsdMicro))} | ${formatUsd(BigInt(run.full.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.full.worstTradeUsdMicro))} |`,
+    `| Train | ${formatUsd(BigInt(run.train.netPnlUsdMicro))} | ${run.train.trades} | ${pct(run.train.winRatePct)} | ${formatUsd(BigInt(run.train.worstDayUsdMicro))} | ${formatUsd(BigInt(run.train.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.train.worstTradeUsdMicro))} |`,
+    `| Test | ${formatUsd(BigInt(run.test.netPnlUsdMicro))} | ${run.test.trades} | ${pct(run.test.winRatePct)} | ${formatUsd(BigInt(run.test.worstDayUsdMicro))} | ${formatUsd(BigInt(run.test.maxDrawdownUsdMicro))} | ${formatUsd(BigInt(run.test.worstTradeUsdMicro))} |`,
   ].join('\n');
 }
 

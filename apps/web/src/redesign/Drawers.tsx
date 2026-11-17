@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { DashboardState } from '../types';
 import type { SettingsView } from './model';
-import { numberRisk, positionsModel, seatsModel } from './model';
+import { numberRisk, positionTimeLeftLabel, positionsModel, seatsModel } from './model';
+import { useNow } from './useRemote';
 import {
   ageLabel,
   avatarColor,
@@ -276,8 +277,9 @@ export function SeatDrawer({
   const [confirmFire, setConfirmFire] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const now = useNow();
   if (!seat) return null;
-  const positions = positionsModel(state, settings).filter(
+  const positions = positionsModel(state, settings, now).filter(
     (position) => position.leaderHandle === seat.handle,
   );
   const closes = state.closes.filter((close) => close.traderHandle === seat.handle).slice(0, 10);
@@ -347,7 +349,7 @@ export function SeatDrawer({
           </div>
           <div className="tile">
             <div className="k">Last signal</div>
-            <div className="v num">{ageLabel(seat.lastSignalAt)}</div>
+            <div className="v num">{ageLabel(seat.lastSignalAt, now)}</div>
           </div>
           <div className="tile">
             <div className="k">Idle clock</div>
@@ -383,7 +385,7 @@ export function SeatDrawer({
                   <i style={{ background: avatarColor(position.symbol) }} />
                   {position.symbol}
                 </span>
-                <span className="dim num">{ageLabel(position.openedIso)}</span>
+                <span className="dim num">{ageLabel(position.openedIso, now)}</span>
                 <span className="tvx info">open</span>
                 <b className={`num ${(position.unrealizedUsdMicro ?? 0n) >= 0n ? 'pos' : 'neg'}`}>
                   {position.unrealizedUsdMicro === null
@@ -399,8 +401,7 @@ export function SeatDrawer({
                   stop <b>−{position.stopBps / 100}%</b>
                 </span>
                 <span>
-                  time left{' '}
-                  <b>{position.timeLeftMs < 0 ? 'grace' : `${Math.round(position.timeLeftMs / 60_000)}m`}</b>
+                  time left <b>{positionTimeLeftLabel(position)}</b>
                 </span>
                 <span>
                   {position.planSource === 'copytrader' ? '◆ tightened by Copytrader' : 'code default plan'}

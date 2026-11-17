@@ -31,7 +31,6 @@
       "worstDayUsdMicro": "0",
       "maxDrawdownUsdMicro": "0",
       "worstTradeUsdMicro": "0",
-      "dailyLossStopDays": 0,
       "openPositions": 0,
       "feesUsdMicro": "0"
     },
@@ -47,7 +46,6 @@
       "worstDayUsdMicro": "823063",
       "maxDrawdownUsdMicro": "3126",
       "worstTradeUsdMicro": "823063",
-      "dailyLossStopDays": 0,
       "openPositions": 1,
       "feesUsdMicro": "10416"
     },
@@ -63,7 +61,6 @@
       "worstDayUsdMicro": "823063",
       "maxDrawdownUsdMicro": "3126",
       "worstTradeUsdMicro": "823063",
-      "dailyLossStopDays": 0,
       "openPositions": 1,
       "feesUsdMicro": "10416"
     },
@@ -106,7 +103,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -122,7 +118,6 @@
         "worstDayUsdMicro": "1782211",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1782211",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "22555"
       },
@@ -138,7 +133,6 @@
         "worstDayUsdMicro": "1782211",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1782211",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "22555"
       },
@@ -175,7 +169,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -191,7 +184,6 @@
         "worstDayUsdMicro": "1646126",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1646126",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "20833"
       },
@@ -207,7 +199,6 @@
         "worstDayUsdMicro": "1646126",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1646126",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "20833"
       },
@@ -246,7 +237,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -262,7 +252,6 @@
         "worstDayUsdMicro": "1646126",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1646126",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "20833"
       },
@@ -278,7 +267,6 @@
         "worstDayUsdMicro": "1646126",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "1646126",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "20833"
       },
@@ -309,7 +297,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -325,7 +312,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -341,7 +327,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -383,7 +368,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -399,7 +383,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -415,7 +398,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -452,7 +434,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -468,7 +449,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -484,7 +464,6 @@
         "worstDayUsdMicro": "926538",
         "maxDrawdownUsdMicro": "3126",
         "worstTradeUsdMicro": "926538",
-        "dailyLossStopDays": 0,
         "openPositions": 1,
         "feesUsdMicro": "10468"
       },
@@ -521,7 +500,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -537,7 +515,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -553,7 +530,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -591,7 +567,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -607,7 +582,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -623,7 +597,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -661,7 +634,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -677,7 +649,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -693,7 +664,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -726,7 +696,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -742,7 +711,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -758,7 +726,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -788,7 +755,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -804,7 +770,6 @@
         "worstDayUsdMicro": "823063",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "823063",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "10416"
       },
@@ -926,7 +891,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -942,7 +906,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -1064,7 +1027,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -1080,7 +1042,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -1202,7 +1163,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },
@@ -1218,7 +1178,6 @@
         "worstDayUsdMicro": "0",
         "maxDrawdownUsdMicro": "0",
         "worstTradeUsdMicro": "0",
-        "dailyLossStopDays": 0,
         "openPositions": 0,
         "feesUsdMicro": "0"
       },

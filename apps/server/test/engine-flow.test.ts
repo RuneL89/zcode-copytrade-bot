@@ -109,7 +109,6 @@ beforeAll(() => {
   config.risk.MIN_PER_BUY_USD = 5; // small numbers for the test
   config.risk.MAX_PER_BUY_USD = 250; // flow tests predate the $10 trade cap
   config.risk.MAX_OPEN_PER_TRADER_USD = 1_000;
-  config.risk.MAX_DAILY_REALIZED_LOSS_USD = 1_000_000; // do not trip mid-test
   config.risk.MAX_DEPLOYED_PCT = 100; // flow tests use a huge bankroll instead
   config.risk.MAX_POSITION_AGE_HOURS = 8;
   config.risk.POSITION_GRACE_HOURS = 3;

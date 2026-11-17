@@ -10,11 +10,11 @@
 
 ## Baseline (current parameters)
 
-| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade | Daily stop days |
-| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: | --------------: |
-| Full   |   $0.81 |      2 |     100% |     $0.82 |        $0.00 |       $0.82 |               0 |
-| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |               0 |
-| Test   |   $0.81 |      2 |     100% |     $0.82 |        $0.00 |       $0.82 |               0 |
+| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade |
+| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: |
+| Full   |   $0.81 |      2 |     100% |     $0.82 |        $0.00 |       $0.82 |
+| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |
+| Test   |   $0.81 |      2 |     100% |     $0.82 |        $0.00 |       $0.82 |
 
 ### Baseline replay coverage
 
@@ -25,26 +25,26 @@ Signals 173; inside the run window 173; copied 2; not hired 171; coalesced 0; si
 Ranked out-of-sample (test half). A positive train and test half is required for the
 `robust` flag; a run with fewer than 3 test trades is never flagged robust.
 
-|   # | Change                                                                 | Risk    | Train net | Test net | Full net | Trades | Win rate | Worst day | Max DD | Worst trade | Daily stop days | Robust |
-| --: | ---------------------------------------------------------------------- | ------- | --------: | -------: | -------: | -----: | -------: | --------: | -----: | ----------: | --------------: | ------ |
-|   1 | MAX_PER_BUY_USD=40                                                     | LOOSENS |     $0.00 |    $1.77 |    $1.77 |      2 |     100% |     $1.78 |  $0.00 |       $1.78 |               0 | no     |
-|   2 | MAX_PER_BUY_USD=20                                                     | LOOSENS |     $0.00 |    $1.64 |    $1.64 |      2 |     100% |     $1.64 |  $0.00 |       $1.64 |               0 | no     |
-|   3 | MAX_PER_BUY_USD=20 + MAX_OPEN_PER_TRADER_USD=80 + MAX_DEPLOYED_PCT=100 | LOOSENS |     $0.00 |    $1.64 |    $1.64 |      2 |     100% |     $1.64 |  $0.00 |       $1.64 |               0 | no     |
-|   4 | MAX_POSITION_AGE_HOURS=12                                              | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 |               0 | no     |
-|   5 | MAX_POSITION_AGE_HOURS=8                                               | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 |               0 | no     |
-|   6 | MAX_POSITION_AGE_HOURS=8760                                            | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 |               0 | no     |
-|   7 | COOLDOWN_HOURS=12                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 |               0 | no     |
-|   8 | COOLDOWN_HOURS=24                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 |               0 | no     |
-|   9 | COOLDOWN_HOURS=72                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 |               0 | no     |
-|  10 | hiring=net                                                             | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 |               0 | no     |
+|   # | Change                                                                 | Risk    | Train net | Test net | Full net | Trades | Win rate | Worst day | Max DD | Worst trade | Robust |
+| --: | ---------------------------------------------------------------------- | ------- | --------: | -------: | -------: | -----: | -------: | --------: | -----: | ----------: | ------ |
+|   1 | MAX_PER_BUY_USD=40                                                     | LOOSENS |     $0.00 |    $1.77 |    $1.77 |      2 |     100% |     $1.78 |  $0.00 |       $1.78 | no     |
+|   2 | MAX_PER_BUY_USD=20                                                     | LOOSENS |     $0.00 |    $1.64 |    $1.64 |      2 |     100% |     $1.64 |  $0.00 |       $1.64 | no     |
+|   3 | MAX_PER_BUY_USD=20 + MAX_OPEN_PER_TRADER_USD=80 + MAX_DEPLOYED_PCT=100 | LOOSENS |     $0.00 |    $1.64 |    $1.64 |      2 |     100% |     $1.64 |  $0.00 |       $1.64 | no     |
+|   4 | MAX_POSITION_AGE_HOURS=12                                              | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 | no     |
+|   5 | MAX_POSITION_AGE_HOURS=8                                               | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 | no     |
+|   6 | MAX_POSITION_AGE_HOURS=8760                                            | LOOSENS |     $0.00 |    $0.92 |    $0.92 |      2 |     100% |     $0.92 |  $0.00 |       $0.92 | no     |
+|   7 | COOLDOWN_HOURS=12                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 | no     |
+|   8 | COOLDOWN_HOURS=24                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 | no     |
+|   9 | COOLDOWN_HOURS=72                                                      | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 | no     |
+|  10 | hiring=net                                                             | MIXED   |     $0.00 |    $0.82 |    $0.82 |      1 |     100% |     $0.82 |  $0.00 |       $0.82 | no     |
 
 ### Top alternative detail: MAX_PER_BUY_USD=40
 
-| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade | Daily stop days |
-| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: | --------------: |
-| Full   |   $1.77 |      2 |     100% |     $1.78 |        $0.00 |       $1.78 |               0 |
-| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |               0 |
-| Test   |   $1.77 |      2 |     100% |     $1.78 |        $0.00 |       $1.78 |               0 |
+| Window | Net P&L | Trades | Win rate | Worst day | Max drawdown | Worst trade |
+| ------ | ------: | -----: | -------: | --------: | -----------: | ----------: |
+| Full   |   $1.77 |      2 |     100% |     $1.78 |        $0.00 |       $1.78 |
+| Train  |   $0.00 |      0 |        — |     $0.00 |        $0.00 |       $0.00 |
+| Test   |   $1.77 |      2 |     100% |     $1.78 |        $0.00 |       $1.78 |
 
 - Fewer than 3 test trades; treat the out-of-sample result as thin.
 - Train and test P&L do not agree in sign.

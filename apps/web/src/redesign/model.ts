@@ -168,8 +168,6 @@ export function headerModel(state: DashboardState, settings: SettingsView | null
   const maxPct = BigInt(state.counters.maxDeployedPct || 80);
   const room = capital > 0n ? (capital * maxPct) / 100n - deployed : 0n;
   const usdcFree = state.health.walletUsdcUsdMicro ?? state.counters.cashUsdMicro;
-  const lossLimit = numberRisk(settings?.risk ?? {}, 'MAX_DAILY_REALIZED_LOSS_USD', 15) * 1_000_000;
-  const lossHeadroom = BigInt(Math.max(0, lossLimit)) + (realized < 0n ? realized : 0n);
   const solBalance = state.health.feeSolBalance;
   // Equity is account value: cash plus the live mark of every open position.
   // `currentUsdMicro` is the realized book (start + closed PnL) and is kept for
@@ -193,8 +191,6 @@ export function headerModel(state: DashboardState, settings: SettingsView | null
     solUsdMicro: state.counters.solUsdMicro,
     rentUsdMicro: state.counters.rentUsdMicro,
     rentLamports: state.counters.rentLamports,
-    lossHeadroom: lossHeadroom > 0n ? lossHeadroom : 0n,
-    lossLimit: BigInt(Math.max(0, lossLimit)),
     paused: state.control.newEntriesPaused,
     stopped: state.control.emergencyStopped,
   };
@@ -379,6 +375,27 @@ export function positionsModel(
       plan,
     };
   });
+}
+
+/**
+ * What the "time left" cell means once the max-hold clock is spent. A green
+ * position past max hold is due for the sell-on-green exit, not riding the
+ * losing-position grace window; calling both "grace" mislabelled wins.
+ */
+export function positionTimeLeftPhase(
+  position: Pick<PositionView, 'timeLeftMs' | 'unrealizedUsdMicro'>,
+): 'hold' | 'exit_due' | 'grace' {
+  if (position.timeLeftMs >= 0) return 'hold';
+  return position.unrealizedUsdMicro !== null && position.unrealizedUsdMicro > 0n ? 'exit_due' : 'grace';
+}
+
+export function positionTimeLeftLabel(
+  position: Pick<PositionView, 'timeLeftMs' | 'unrealizedUsdMicro'>,
+  formatRemaining: (ms: number) => string = (ms) => `${Math.round(ms / 60_000)}m`,
+): string {
+  const phase = positionTimeLeftPhase(position);
+  if (phase === 'hold') return formatRemaining(position.timeLeftMs);
+  return phase === 'exit_due' ? 'exit due' : 'grace';
 }
 
 export function feedModel(events: AuditEvent[]): FeedItem[] {

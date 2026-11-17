@@ -1059,6 +1059,7 @@ function chipFromReason(reason: string | null | undefined): string {
       return 'TOO OLD';
     case 'MAX_TRADES_PER_DAY':
       return 'DAILY LIMIT';
+    // Historical rows only: this gate was removed after 2026-11-17.
     case 'MAX_DAILY_REALIZED_LOSS_USD':
       return 'DAILY LOSS';
   }

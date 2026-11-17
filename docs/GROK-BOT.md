@@ -252,7 +252,7 @@ Real jobs cost extra, like the README job (about 8.5M tokens, 97% cached, ≈ $0
 ### Risk limits (set by Rune)
 
 - $100 bankroll, max **$10 per trade**, max **$40 open per trader**.
-- $2 minimum trade, **$15 daily loss stop**, **80% max deployed** ($80).
+- $2 minimum trade, **80% max deployed** ($80).
 - Exits: 5h max hold, −25% stop, trailing stop, slippage ladder up to 1,000 bps.
 - After a firing, a trader cannot be rehired until another trader is hired, or
   until 3h pass with a chair still free; he then re-enters the normal gates.

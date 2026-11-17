@@ -1,6 +1,7 @@
 import type { DashboardState } from '../types';
 import type { SettingsView } from './model';
-import { headerModel, numberRisk, positionsModel, seatsModel } from './model';
+import { headerModel, numberRisk, positionTimeLeftLabel, positionsModel, seatsModel } from './model';
+import { useNow } from './useRemote';
 import {
   ageLabel,
   avatarColor,
@@ -25,8 +26,9 @@ export function SeatsPage({
   onSelectSeat: (activationId: string) => void;
 }) {
   const h = headerModel(state, settings);
+  const now = useNow();
   const seats = seatsModel(state);
-  const positions = positionsModel(state, settings);
+  const positions = positionsModel(state, settings, now);
   const idleFireHours = numberRisk(settings?.risk ?? {}, 'IDLE_FIRE_HOURS', 8);
   const fills = state.activity.filter((row) => row.kind !== 'skipped').slice(0, 8);
   const skips = state.activity.filter((row) => row.kind === 'skipped').slice(0, 8);
@@ -207,7 +209,7 @@ export function SeatsPage({
                 }}
               >
                 <i className="dot" style={{ width: 7, height: 7 }} />
-                signal {ageLabel(seat.lastSignalAt)}
+                signal {ageLabel(seat.lastSignalAt, now)}
                 <span style={{ marginLeft: 'auto' }}>{seat.openPositions} open</span>
               </div>
               <div className="risk">
@@ -287,14 +289,14 @@ export function SeatsPage({
                   <td className={`r num ${(position.unrealizedPct ?? 0) >= 0 ? 'pos' : 'neg'}`}>
                     {position.unrealizedPct === null ? '—' : pct(position.unrealizedPct)}
                   </td>
-                  <td className="r num">{ageLabel(position.openedIso)}</td>
+                  <td className="r num">{ageLabel(position.openedIso, now)}</td>
                   <td className="num">−{bpsPct(position.stopBps)}</td>
                   <td className="num">
                     arm +{bpsPct(position.trailArmBps)} · {bpsPct(position.trailDistanceBps)} off
                   </td>
                   <td className="num">50% @ +{bpsPct(position.takeProfitBps)}</td>
                   <td className={`r num ${position.timeLeftMs < 0 ? 'amb' : ''}`}>
-                    {position.timeLeftMs < 0 ? 'grace' : durationLabel(position.timeLeftMs)}
+                    {positionTimeLeftLabel(position, durationLabel)}
                   </td>
                   <td>
                     {position.planSource === 'copytrader' ? (

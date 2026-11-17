@@ -192,7 +192,6 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 | Per-buy floor / ceiling            | $2 / $10                                                                | `MIN_PER_BUY_USD` / `MAX_PER_BUY_USD`                                             |
 | Open exposure per leader           | $40                                                                     | `MAX_OPEN_PER_TRADER_USD`                                                         |
 | Deployed cap                       | 80% of capital                                                          | `MAX_DEPLOYED_PCT`                                                                |
-| Daily realized loss stop           | $15                                                                     | `MAX_DAILY_REALIZED_LOSS_USD`                                                     |
 | Max hold / grace                   | 5 hours / 1.5 hours                                                     | `MAX_POSITION_AGE_HOURS` / `POSITION_GRACE_HOURS`                                 |
 | Stop loss                          | -25% from entry                                                         | `STOP_LOSS_BPS`                                                                   |
 | Trailing stop                      | arms at +15%, sells 10% off the peak                                    | `TRAIL_ARM_BPS` / `TRAIL_DISTANCE_BPS`                                            |

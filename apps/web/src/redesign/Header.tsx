@@ -104,7 +104,6 @@ export function Header({
     settings && !settings.providers.heliusConfigured ? 'UNCONFIGURED' : state.health.helius;
   const jupiterStatus =
     settings && !settings.providers.jupiter.keyConfigured ? 'UNCONFIGURED' : state.health.jupiter;
-  const headroomPct = h.lossLimit > 0n ? Math.min(100, Number((h.lossHeadroom * 100n) / h.lossLimit)) : 0;
 
   return (
     <header className="top">
@@ -158,45 +157,31 @@ export function Header({
               </>
             }
           />
-          <div className="kpi headroom">
+          <div className="kpi helius-kpi only-sm">
             <span className="l">
-              Loss headroom{' '}
+              Helius month{' '}
               <span className="num" style={{ color: 'var(--tx2)', letterSpacing: 0, textTransform: 'none' }}>
-                {usdFromMicro(h.lossHeadroom)} / {usdFromMicro(h.lossLimit, 0)}
+                {month.toLocaleString('en-US')} / {freePlan.toLocaleString('en-US')}
               </span>
             </span>
-            <div className="bar" style={{ marginTop: 6 }}>
-              <span style={{ width: `${headroomPct}%` }} />
-            </div>
-            <div className="only-sm" style={{ marginTop: 7 }}>
-              <span className="l">
-                Helius month{' '}
-                <span
-                  className="num"
-                  style={{ color: 'var(--tx2)', letterSpacing: 0, textTransform: 'none' }}
-                >
-                  {month.toLocaleString('en-US')} / {freePlan.toLocaleString('en-US')}
-                </span>
-              </span>
-              <div className="bar cm" style={{ marginTop: 5 }}>
-                <span
-                  style={{
-                    width: `${monthPct}%`,
-                    background: 'linear-gradient(90deg,var(--acc),var(--cyan))',
-                  }}
-                />
-                <i
-                  className="ceil"
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    bottom: 0,
-                    left: `${(rosterOnly / freePlan) * 100}%`,
-                    width: 2,
-                    background: 'var(--amber)',
-                  }}
-                />
-              </div>
+            <div className="bar cm" style={{ marginTop: 6 }}>
+              <span
+                style={{
+                  width: `${monthPct}%`,
+                  background: 'linear-gradient(90deg,var(--acc),var(--cyan))',
+                }}
+              />
+              <i
+                className="ceil"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: `${(rosterOnly / freePlan) * 100}%`,
+                  width: 2,
+                  background: 'var(--amber)',
+                }}
+              />
             </div>
           </div>
         </div>

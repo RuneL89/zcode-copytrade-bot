@@ -224,33 +224,28 @@ describe('simulateSweep — exits and metrics', () => {
     expect(result.metrics.openUnrealizedUsdMicro).toBe(0n);
   });
 
-  it('tracks the daily-loss stop and rejects later entries that day', () => {
-    const result = simulate(
-      [
-        signal({
-          id: 'loss',
-          exitKind: 'leader_sell',
-          exitAtMs: T0 + HOUR,
-          exitPriceUsdMicro: 500_000n,
-        }),
-        signal({
-          id: 'after',
-          mint: 'OtherMint1111111111111111111111111111111111',
-          blockTimeMs: T0 + 2 * HOUR,
-          exitKind: 'leader_sell',
-          exitAtMs: T0 + 3 * HOUR,
-          exitPriceUsdMicro: 1_000_000n,
-        }),
-      ],
-      { risk: { MAX_DAILY_REALIZED_LOSS_USD: 2 } },
+  it('keeps copying after a losing day now that the daily-loss cap is removed', () => {
+    const result = simulate([
+      signal({
+        id: 'loss',
+        exitKind: 'leader_sell',
+        exitAtMs: T0 + HOUR,
+        exitPriceUsdMicro: 500_000n,
+      }),
+      signal({
+        id: 'after',
+        mint: 'OtherMint1111111111111111111111111111111111',
+        blockTimeMs: T0 + 2 * HOUR,
+        exitKind: 'leader_sell',
+        exitAtMs: T0 + 3 * HOUR,
+        exitPriceUsdMicro: 1_000_000n,
+      }),
+    ]);
+    expect(result.trades).toHaveLength(2);
+    expect(result.coverage.skippedRisk).toBe(0);
+    expect(result.coverage.entryRejections.map((row) => row.rule)).not.toContain(
+      'MAX_DAILY_REALIZED_LOSS_USD',
     );
-    expect(result.metrics.dailyLossStopDays).toBe(1);
-    expect(result.coverage.skippedRisk).toBe(1);
-    expect(result.coverage.entryRejections).toContainEqual({
-      rule: 'MAX_DAILY_REALIZED_LOSS_USD',
-      count: 1,
-    });
-    expect(result.trades).toHaveLength(1);
   });
 
   it('coalesces same-mint entries inside 60 seconds', () => {

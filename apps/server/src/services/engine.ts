@@ -316,10 +316,8 @@ export class CopyEngine {
       }
     }
 
-    const dayStart = new Date(new Date().toISOString().slice(0, 10)).toISOString();
     const decision = evaluateEntryRisk(this.risk, {
       entryUsdMicro: notional,
-      realizedPnlTodayUsdMicro: repo.realizedPnlSince(this.db, dayStart),
       eventAgeSeconds: Math.max(0, Math.round((Date.now() - event.blockTime * 1000) / 1000)),
       priceAgeSeconds: 0,
       leaderboardAgeSeconds: 0,
