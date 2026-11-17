@@ -517,20 +517,22 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     const h = harness(riskConfig());
     await h.svc.admit('cand_ceiling', readingFrom([buy('c1', 60), buy('c2', 30), buy('c3', 10)]));
 
-    // A buy 9h ago: already past MAX_POSITION_AGE_HOURS (8h).
-    h.summaries.set(
-      'c-b1',
-      swapSummary({
-        signature: 'c-b1',
-        minutesAgo: 9 * 60,
-        tokens: 6_000_000n,
-        usd: 6_000_000n,
-        side: 'buy',
-      }),
-    );
-    h.page.unshift({ signature: 'c-b1', blockTime: NOW_SEC - 9 * 60 * 60 });
+    // A buy 9h ago: already past MAX_POSITION_AGE_HOURS (8h). Scope the page
+    // to this wallet so the shared test DB's other watchers do not receive it.
+    const buySummary = swapSummary({
+      signature: 'c-b1',
+      minutesAgo: 9 * 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletCeiling', {
+      page: [{ signature: 'c-b1', blockTime: NOW_SEC - 9 * 60 * 60 }],
+      summaries: new Map([['c-b1', buySummary]]),
+    });
     await h.svc.tick();
-    expect(repo.listOpenShadowTrades(handle.db, 'cand_ceiling')).toHaveLength(1);
+    const lot = repo.listOpenShadowTrades(handle.db, 'cand_ceiling')[0]!;
+    expect(lot).toBeDefined();
 
     // Positive mark → closes now at the quote.
     h.prices.set(TOKEN, 2_000_000n);
@@ -539,7 +541,90 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     expect(aggregates.closedCount).toBe(1);
     expect(aggregates.netPnlUsdMicro).toBe(shadowPnlUsdMicro(5_000_000n, 1_000_000n, 2_000_000n)); // $5 at $1 → $10 at $2
     expect(repo.listWatchEvents(handle.db, 'cand_ceiling').length).toBeGreaterThan(0);
-    expect(repo.listAudit(handle.db, 5).some((a) => /ceiling closed at/.test(a.message))).toBe(true);
+
+    const stored = handle.sqlite
+      .prepare('select exit_reason from shadow_trades where id = ?')
+      .get(lot.id) as { exit_reason: string };
+    expect(stored.exit_reason).toBe('grace_green');
+    const audit = repo
+      .listAudit(handle.db, 50)
+      .find((a) => (a.dataJson ?? '').includes('cand_ceiling') && a.message.startsWith('shadow exit'));
+    expect(audit?.message).toMatch(/shadow exit grace_green at \$.* after 9\.0h/);
+    expect(JSON.parse(audit!.dataJson!)).toMatchObject({
+      decision: 'grace_green',
+      ageHours: 9,
+    });
+  });
+
+  it('labels a stop-loss close with its real decision and age', async () => {
+    seedCandidate('cand_stop_audit', 'stop_audit', 'WalletStopAudit');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_stop_audit', readingFrom([buy('sa1', 60), buy('sa2', 30), buy('sa3', 10)]));
+    const buySummary = swapSummary({
+      signature: 'sa-b1',
+      minutesAgo: 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletStopAudit', {
+      page: [{ signature: 'sa-b1', blockTime: NOW_SEC - 60 * 60 }],
+      summaries: new Map([['sa-b1', buySummary]]),
+    });
+    await h.svc.tick();
+    const lot = repo.listOpenShadowTrades(handle.db, 'cand_stop_audit')[0]!;
+
+    // −50% is past the −25% stop, and the lot is only 1h old.
+    h.prices.set(TOKEN, 500_000n);
+    await h.svc.tick();
+    const stored = handle.sqlite
+      .prepare('select exit_reason from shadow_trades where id = ?')
+      .get(lot.id) as { exit_reason: string };
+    expect(stored.exit_reason).toBe('stop_loss');
+    const audit = repo
+      .listAudit(handle.db, 50)
+      .find((a) => (a.dataJson ?? '').includes('cand_stop_audit') && a.message.startsWith('shadow exit'));
+    expect(audit?.message).toMatch(/shadow exit stop_loss at \$.* after 1\.0h/);
+    expect(audit?.message).not.toMatch(/ceiling closed/);
+    expect(JSON.parse(audit!.dataJson!)).toMatchObject({
+      decision: 'stop_loss',
+      ageHours: 1,
+    });
+  });
+
+  it('labels a grace-expired close with its real decision and age', async () => {
+    seedCandidate('cand_grace_audit', 'grace_audit', 'WalletGraceAudit');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_grace_audit', readingFrom([buy('ga1', 60), buy('ga2', 30), buy('ga3', 10)]));
+    const buySummary = swapSummary({
+      signature: 'ga-b1',
+      minutesAgo: 12 * 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletGraceAudit', {
+      page: [{ signature: 'ga-b1', blockTime: NOW_SEC - 12 * 60 * 60 }],
+      summaries: new Map([['ga-b1', buySummary]]),
+    });
+    await h.svc.tick();
+    const lot = repo.listOpenShadowTrades(handle.db, 'cand_grace_audit')[0]!;
+
+    // 12h old and 10% red: past max 8h + grace 3h, above the −25% stop.
+    h.prices.set(TOKEN, 900_000n);
+    await h.svc.tick();
+    const stored = handle.sqlite
+      .prepare('select exit_reason from shadow_trades where id = ?')
+      .get(lot.id) as { exit_reason: string };
+    expect(stored.exit_reason).toBe('grace_expired');
+    const audit = repo
+      .listAudit(handle.db, 50)
+      .find((a) => (a.dataJson ?? '').includes('cand_grace_audit') && a.message.startsWith('shadow exit'));
+    expect(audit?.message).toMatch(/shadow exit grace_expired at \$.* after 12\.0h/);
+    expect(JSON.parse(audit!.dataJson!)).toMatchObject({
+      decision: 'grace_expired',
+      ageHours: 12,
+    });
   });
 
   it('a negative mark rides to the grace deadline, and no quote never closes (AC5)', async () => {
@@ -574,17 +659,17 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     seedCandidate('cand_unpriced', 'unpriced', 'WalletUnpriced');
     const h = harness(riskConfig());
     await h.svc.admit('cand_unpriced', readingFrom([buy('u1', 60), buy('u2', 30), buy('u3', 10)]));
-    h.summaries.set(
-      'u-b1',
-      swapSummary({
-        signature: 'u-b1',
-        minutesAgo: 12 * 60,
-        tokens: 6_000_000n,
-        usd: 6_000_000n,
-        side: 'buy',
-      }),
-    );
-    h.page.unshift({ signature: 'u-b1', blockTime: NOW_SEC - 12 * 60 * 60 });
+    const buySummary = swapSummary({
+      signature: 'u-b1',
+      minutesAgo: 12 * 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletUnpriced', {
+      page: [{ signature: 'u-b1', blockTime: NOW_SEC - 12 * 60 * 60 }],
+      summaries: new Map([['u-b1', buySummary]]),
+    });
     await h.svc.tick();
     const lot = repo.listOpenShadowTrades(handle.db, 'cand_unpriced')[0]!;
     const notional = BigInt(lot.notionalUsdMicro);
@@ -630,17 +715,17 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     seedCandidate('cand_transient_price', 'transient_price', 'WalletTransientPrice');
     const h = harness(riskConfig());
     await h.svc.admit('cand_transient_price', readingFrom([buy('tp1', 60), buy('tp2', 30), buy('tp3', 10)]));
-    h.summaries.set(
-      'tp-b1',
-      swapSummary({
-        signature: 'tp-b1',
-        minutesAgo: 12 * 60,
-        tokens: 6_000_000n,
-        usd: 6_000_000n,
-        side: 'buy',
-      }),
-    );
-    h.page.unshift({ signature: 'tp-b1', blockTime: NOW_SEC - 12 * 60 * 60 });
+    const buySummary = swapSummary({
+      signature: 'tp-b1',
+      minutesAgo: 12 * 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletTransientPrice', {
+      page: [{ signature: 'tp-b1', blockTime: NOW_SEC - 12 * 60 * 60 }],
+      summaries: new Map([['tp-b1', buySummary]]),
+    });
     await h.svc.tick();
 
     h.priceErrors.set(TOKEN, new Error('jupiter: rate limited (429)'));
@@ -656,17 +741,17 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
       'cand_transient_backstop',
       readingFrom([buy('tb1', 60), buy('tb2', 30), buy('tb3', 10)]),
     );
-    h.summaries.set(
-      'tb-b1',
-      swapSummary({
-        signature: 'tb-b1',
-        minutesAgo: 36 * 60,
-        tokens: 6_000_000n,
-        usd: 6_000_000n,
-        side: 'buy',
-      }),
-    );
-    h.page.unshift({ signature: 'tb-b1', blockTime: NOW_SEC - 36 * 60 * 60 });
+    const buySummary = swapSummary({
+      signature: 'tb-b1',
+      minutesAgo: 36 * 60,
+      tokens: 6_000_000n,
+      usd: 6_000_000n,
+      side: 'buy',
+    });
+    h.perAddress.set('WalletTransientBackstop', {
+      page: [{ signature: 'tb-b1', blockTime: NOW_SEC - 36 * 60 * 60 }],
+      summaries: new Map([['tb-b1', buySummary]]),
+    });
     await h.svc.tick();
 
     h.priceErrors.set(TOKEN, new Error('jupiter: HTTP 503'));

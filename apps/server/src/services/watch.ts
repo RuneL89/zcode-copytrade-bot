@@ -583,6 +583,7 @@ export class WatchService {
         }
       }
       const entry = BigInt(lot.entryPriceUsdMicro);
+      const ageHours = (now - Date.parse(lot.openedAt)) / 3_600_000;
       const decision = dayTradeExitDecision({
         openedAtIso: lot.openedAt,
         nowMs: now,
@@ -649,9 +650,15 @@ export class WatchService {
       repo.audit(
         this.db,
         'watch',
-        `ceiling closed at $${(Number(mark) / 1e6).toFixed(6)} after ${this.risk.MAX_POSITION_AGE_HOURS}h` +
-          ` (grace ${this.risk.POSITION_GRACE_HOURS}h when the mark was not positive)`,
-        { candidateId: lot.candidateId, mint: lot.mint, openedAt: lot.openedAt },
+        `shadow exit ${decision} at $${(Number(mark) / 1e6).toFixed(6)} after ${ageHours.toFixed(1)}h` +
+          ` (max ${this.risk.MAX_POSITION_AGE_HOURS}h, grace ${this.risk.POSITION_GRACE_HOURS}h)`,
+        {
+          candidateId: lot.candidateId,
+          mint: lot.mint,
+          openedAt: lot.openedAt,
+          decision,
+          ageHours: Number(ageHours.toFixed(1)),
+        },
       );
       closed++;
     }

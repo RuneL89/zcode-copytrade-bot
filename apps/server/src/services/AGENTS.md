@@ -107,6 +107,10 @@ no LLM in the loop (D6).
   network) or missing decimals stays open and retries; it closes at zero only
   after a 24-hour wall-clock backstop past the grace deadline. Closing updates
   the lot before the next tick, so it cannot double-close.
+- **Shadow exit audits label the actual decision.** `closeDueCeilings` writes
+  `shadow exit <decision> at $<price> after <age>h (max …, grace …)` and puts
+  `decision` + `ageHours` in the audit data. Never hardcode a ceiling label for
+  a stop, trail, green, bounce or grace-expired close.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
   state and readiness.
