@@ -26,6 +26,9 @@ export const DAYTRADER_MAX_STALL_HOURS_DEFAULT = 20;
  */
 export const ACTIVITY_GATE_FRESH_MS = 30 * 60 * 1000;
 
+/** Activation marker stored in a fire close-out summary case's detail. */
+const SUMMARY_ACTIVATION_RE = /\[activation:([^\]]+)\]/;
+
 export interface ActivityGateInput {
   /** Hours since the wallet's newest copyable coin movement. */
   lastTradeAgeHours: number | null;
@@ -429,7 +432,9 @@ export class TraderLifecycle {
           positionId: null,
           signature: null,
           status: 'open',
-          detail: `fire close-out incomplete: ${result.closed} closed, ${result.unknown} unknown, ${result.failed} failed after retries`,
+          detail:
+            `fire close-out incomplete: ${result.closed} closed, ${result.unknown} unknown, ` +
+            `${result.failed} failed after retries [activation:${activationId}]`,
           createdAt: nowIso,
           resolvedAt: null,
         });
@@ -598,12 +603,95 @@ export class TraderLifecycle {
     return out;
   }
 
+  /** Activation id embedded in a new-format fire close-out summary case. */
+  private summaryActivationId(detail: string | null): string | null {
+    if (!detail) return null;
+    return SUMMARY_ACTIVATION_RE.exec(detail)?.[1] ?? null;
+  }
+
+  /**
+   * Resolve the close_failed summary case(s) owned by one activation. Signed
+   * and unknown cases are never resolved here. Legacy summary rows without the
+   * activation marker are adopted only when the caller has established that
+   * the activation is the sole blocked fire.
+   */
+  private resolveSummaryCasesForActivation(activationId: string, includeUnlinked = false): number {
+    let resolved = 0;
+    for (const c of repo.openReconciliationCases(this.db)) {
+      if (c.intentId || c.positionId) continue;
+      if (c.signature || c.kind === 'unknown_execution') continue;
+      const linked = this.summaryActivationId(c.detail) === activationId;
+      if (!linked && !includeUnlinked) continue;
+      repo.resolveReconciliationCase(this.db, c.id);
+      repo.audit(this.db, 'reconciliation', `summary case ${c.id} resolved for ${activationId}`, {
+        activationId,
+        caseId: c.id,
+        detail: c.detail,
+      });
+      resolved++;
+    }
+    return resolved;
+  }
+
+  /**
+   * Startup repair for a blocked fire whose positions are already closed.
+   * Only close_failed summary cases are eligible; any signed/unknown case, or
+   * an open position/intent case for the activation, keeps it blocked.
+   */
+  async recoverBlockedFires(reason = 'startup'): Promise<{
+    completed: Array<{ activationId: string; status: string }>;
+    skipped: number;
+  }> {
+    const openCases = repo.openReconciliationCases(this.db);
+    const summaryCases = openCases.filter((c) => !c.intentId && !c.positionId);
+    const activations = repo
+      .listActiveActivations(this.db)
+      .filter((a) => a.state === 'REQUIRES_RECONCILIATION');
+    if (summaryCases.some((c) => c.signature !== null || c.kind === 'unknown_execution')) {
+      return { completed: [], skipped: activations.length };
+    }
+
+    const heldStatus = (status: string) =>
+      status === 'open' || status === 'partially_closed' || status === 'requires_reconciliation';
+    const positions = repo.listPositions(this.db, 1000);
+    const candidates = activations.filter((activation) => {
+      if (positions.some((p) => p.activationId === activation.activationId && heldStatus(p.status))) {
+        return false;
+      }
+      const attributableCase = openCases.some((c) => {
+        if (c.positionId)
+          return repo.getPosition(this.db, c.positionId)?.activationId === activation.activationId;
+        if (c.intentId) return repo.getIntent(this.db, c.intentId)?.activationId === activation.activationId;
+        return false;
+      });
+      return !attributableCase;
+    });
+
+    const completed: Array<{ activationId: string; status: string }> = [];
+    const allowLegacySummary = candidates.length === 1;
+    for (const activation of candidates) {
+      const result = await this.completeBlockedFire(activation.activationId, {
+        adoptLegacySummary: allowLegacySummary,
+      });
+      if (result.status !== 'NOT_BLOCKED') {
+        completed.push({ activationId: activation.activationId, status: result.status });
+        repo.audit(this.db, 'reconciliation', `blocked-fire recovery (${reason}): ${result.status}`, {
+          activationId: activation.activationId,
+        });
+      }
+    }
+    return { completed, skipped: activations.length - candidates.length };
+  }
+
   /**
    * Finish a fire that was blocked by reconciliation: only once the activation
    * holds nothing does it become FIRED and the chair is filled from the
    * bench. Refuses when any position or attributable case remains.
    */
-  async completeBlockedFire(activationId: string): Promise<{ status: string }> {
+  async completeBlockedFire(
+    activationId: string,
+    opts: { adoptLegacySummary?: boolean } = {},
+  ): Promise<{ status: string }> {
     const activation = repo.getActivation(this.db, activationId);
     if (!activation) return { status: 'NOT_FOUND' };
     if (activation.state !== 'REQUIRES_RECONCILIATION') return { status: 'NOT_BLOCKED' };
@@ -621,7 +709,17 @@ export class TraderLifecycle {
       });
       return { status: 'STILL_BLOCKED' };
     }
-    const blockingCases = repo.openReconciliationCases(this.db).filter((c) => {
+    const openCases = repo.openReconciliationCases(this.db);
+    const linkedSummary = openCases.filter(
+      (c) => !c.intentId && !c.positionId && this.summaryActivationId(c.detail) === activationId,
+    );
+    if (linkedSummary.some((c) => c.signature !== null || c.kind === 'unknown_execution')) {
+      repo.audit(this.db, 'reconciliation', 'fire still blocked: signed or unknown summary case', {
+        activationId,
+      });
+      return { status: 'STILL_BLOCKED' };
+    }
+    const blockingCases = openCases.filter((c) => {
       if (c.positionId) {
         return repo.getPosition(this.db, c.positionId)?.activationId === activationId;
       }
@@ -636,6 +734,24 @@ export class TraderLifecycle {
       });
       return { status: 'STILL_BLOCKED' };
     }
+
+    // Resolve this activation's summary case. A legacy row has no activation
+    // marker; adopt it only when this is the sole blocked fire and the sole
+    // unmarked close_failed summary.
+    const otherBlocked = repo
+      .listActiveActivations(this.db)
+      .filter((a) => a.activationId !== activationId && a.state === 'REQUIRES_RECONCILIATION').length;
+    const unlinkedCloseFailed = openCases.filter(
+      (c) =>
+        !c.intentId &&
+        !c.positionId &&
+        !this.summaryActivationId(c.detail) &&
+        c.kind !== 'unknown_execution' &&
+        c.signature === null,
+    );
+    const adoptLegacy =
+      opts.adoptLegacySummary !== false && otherBlocked === 0 && unlinkedCloseFailed.length === 1;
+    this.resolveSummaryCasesForActivation(activationId, adoptLegacy);
 
     repo.updateActivation(this.db, activationId, {
       state: 'FIRED',

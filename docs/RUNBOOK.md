@@ -333,6 +333,13 @@ up to four attempts with 30/60/120-second backoff. Exhaustion is audited and
 the normal code exits remain the backstop. Signed, submitted, unknown, or
 reconciliation-owned intents are never retried. This closes the gap where a
 transient Jupiter 429 left a copied position open after the leader had sold.
+When a retry fills a `fire_close`, the engine calls
+`lifecycle.completeBlockedFire`: the activation becomes FIRED, its cooling row
+is set, and the freed chair is filled from the bench. The `close_failed`
+summary case is tagged with its activation and resolved only for that
+activation. On startup, an activation in `REQUIRES_RECONCILIATION` whose
+positions are already closed is repaired the same way. Signed, unknown, or
+still-held cases keep the fire blocked.
 
 Exits also sell **what the wallet holds**, not the recorded amount: the copied
 size comes from quoted outputs at entry and can exceed the delivered balance
