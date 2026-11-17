@@ -161,6 +161,7 @@ export type NormalizedExitReason =
   | 'partial_take_profit'
   | 'sell_on_green'
   | 'time_exit'
+  | 'unpriceable'
   | 'leader_sold'
   | 'daily_loss_stop'
   | 'fire_close'
@@ -174,6 +175,7 @@ const EXIT_LABELS: Record<NormalizedExitReason, string> = {
   partial_take_profit: 'Partial take-profit',
   sell_on_green: 'Sell on green',
   time_exit: 'Time exit',
+  unpriceable: 'Unpriceable (no route)',
   leader_sold: 'Leader sold',
   daily_loss_stop: 'Daily loss stop',
   fire_close: 'Closed on firing',
@@ -205,6 +207,7 @@ export function normalizeExitReason(
   if (raw.includes('fire_close')) return 'fire_close';
   if (raw.includes('emergency')) return 'emergency';
   if (raw.includes('manual')) return 'manual';
+  if (raw.includes('unpriceable')) return 'unpriceable';
   if (raw.includes('time_exit') || raw.includes('max_hold') || raw.includes('grace_expired')) {
     return 'time_exit';
   }

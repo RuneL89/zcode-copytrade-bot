@@ -65,6 +65,7 @@ describe('exit reason normalization', () => {
     expect(normalizeExitReason('emergency', null)).toBe('emergency');
     expect(normalizeExitReason('daily_loss_stop', null)).toBe('daily_loss_stop');
     expect(normalizeExitReason('time_exit', null)).toBe('time_exit');
+    expect(normalizeExitReason('unpriceable', null)).toBe('unpriceable');
     expect(normalizeExitReason(null, 'mystery')).toBe('other');
   });
 });

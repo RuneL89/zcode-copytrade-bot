@@ -181,6 +181,16 @@ Jupiter price recorded at that moment**. Working assumptions: 1% slippage per
 side; 8h + 3h ceiling. The ledger is forward-looking: a backfill from the
 admission scan may seed it, but only observed trades count.
 
+**Unpriceable amendment (2026-11-17).** At/after the grace deadline, a confirmed
+Jupiter no-route is terminal: the lot closes at `exit_reason='unpriceable'`,
+price `0`, PnL `-notional`, with an audit row. A transient failure (429/5xx/
+network) or missing decimals stays open and retries; it is written off at zero
+only after a 24-hour wall-clock backstop past the deadline. A confirmed no-route
+is cached per mint for 60 minutes so the ceiling sweep does not re-quote it every
+watch tick; transient failures are never cached and a success or
+`setJupiter()` clears the cache. These losses count normally in closedCount/net
+and promotion.
+
 **Promotion.** A watched wallet is promoted when all hold:
 
 - ≥K closed shadow trades;

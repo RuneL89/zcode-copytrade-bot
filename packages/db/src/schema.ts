@@ -461,7 +461,7 @@ export const shadowTrades = sqliteTable(
     notionalUsdMicro: text('notional_usd_micro').notNull(),
     status: text('status').notNull().default('open'), // open|closed
     closedAt: text('closed_at'),
-    exitReason: text('exit_reason'), // leader_sell|ceiling
+    exitReason: text('exit_reason'), // leader_sell|ceiling|unpriceable
     exitPriceUsdMicro: text('exit_price_usd_micro'),
     pnlUsdMicro: text('pnl_usd_micro'),
   },

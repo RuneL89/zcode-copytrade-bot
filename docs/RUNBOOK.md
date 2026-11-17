@@ -214,6 +214,13 @@ best record takes a freed chair.
   record stops qualifying returns to the watch list (archived only when the full
   sample is negative). A hired leader's watch row reads `hired` (his shadow
   record keeps running) — he is in the roster, not on the bench.
+- **Unpriceable shadow lots.** At/after `MAX_POSITION_AGE_HOURS +
+POSITION_GRACE_HOURS`, a confirmed Jupiter no-route closes the lot at zero
+  with `exit_reason='unpriceable'`, `pnl_usd_micro=-notional`, and an audit row.
+  A transient price failure (429/5xx/network) or missing decimals stays open
+  and retries; it is written off at zero only after a 24-hour backstop past the
+  grace deadline. The close is recorded before the next tick, so it cannot
+  double-close. These losses count normally toward closedCount/net and promotion.
 - **Shared pool.** A hire is not gated on capital: a proved leader takes a
   free chair even when the pool is fully deployed, and starts copying as soon
   as room frees. Each entry is still capped by the deployed-% limit

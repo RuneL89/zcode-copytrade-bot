@@ -56,7 +56,11 @@ notifications. This is the only package allowed to talk to the outside world.
   wallet pubkey when `WALLET_FILE` is present, otherwise a fixed valid pubkey.
   Live assembly and
   sending are not enabled. A rejected quote is not retried blind; paper falls
-  back to the cached price.
+  back to the cached price. A 400 `No routes found` is the typed
+  `JupiterNoRouteError`; `JupiterPriceProvider` wraps it as
+  `PriceUnavailableError('no_route')` and caches it per mint for 60 minutes
+  without HTTP. Transient failures (429/5xx/network) are never cached; a
+  success or `setJupiter()` clears the negative cache.
 - **`fomo.family` is NEVER accessed through this package's browser adapter,
   Playwright, or any automation browser.** Operator policy (workspace
   `../AGENTS.md`) requires the operator's normal desktop Chrome driven by GUI

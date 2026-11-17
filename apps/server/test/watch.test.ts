@@ -8,6 +8,7 @@ import { openDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type RiskConfig } from '@zcode-bot/config';
 import { STABLE_MINTS, type FundedSwap, type LeaderTxSummary, type TokenDelta } from '@zcode-bot/core';
+import { PriceUnavailableError } from '@zcode-bot/providers';
 import { WatchService, shadowPnlUsdMicro, type WatchServiceDeps } from '../src/services/watch.js';
 import { Runtime } from '../src/runtime.js';
 import { buildApp } from '../src/http/app.js';
@@ -104,6 +105,8 @@ interface Harness {
     { page: Array<{ signature: string; blockTime: number | null }>; summaries: Map<string, LeaderTxSummary> }
   >;
   prices: Map<string, bigint>;
+  /** Injected price failures (typed no-route or transient). */
+  priceErrors: Map<string, Error>;
   hired: string[];
   /** Signature-page attempts per address (admission scan cadence). */
   signatureCalls: Map<string, number>;
@@ -130,6 +133,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     { page: Array<{ signature: string; blockTime: number | null }>; summaries: Map<string, LeaderTxSummary> }
   >();
   const prices = new Map<string, bigint>([[TOKEN, 1_000_000n]]); // $1.00 per whole token
+  const priceErrors = new Map<string, Error>();
   const hired: string[] = [];
   const signatureCalls = new Map<string, number>();
   const heliusDetailCalls = new Map<string, number>();
@@ -185,6 +189,8 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     } as unknown as WatchServiceDeps['helius'],
     prices: {
       priceOf: async (mint: string) => {
+        const injected = priceErrors.get(mint);
+        if (injected) throw injected;
         const priceUsdMicro = prices.get(mint);
         if (priceUsdMicro === undefined) throw new Error('no quote');
         return { priceUsdMicro, observedAt: Date.now() };
@@ -216,6 +222,7 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
     page,
     perAddress,
     prices,
+    priceErrors,
     hired,
     signatureCalls,
     heliusDetailCalls,
@@ -562,6 +569,120 @@ describe('WatchService — shadow ledger (AC3/AC4/AC5/AC9)', () => {
     await h.svc.tick();
     expect(repo.listOpenShadowTrades(handle.db, 'cand_grace')).toHaveLength(1);
   });
+
+  it('closes a no-route lot at zero at the grace deadline, exactly once', async () => {
+    seedCandidate('cand_unpriced', 'unpriced', 'WalletUnpriced');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_unpriced', readingFrom([buy('u1', 60), buy('u2', 30), buy('u3', 10)]));
+    h.summaries.set(
+      'u-b1',
+      swapSummary({
+        signature: 'u-b1',
+        minutesAgo: 12 * 60,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+      }),
+    );
+    h.page.unshift({ signature: 'u-b1', blockTime: NOW_SEC - 12 * 60 * 60 });
+    await h.svc.tick();
+    const lot = repo.listOpenShadowTrades(handle.db, 'cand_unpriced')[0]!;
+    const notional = BigInt(lot.notionalUsdMicro);
+
+    h.priceErrors.set(TOKEN, new PriceUnavailableError('no_route', 'no route'));
+    await h.svc.tick();
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_unpriced')).toHaveLength(0);
+
+    const aggregates = repo.shadowAggregates(handle.db, 'cand_unpriced');
+    expect(aggregates.closedCount).toBe(1);
+    expect(aggregates.netPnlUsdMicro).toBe(-notional);
+    const row = handle.sqlite
+      .prepare(
+        'select status, exit_reason, exit_price_usd_micro, pnl_usd_micro from shadow_trades where id = ?',
+      )
+      .get(lot.id) as {
+      status: string;
+      exit_reason: string;
+      exit_price_usd_micro: string;
+      pnl_usd_micro: string;
+    };
+    expect(row).toEqual({
+      status: 'closed',
+      exit_reason: 'unpriceable',
+      exit_price_usd_micro: '0',
+      pnl_usd_micro: (-notional).toString(),
+    });
+    const audits = () =>
+      repo
+        .listAudit(handle.db, 500)
+        .filter(
+          (a) => a.message.includes('unpriceable at $0') && (a.dataJson ?? '').includes('cand_unpriced'),
+        ).length;
+    expect(audits()).toBe(1);
+
+    // A second tick cannot double-close the same lot.
+    await h.svc.tick();
+    expect(repo.shadowAggregates(handle.db, 'cand_unpriced').closedCount).toBe(1);
+    expect(audits()).toBe(1);
+  });
+
+  it('keeps a transient unpriceable lot open inside the 24h backstop', async () => {
+    seedCandidate('cand_transient_price', 'transient_price', 'WalletTransientPrice');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_transient_price', readingFrom([buy('tp1', 60), buy('tp2', 30), buy('tp3', 10)]));
+    h.summaries.set(
+      'tp-b1',
+      swapSummary({
+        signature: 'tp-b1',
+        minutesAgo: 12 * 60,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+      }),
+    );
+    h.page.unshift({ signature: 'tp-b1', blockTime: NOW_SEC - 12 * 60 * 60 });
+    await h.svc.tick();
+
+    h.priceErrors.set(TOKEN, new Error('jupiter: rate limited (429)'));
+    await h.svc.tick();
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_transient_price')).toHaveLength(1);
+    expect(repo.shadowAggregates(handle.db, 'cand_transient_price').closedCount).toBe(0);
+  });
+
+  it('closes a transient unpriceable lot only after grace + 24h', async () => {
+    seedCandidate('cand_transient_backstop', 'transient_backstop', 'WalletTransientBackstop');
+    const h = harness(riskConfig());
+    await h.svc.admit(
+      'cand_transient_backstop',
+      readingFrom([buy('tb1', 60), buy('tb2', 30), buy('tb3', 10)]),
+    );
+    h.summaries.set(
+      'tb-b1',
+      swapSummary({
+        signature: 'tb-b1',
+        minutesAgo: 36 * 60,
+        tokens: 6_000_000n,
+        usd: 6_000_000n,
+        side: 'buy',
+      }),
+    );
+    h.page.unshift({ signature: 'tb-b1', blockTime: NOW_SEC - 36 * 60 * 60 });
+    await h.svc.tick();
+
+    h.priceErrors.set(TOKEN, new Error('jupiter: HTTP 503'));
+    await h.svc.tick();
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_transient_backstop')).toHaveLength(0);
+    expect(repo.shadowAggregates(handle.db, 'cand_transient_backstop').closedCount).toBe(1);
+    expect(
+      repo
+        .listAudit(handle.db, 500)
+        .some(
+          (a) =>
+            a.message.includes('no quote after 24h backstop') &&
+            (a.dataJson ?? '').includes('cand_transient_backstop'),
+        ),
+    ).toBe(true);
+  });
 });
 
 describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
@@ -583,6 +704,41 @@ describe('WatchService — promotion, re-entry, eviction (AC6/AC7/AC8)', () => {
       });
     }
   }
+
+  it('counts an unpriceable close in closedCount and blocks on net', async () => {
+    seedCandidate('cand_unpriced_promo', 'unpriced_promo', 'WalletUnpricedPromo');
+    const h = harness(riskConfig());
+    await h.svc.admit('cand_unpriced_promo', readingFrom([buy('up1', 60), buy('up2', 30), buy('up3', 10)]));
+    recordBuys('cand_unpriced_promo', 'WalletUnpricedPromo', 1, 5);
+    seedRecord('cand_unpriced_promo', 2, 2_000_000n); // +$4 from the good record
+    repo.insertWatchEvent(handle.db, {
+      candidateId: 'cand_unpriced_promo',
+      address: 'WalletUnpricedPromo',
+      signature: 'unpriced-promo-history',
+      side: 'buy',
+      mint: TOKEN,
+      tokenAmountBase: '6000000',
+      decimals: 6,
+      usdMicro: '6000000',
+      blockTime: NOW_SEC - 12 * 3600,
+      observedAt: iso(Date.now() - 12 * HOUR),
+      source: 'test',
+    });
+    repo.openShadowTrade(handle.db, {
+      candidateId: 'cand_unpriced_promo',
+      mint: TOKEN,
+      openedAt: iso(Date.now() - 12 * HOUR),
+      entryPriceUsdMicro: '1000000',
+      notionalUsdMicro: '6000000',
+    });
+    h.priceErrors.set(TOKEN, new PriceUnavailableError('no_route', 'no route'));
+
+    await h.svc.tick();
+    const aggregates = repo.shadowAggregates(handle.db, 'cand_unpriced_promo');
+    expect(aggregates.closedCount).toBe(3);
+    expect(aggregates.netPnlUsdMicro).toBe(-2_000_000n);
+    expect(h.svc.promotionDecision('cand_unpriced_promo').reason).toBe('NET_BELOW_THRESHOLD');
+  });
 
   it('benches a wallet when every gate passes and hands it to the lifecycle', async () => {
     seedCandidate('cand_promote', 'promotable', 'WalletPromote');

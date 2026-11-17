@@ -148,6 +148,42 @@ export function dayTradeExitDecision(input: DayTradeExitInput): DayTradeExit {
   return 'none';
 }
 
+/**
+ * How long a shadow lot may stay unpriceable past its grace deadline before it
+ * is written off at zero. A confirmed no-route closes at the deadline; a
+ * transient provider failure gets this backstop so an outage cannot zero every
+ * aged lot.
+ */
+export const SHADOW_UNPRICEABLE_BACKSTOP_HOURS = 24;
+
+export type ShadowPriceFailure = 'no_route' | 'transient';
+
+export interface UnpriceableShadowInput {
+  openedAtIso: string;
+  nowMs: number;
+  maxAgeHours: number;
+  graceHours: number;
+  /** `no_route` is authoritative for this mint; `transient` includes missing decimals. */
+  failure: ShadowPriceFailure;
+  transientBackstopHours?: number;
+}
+
+/**
+ * Terminal decision for a shadow lot with no usable mark. Before the grace
+ * deadline no close is allowed. At/after it, a confirmed no-route closes at
+ * zero; a transient failure closes at zero only after the wall-clock backstop.
+ */
+export function unpriceableShadowExitDecision(input: UnpriceableShadowInput): 'none' | 'close_zero' {
+  const openedAt = Date.parse(input.openedAtIso);
+  if (!Number.isFinite(openedAt)) return 'none';
+  const ageHours = (input.nowMs - openedAt) / 3_600_000;
+  const graceEnd = input.maxAgeHours + input.graceHours;
+  if (ageHours < graceEnd) return 'none';
+  if (input.failure === 'no_route') return 'close_zero';
+  const backstop = input.transientBackstopHours ?? SHADOW_UNPRICEABLE_BACKSTOP_HOURS;
+  return ageHours >= graceEnd + backstop ? 'close_zero' : 'none';
+}
+
 /** Slippage cap for exit attempt `index` (0-based). The last step is reused. */
 export function exitSlippageBps(attempt: number, ladder: readonly number[]): number {
   if (ladder.length === 0) throw new Error('exitSlippageBps: ladder is empty');
