@@ -5,11 +5,11 @@ Read §Security first. Nothing here ever requires pasting secrets into chat.
 
 ## 0. Modes and what they mean
 
-| Mode              | Data                           | Fills               | Signing           | Label in UI                        |
-| ----------------- | ------------------------------ | ------------------- | ----------------- | ---------------------------------- |
-| `demo`            | fictional fixtures only        | simulated           | never             | DEMO + banner everywhere           |
-| `paper` (default) | real public market/leader data | simulated (`PAPER`) | never             | PAPER                              |
-| `live`            | real data                      | real swaps          | only after arming | LIVE (only when armed AND healthy) |
+| Mode              | Data                           | Fills               | Signing           | Label in UI                                     |
+| ----------------- | ------------------------------ | ------------------- | ----------------- | ----------------------------------------------- |
+| `demo`            | fictional fixtures only        | simulated           | never             | DEMO + banner everywhere                        |
+| `paper` (default) | real public market/leader data | simulated (`PAPER`) | never             | PAPER                                           |
+| `live`            | real data                      | real swaps          | only after arming | LIVE (armed, executor mounted, readiness green) |
 
 Demo and paper results are **never** real returns.
 
@@ -233,7 +233,7 @@ POSITION_GRACE_HOURS`, a confirmed Jupiter no-route closes the lot at zero
   signed or unknown outcome still needs the case resolved manually.
 - **Entry shaping.** One position per mint per leader; same-mint buys inside
   60 s are coalesced into the existing position (`COALESCED_SAME_MINT_BURST`
-  in **Audit**). `PER_MINT_CAP_PCT > 0` caps the roster-wide exposure to one
+  in **Audit**). `PER_MINT_CAP_USD > 0` caps the roster-wide exposure to one
   mint at that percent of the deployment budget (`MAX_DEPLOYED_PCT`% of
   capital, D7; rule `PER_MINT_CAP`); `0` disables the cap.
 - **Poll cadence.** With the push stream healthy, the roster safety backstop
@@ -292,18 +292,21 @@ if that week's file is missing.
 
 Settings → **EMERGENCY STOP**. Immediately:
 
-- blocks all new entries,
-- blocks all non-risk-reducing signing,
+- blocks all new entries and disarms,
+- keeps risk-reducing exits signable (the live executor stays mounted),
 - keeps monitoring and reconciliation running.
 
 It **cannot** recall transactions already submitted on-chain — the UI states
-this. Clear it via **Clear emergency stop** when ready.
+this. Clearing the emergency leaves the desk disarmed; re-arm deliberately.
+When the book is flat, **LOCK WALLET** (`LOCK-WALLET`) unmounts the signer and
+forgets the sealed passphrase.
 
 ### Close all positions
 
-Settings → **Close all positions** — separately confirmed (`CLOSE-ALL`).
-Closes every open copied position (mirrored sells of our holdings only;
-unrelated wallet assets are never touched).
+Settings → **Close all positions** — separately confirmed (`CLOSE-ALL`). It
+pauses new entries first, then closes every open copied position (mirrored sells
+of our holdings only; unrelated wallet assets are never touched) and reports
+closed/unknown/failed counts.
 
 ## 5. Restart recovery
 
@@ -311,8 +314,12 @@ On boot the worker automatically:
 
 1. acquires the single-worker lock,
 2. applies pending SQLite migrations,
-3. reviews open **reconciliation cases** (see §6),
-4. resumes leader polling **forward from the saved cursor** — activity older
+3. reviews open **reconciliation cases** and reconciles signed/submitted
+   intents and pending withdrawals against chain status (see §6),
+4. restores live arming only if the readiness checklist is green; if the wallet
+   can be unlocked but readiness is not green, entries stay blocked and the
+   executor is mounted **for exits only**,
+5. resumes leader polling **forward from the saved cursor** — activity older
    than the cursor is never processed, and events older than
    `MAX_COPY_EVENT_AGE_SECONDS` are rejected instead of entered late.
 
@@ -363,19 +370,27 @@ an explicit failed intent.
 The wallet needs SOL for fees and rent. Below 0.02 SOL the notifier warns once an
 hour; below 0.005 SOL exits fail closed before signing.
 
+The runtime reconciles signed/submitted intents every 30 seconds: it reads the
+signature status, compares the transaction's actual token deltas, and resolves
+the intent as confirmed or failed. A transaction past `lastValidBlockHeight +
+150` with no status is provably dead and is safe to retry; a live status that
+has not confirmed stays open. A `late_fill` case (an entry that landed after
+its seat left `ACTIVE`) is flattened by the next reconciliation pass; the case
+resolves once the position is closed.
+
 To resolve a case (paper or live):
 
-1. Audit → RECONCILIATION CASES shows intent id + detail.
-2. On-chain (live only): look up the transaction by signature on a Solana
-   explorer or via Helius `getTransaction`. A case with **no signature** never
-   reached the chain, so it can be retried or marked failed without chain
-   evidence; a case **with** a signature needs the on-chain check.
-   - Confirmed with balance changes → record the evidence; the position/fill
-     stands. Cases whose intent reaches `confirmed` auto-resolve at restart.
-   - Definitively failed → mark the intent failed and close the case.
-   - Still unknown → leave it open; do not re-sign.
-3. Positions stuck in `requires_reconciliation` keep their PnL out of equity
-   until resolved — that is intentional.
+1. Audit → RECONCILIATION CASES shows intent id + detail. **Settings → Live**
+   also shows the open-case count as a readiness blocker.
+2. Press **Reconcile now** (`POST /api/control/reconcile-now`,
+   `{"confirm":"RECONCILE"}`) to force a chain pass. Do not edit SQL by hand.
+3. If it remains open: look up the signature on a Solana explorer or via Helius
+   `getTransaction`. A case with **no signature** never reached the chain and
+   may be retried through the existing retry action; a case **with** a signature
+   must not be re-signed until its status is known.
+4. A position in `requires_reconciliation` still counts as exposure and is
+   marked at cost; it is not silently removed from the book. The monitor still
+   runs risk-reducing code exits on the rest of a frozen seat.
 
 ## 7. Arming live mode (checklist)
 
@@ -389,14 +404,43 @@ To resolve a case (paper or live):
    overwrite an existing file** — back it up and remove it only to replace it.
    Fund it with a limited operating balance only; the readiness wallet item
    shows its public key (a missing/unreadable file is a blocker).
-3. Settings → LIVE READINESS: every item must be ✅ (mode, ack string, wallet,
-   Helius, Jupiter prod key, worker, no reconciliation cases, no emergency
-   stop, setup completed).
-4. Type the acknowledgment, enter the wallet encryption secret (used in
-   memory only), press **ARM LIVE**. The dashboard now shows LIVE.
+3. Settings → LIVE READINESS: every **blocker** must be ✅. The checklist covers
+   mode, the exact ACK, `LIVE_TRADING`, wallet existence/readability/permissions,
+   Helius and Jupiter health probes, the worker lock + monitor, no open
+   reconciliation cases, no signed/submitted orders or pending withdrawals,
+   emergency clear, a dashboard user, SOL ≥ 0.02, USDC ≥ the minimum trade,
+   **cash reconciliation** (on-chain USDC vs `EQUITY_START_USD + realized −
+deployed`), risk sanity, clock skew ≤ 60 s, and `PRAGMA quick_check`.
+   Warnings (old backup, wallet permissions) do not block arming.
+4. Fund the wallet to match the book, then Settings → **Live** → type the
+   acknowledgment, enter the wallet encryption secret (memory only), press
+   **ARM LIVE**. The dashboard shows LIVE only when the executor is mounted and
+   the readiness sweep is green. On Windows the passphrase is sealed with DPAPI
+   for unattended restarts; on other platforms set
+   `COPYDESK_WALLET_PASSPHRASE` if the desk must re-arm after a restart.
 
-Live never arms merely because API keys exist. Disarm anytime; emergency stop
-also disarms.
+Live starts with a **clean book**: paper seats, positions and realized P&L are
+excluded from live equity, caps and the dashboard; the roster fills from the
+watch record after arming. Live never arms merely because API keys exist.
+
+Disarm stops new entries but leaves exits signable. Emergency stop also
+disarms. `LOCK WALLET` (only when flat) unmounts the signer and forgets the
+sealed passphrase. Clearing the emergency does not re-arm.
+
+### Withdrawals
+
+- Real withdrawals require `MODE=live` **and** `LIVE_TRADING=true`. Paper mode
+  refuses to sign.
+- One withdrawal at a time. The request carries an idempotency key; replaying the
+  same key returns the original result instead of sending twice.
+- The withdrawal row is written before signing and updated with the signature,
+  blockhash and last-valid height. An unknown outcome becomes a reconciliation
+  case and blocks further withdrawals until chain status resolves it.
+- A sent USDC withdrawal permanently reduces capital (the withdrawable cap
+  follows). A SOL withdrawal only reduces the fee reserve; SOL is not part of
+  the USDC book.
+- `pnpm wallet:send` is the explicit terminal tool; it signs real funds and is
+  not part of the paper workflow.
 
 ### Jupiter API plan (decision: free tier)
 
@@ -443,12 +487,25 @@ HELIUS DOWN in the dashboard health row.
 
 ## 8. Backups and recovery
 
-- Back up `DATA_DIR` (SQLite DB + WAL, wallet file). Stop the
-  server first (or copy both `-wal`/`-shm` files with it).
+- OPS → **Back up data now** writes `DATA_DIR/backups/<timestamp>/` with a
+  consistent SQLite snapshot (online backup API), the **configured
+  `WALLET_FILE`** (even when it lives outside `DATA_DIR`), the DPAPI-sealed
+  passphrase when present, and a SHA-256 `manifest.json`. It does not copy
+  `.env` — back that up separately in a password manager.
 - The wallet file is useless without the encryption secret — store them
   separately (password manager / offline paper).
-- Restore: install anywhere, put the folder back, `pnpm db:migrate`, `pnpm start`.
-- Reset everything (destructive): delete `DATA_DIR` contents.
+- Restore with the server **stopped**:
+  `pnpm db:restore <backup-dir> [--wallet]`. The CLI refuses while
+  `data/worker.lock` names a live PID, takes a `pre-restore-*` safety snapshot,
+  restores the DB, and applies migrations. Without `--wallet` it prints the
+  wallet restore instruction instead of overwriting. With `--wallet` it also
+  copies `wallet-unlock.dpapi`; that sealed passphrase only works for the same
+  Windows account that created it.
+- Reset everything (destructive): OPS → **Reset database** (`RESET`), which
+  stops the server, deletes the DB, migrates fresh, and restarts.
+- OPS **Shut server down** writes `logs/copydesk.stop`; the supervisor and the
+  watchdog honor it and do not restart the desk. Delete the file before starting
+  again manually.
 
 ## 8b. Counterfactual parameter sweep (read-only)
 

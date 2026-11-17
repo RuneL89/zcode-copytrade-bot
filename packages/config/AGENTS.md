@@ -25,7 +25,12 @@ every package and app.
 - **`SESSION_SECRET` must be ≥ 32 characters** and has no default; the server
   must refuse to start without it.
 - **Paper is the default mode.** Live-only settings stay optional and inert
-  until readiness + arming.
+  until readiness + arming. `AGENT_LIVE_CONTROL` (default false) gates agent
+  fire/exit requests while `MODE=live`.
+- **No portfolio daily-loss key.** `MAX_DAILY_REALIZED_LOSS_USD` was removed by
+  the operator (D7); the loader ignores it and no code reads it. Do not
+  reintroduce it without a new decision. Per-position stops and
+  `MAX_DEPLOYED_PCT` are the safety model.
 - **Paths anchor at the repo root.** `pnpm --filter` runs scripts with cwd set
   to the package folder, so anything using `process.cwd()` for `.env` or
   `DATA_DIR` lands in the wrong place. Use `findRepoRoot(import.meta.url)` and

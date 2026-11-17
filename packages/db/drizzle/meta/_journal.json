@@ -50,6 +50,13 @@
       "when": 1794915173956,
       "tag": "0006_forward_shadow_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794935771546,
+      "tag": "0007_live_safety",
+      "breakpoints": true
     }
   ]
 }

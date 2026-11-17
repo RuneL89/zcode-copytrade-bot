@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { loadConfig } from '@zcode-bot/config';
 import { Runtime } from '../src/runtime.js';
 import { buildApp } from '../src/http/app.js';
-import { OpsRunner, opDefinitions, type OpDefinition } from '../src/services/ops.js';
+import { OpsRunner, opDefinitions, opsRepoRoot, type OpDefinition } from '../src/services/ops.js';
 import { DiscoveryService, type DiscoveryApi } from '../src/services/discovery.js';
 import { openDatabase } from '@zcode-bot/db';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
@@ -235,6 +235,11 @@ describe('ops API (auth + csrf + backup)', () => {
 
   it('requires auth for the ops catalog', async () => {
     expect((await app.request('/api/ops')).status).toBe(401);
+  });
+
+  it('anchors the ops console at the workspace root', () => {
+    expect(existsSync(join(opsRepoRoot, 'package.json'))).toBe(true);
+    expect(existsSync(join(opsRepoRoot, 'pnpm-workspace.yaml'))).toBe(true);
   });
 
   it('exposes the production whitelist and system info', async () => {

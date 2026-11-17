@@ -189,6 +189,7 @@ describe('per-mint cap (AC7)', () => {
     const capSkips = repo.listRiskRejections(handle.db, 50).filter((r) => r.rule === 'PER_MINT_CAP');
     expect(capSkips).toHaveLength(1);
     expect(capSkips[0]!.limitValue).toBe('10000000');
-    expect(capSkips[0]!.actualValue).toBe('10000000');
+    // The cap is judged against open + proposed, not "already at the cap".
+    expect(BigInt(capSkips[0]!.actualValue)).toBeGreaterThan(BigInt(capSkips[0]!.limitValue));
   });
 });

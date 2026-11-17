@@ -19,8 +19,8 @@ export interface RiskCheckInput {
   eventAgeSeconds: number;
   /** Age of the price quote used for notional, seconds. */
   priceAgeSeconds: number;
-  /** Leaderboard observation age, seconds. */
-  leaderboardAgeSeconds: number;
+  /** Leaderboard observation age, seconds. Null = not applicable (watch-list hire). */
+  leaderboardAgeSeconds: number | null;
   /** Quote slippage in bps (from Jupiter quote), if known. */
   quoteSlippageBps: number | null;
   /** Quote price impact in bps, if known. */
@@ -64,7 +64,10 @@ export function evaluateEntryRisk(config: RiskConfig, input: RiskCheckInput): Ri
       'price stale',
     );
   }
-  if (input.leaderboardAgeSeconds > config.LEADERBOARD_MAX_AGE_SECONDS) {
+  if (
+    input.leaderboardAgeSeconds !== null &&
+    input.leaderboardAgeSeconds > config.LEADERBOARD_MAX_AGE_SECONDS
+  ) {
     return reject(
       'LEADERBOARD_MAX_AGE_SECONDS',
       BigInt(config.LEADERBOARD_MAX_AGE_SECONDS),
@@ -107,12 +110,16 @@ function reject(
 export interface BankrollInput {
   /** Configured starting equity, micro-USD (EQUITY_START_USD). */
   equityStartUsdMicro: MicroUsd;
-  /** Entry cost of currently open positions, micro-USD (value + entry fees). */
+  /** Remaining entry cost of open/exposure positions, micro-USD. */
   openEntriesUsdMicro: MicroUsd;
-  /** Entry fees of currently open positions, micro-USD (counted into deployed). */
+  /** Remaining entry fees of open/exposure positions, micro-USD. */
   openFeesUsdMicro: MicroUsd;
   /** Realized PnL of closed lots, micro-USD (already fee-net). */
   realizedNetUsdMicro: MicroUsd;
+  /** Operator ledger changes: +deposits, -successful USDC withdrawals. */
+  capitalAdjustmentsUsdMicro?: MicroUsd;
+  /** Entry intents still holding budget (pending/signed/unresolved). */
+  reservedEntryUsdMicro?: MicroUsd;
   /** Max share of capital allowed in open positions, percent (1-100). */
   maxDeployedPct: number;
 }
@@ -135,8 +142,9 @@ export interface BankrollState {
  * bet may use at most (pct% of capital) − deployed.
  */
 export function bankrollHeadroom(input: BankrollInput): BankrollState {
-  const capital = input.equityStartUsdMicro + input.realizedNetUsdMicro;
-  const deployed = input.openEntriesUsdMicro + input.openFeesUsdMicro;
+  const capital =
+    input.equityStartUsdMicro + input.realizedNetUsdMicro + (input.capitalAdjustmentsUsdMicro ?? 0n);
+  const deployed = input.openEntriesUsdMicro + input.openFeesUsdMicro + (input.reservedEntryUsdMicro ?? 0n);
   const allowance = (capital * BigInt(Math.round(input.maxDeployedPct))) / 100n;
   const headroom = allowance > deployed ? allowance - deployed : 0n;
   return {

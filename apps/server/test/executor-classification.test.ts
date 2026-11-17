@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import bs58 from 'bs58';
 import { Keypair, SystemProgram, Transaction, VersionedTransaction } from '@solana/web3.js';
 import {
   LiveExecutor,
@@ -55,7 +56,10 @@ function jupiter(overrides: {
 function connection(overrides: Partial<LiveConnection> = {}, balances: string[] = []): LiveConnection {
   let call = 0;
   return {
-    sendRawTransaction: async () => 'sig123',
+    sendRawTransaction: async (raw) => {
+      const tx = VersionedTransaction.deserialize(raw);
+      return bs58.encode(tx.signatures[0]!);
+    },
     getLatestBlockhash: async () => ({ blockhash: 'x', lastValidBlockHeight: 1 }),
     confirmTransaction: async () => ({ value: { err: null } }),
     getParsedTokenAccountsByOwner: async () => {
@@ -97,6 +101,28 @@ describe('pre-submission failures are retryable (failed), never unknown', () => 
     );
     const out = await ex.execute(spec, {} as never);
     expect(out.kind).toBe('failed');
+  });
+
+  it('classifies a pre-sign control rejection as failed, not unknown', async () => {
+    const ex = liveExecutor(jupiter({}), connection());
+    const out = await ex.execute(spec, {} as never, {
+      beforeSign: () => {
+        throw new Error('new entries are paused');
+      },
+    });
+    expect(out.kind).toBe('failed');
+    if (out.kind === 'failed') expect(out.error).toContain('signing aborted before submission');
+  });
+
+  it('classifies a signed-state persistence failure as failed, not unknown', async () => {
+    const ex = liveExecutor(jupiter({}), connection());
+    const out = await ex.execute(spec, {} as never, {
+      afterSign: () => {
+        throw new Error('database write failed');
+      },
+    });
+    expect(out.kind).toBe('failed');
+    if (out.kind === 'failed') expect(out.error).toContain('signing aborted before submission');
   });
 
   it('classifies a preflight simulation rejection as failed, not unknown', async () => {

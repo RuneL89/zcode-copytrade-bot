@@ -127,7 +127,7 @@ The task is named "Copydesk". It does not modify the older "Copydesk watchdog" t
 
 The server listens on `127.0.0.1:8787` by default. The four tabs are TRADE, OPS, SETTINGS, and AUDIT. TRADE is the dashboard: equity, the pipeline spine, the roster seats, open positions, and the watch rail. OPS carries the commands that normally need a terminal (build, migrations, tests, backup, restart, shutdown, wallet setup). SETTINGS carries provider keys, risk limits, pause and emergency stop, live readiness, and manual import. AUDIT carries every admission, shadow trade, promotion, rejection, fill, firing, and risk block with its reason.
 
-`#/desk` is the assembly-line view: SOL balance, USDC available, unrealised P&L, a funnel of the server's stage counts, the five seats with their open copies, the credit meter, and a risk form. The badge reads LIVE only when the server reports armed and healthy; otherwise it reads PAPER, or DEMO with a banner.
+`#/desk` is the assembly-line view: SOL balance, USDC available, unrealised P&L, a funnel of the server's stage counts, the five seats with their open copies, the credit meter, and a risk form. The badge reads LIVE only when the mode is live, the configured wallet's executor is mounted, and the last readiness sweep is green; otherwise it reads PAPER, or DEMO with a banner.
 
 For a phone on the same Wi-Fi, run `enable-phone-access.bat`. It asks for one UAC approval, adds a firewall rule for port 8787, sets `HOST=0.0.0.0` in `.env`, restarts the app, and prints the address. Traffic is plain HTTP; keep it on your own network or behind a VPN, and never forward the port to the internet.
 
@@ -139,9 +139,9 @@ For a phone on the same Wi-Fi, run `enable-phone-access.bat`. It asks for one UA
 
 **Sizing.** The copy notional is `clamp(0.25 x leader input, $2, $10)`, then capped by the leader's remaining $40 open room and the shared deployed cap (80% of capital, so $80 on a $100 bankroll). The $2 minimum is a floor. A buy that would scale below it is placed at $2; it is not skipped.
 
-**Risk gates.** Before a quote is requested, the engine checks the deployed share of capital, the day's realized loss, the age of the price (45 seconds), maximum slippage (300 bps), and maximum price impact (300 bps). The engine writes a rejection to the audit trail with the rule name and the numbers that failed.
+**Risk gates.** Before a quote is requested, the engine checks the deployed share of capital, the age of the quote price (45 seconds), the per-buy/per-trader and per-mint caps, and maximum price impact (300 bps). Jupiter's slippage tolerance (300 bps) is sent with the quote, and a fresh pre-sign quote must not fall below the first quote's minimum output. There is no portfolio daily-loss gate: the per-position stop/trail/time exits and the deployment cap are the safety model (D7). The engine writes a rejection to the audit trail with the rule name and the numbers that failed.
 
-**Execution.** Jupiter Swap API v2 `GET /swap/v2/build` on `api.jup.ag` supplies the route. Paper mode simulates the fill at the quote, or at the cached price with 30 bps of adverse slippage and 5 bps of fees when there is no quote. Live mode becomes reachable only after the readiness checklist and a separate arming action; it signs and submits only while armed. Automated tests and the demo never construct the live executor.
+**Execution.** Jupiter Swap API v2 `GET /swap/v2/build` on `api.jup.ag` supplies the route. Paper mode simulates the fill at the quote, or at the cached price with 30 bps of adverse slippage and 5 bps of fees when there is no quote. Live mode becomes reachable only after the readiness checklist and a separate arming action. A live build is validated (known Jupiter program, wallet as sole signer/payer, compute-unit limit, fresh blockhash, v0/lookup-table support, 1,232-byte limit), simulated before signing, and its signed/submitted evidence is persisted before the send. Automated tests exercise the signer with stubs and ephemeral keys; no test or demo submits a real transaction.
 
 **Exits.** A leader sell closes the same fraction of the copied position. The code exits run before the clock: a -25% stop, a trailing stop that arms at +15% and sells 10% off the peak, and a partial take-profit at +40% that sells half. At five hours a green position sells; otherwise it enters a 1.5-hour grace window, sells on an 8% bounce off the grace low while still below entry, or is force-closed at the deadline. Exit attempts use a 300, 600, then 1,000 bps slippage ladder.
 
@@ -244,7 +244,7 @@ The monthly ladder is green, amber at 450,000 credits, red at 550,000, roster-on
 
 - **The roster starts empty.** A wallet has to earn a chair: eight closed shadow trades, more than $3 net, a fresh funded buy. The first hours, sometimes a full day, are observation. An empty chair is normal.
 - **Paper fills are assumptions.** A quote simulation, or a cached price with 30 bps of slippage, is not an execution. Demo and paper results are never real returns.
-- **Live mode is not exercised by the tests.** Every automated test and the demo use simulated fills. Signing needs the readiness checklist, the exact acknowledgment string, and a separate arming action.
+- **No test signs with real funds.** The live signer is exercised with stubs and ephemeral keys; every test and the demo use simulated fills or a fake submit seam. Signing needs the readiness checklist, the exact acknowledgment string, and a separate arming action.
 - **Your PC is the runtime.** If the machine sleeps, loses the network, or shuts down, monitoring stops. The dashboard on your phone is a remote view, not a remote runtime.
 - **Grok Bot is a remote operator, not a runtime.** If the Grok Bot app is closed or the PC is unreachable, the desk keeps running but Copytrader cannot check it.
 - **The mailbox costs tokens while idle.** Every automation run pays for the system prompt, even when the inbox is empty.
@@ -252,8 +252,10 @@ The monthly ladder is green, amber at 450,000 credits, red at 550,000, roster-on
 - **Equity is account value.** The dashboard KPI is USDC cash + the live mark of each open position; open P&L moves it before a position closes. The realized book (start + closed PnL) is the closed-lot series, not the headline equity.
 - **Equity excludes fees.** Trade PnL is proceeds minus cost basis in USDC; network fees and account rent are paid in SOL from a separate reserve and measured by the fee ledger.
 - **Pre-signature exit failures retry.** An exit that failed before signing is queued and retried up to four times with backoff; the normal code exits remain the backstop, and signed or unknown outcomes are never retried. If a `fire_close` fills later, the blocked fire completes and its chair is refilled from the bench.
-- **Reconciliation needs you.** An execution with an unknown outcome stays open until you resolve it with on-chain evidence, and those positions are kept out of equity.
-- **Emergency stop is not a recall.** It blocks new entries and new signing at once. It cannot undo a transaction already on chain.
+- **Reconciliation is evidence-based.** Signed/submitted transactions are checked against chain status automatically; one that cannot be proven either way stays open for you to resolve from on-chain evidence. A reconciling position still counts as exposure and is marked at cost until the case closes.
+- **Emergency stop is not a recall.** It blocks new entries and disarms, but risk-reducing exits remain signable until you lock the wallet. It cannot undo a transaction already on chain.
+- **The live book is separate.** Live mode starts with its own seats, positions and realized P&L; paper history is retained but excluded from live equity, caps and the dashboard.
+- **Real withdrawals require live mode.** `MODE=live` plus `LIVE_TRADING=true`, an idempotency key, and one withdrawal at a time. An unknown broadcast blocks further withdrawals until chain reconciliation resolves it.
 - **The dashboard is plain HTTP.** Keep it on the machine or your own Wi-Fi. Do not expose port 8787 without HTTPS and a reverse proxy.
 - **The funded-buy screen can thin the pool.** When no watched wallet clears the admission bar, the watch list stays empty and discovery tries again later.
 - **The WebSocket share of the Helius plan is an estimate.** The meter counts bytes, but the plan has not been calibrated against a full day of live traffic.

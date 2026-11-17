@@ -169,6 +169,8 @@ export const traderActivations = sqliteTable(
   {
     activationId: text('activation_id').primaryKey(),
     candidateId: text('candidate_id').notNull(),
+    /** The book this chair belongs to. Live and paper chairs never mix. */
+    mode: text('mode').notNull().default('paper'), // paper|live
     state: text('state').notNull().default('ACTIVE'), // WATCHING|ACTIVE|FIRING|FIRED|REQUIRES_RECONCILIATION
     startedAt: text('started_at').notNull(),
     endedAt: text('ended_at'),
@@ -204,6 +206,8 @@ export const observedLeaderEvents = sqliteTable(
     dedupeKey: text('dedupe_key').notNull(),
     activationId: text('activation_id').notNull(),
     candidateId: text('candidate_id').notNull(),
+    /** The book this observed event belongs to (for the dashboard tape). */
+    mode: text('mode').notNull().default('paper'),
     address: text('address').notNull(),
     signature: text('signature').notNull(),
     slot: integer('slot').notNull(),
@@ -225,22 +229,37 @@ export const copiedPositions = sqliteTable(
     positionId: text('position_id').primaryKey(),
     activationId: text('activation_id').notNull(),
     candidateId: text('candidate_id').notNull(),
+    /** The book this position belongs to; exits are refused across books. */
+    mode: text('mode').notNull().default('paper'), // paper|live
     mint: text('mint').notNull(),
     mintSymbol: text('mint_symbol'),
     status: text('status').notNull().default('open'), // open|closed|partially_closed|requires_reconciliation
     entryIntentId: text('entry_intent_id'),
     inputMint: text('input_mint').notNull(),
     inputUsdMicro: text('input_usd_micro').notNull(),
+    /**
+     * Cost basis still deployed. Partial closes reduce this; closed rows are
+     * zero. Caps and cash use this, never the original input.
+     */
+    remainingCostBasisUsdMicro: text('remaining_cost_basis_usd_micro').notNull().default('0'),
+    remainingFeesUsdMicro: text('remaining_fees_usd_micro').notNull().default('0'),
     copiedTokenBase: text('copied_token_base').notNull(),
     remainingTokenBase: text('remaining_token_base').notNull(),
     leaderTokenBase: text('leader_token_base'),
     realizedPnlUsdMicro: text('realized_pnl_usd_micro').notNull().default('0'),
     feesUsdMicro: text('fees_usd_micro').notNull().default('0'),
+    /** Token decimals captured at entry; exit pricing must not assume 6. */
+    mintDecimals: integer('mint_decimals').notNull().default(6),
+    inputDecimals: integer('input_decimals').notNull().default(6),
     openedAt: text('opened_at').notNull(),
     closedAt: text('closed_at'),
     closeReason: text('close_reason'), // leader_exit|fire_close_all|emergency|manual
   },
-  (t) => [index('idx_position_status').on(t.status), index('idx_position_activation').on(t.activationId)],
+  (t) => [
+    index('idx_position_status').on(t.status),
+    index('idx_position_activation').on(t.activationId),
+    index('idx_position_mode_status').on(t.mode, t.status),
+  ],
 );
 
 export const orderIntents = sqliteTable(
@@ -256,18 +275,40 @@ export const orderIntents = sqliteTable(
     inputMint: text('input_mint').notNull(),
     inputAmountBase: text('input_amount_base').notNull(),
     inputUsdMicro: text('input_usd_micro'),
+    inputDecimals: integer('input_decimals').notNull().default(6),
+    outputDecimals: integer('output_decimals').notNull().default(6),
     minOutputBase: text('min_output_base'),
     slippageBps: integer('slippage_bps'),
     priceImpactBps: integer('price_impact_bps'),
     state: text('state').notNull().default('pending_quote'),
     idempotencyKey: text('idempotency_key').notNull(),
     quoteJson: text('quote_json'),
+    /**
+     * Budget held from intent creation until the position exists. Counted by
+     * every entry cap so two concurrent leader buys cannot overspend.
+     */
+    reservedUsdMicro: text('reserved_usd_micro').notNull().default('0'),
+    /**
+     * Durable signing evidence: written BEFORE the network send so a crash or
+     * ambiguous send is always reconcilable. The signed bytes are public data.
+     */
     txSignature: text('tx_signature'),
+    blockhash: text('blockhash'),
+    lastValidBlockHeight: integer('last_valid_block_height'),
+    signedTxBase64: text('signed_tx_base64'),
+    signedAt: text('signed_at'),
+    submittedAt: text('submitted_at'),
+    submitVia: text('submit_via'), // sender|staked|public
+    buildKind: text('build_kind'), // legacy|v0
     reason: text('reason'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (t) => [uniqueIndex('uniq_intent_idem').on(t.idempotencyKey), index('idx_intent_state').on(t.state)],
+  (t) => [
+    uniqueIndex('uniq_intent_idem').on(t.idempotencyKey),
+    index('idx_intent_state').on(t.state),
+    index('idx_intent_mode_state').on(t.mode, t.state),
+  ],
 );
 
 export const executionAttempts = sqliteTable('execution_attempts', {
@@ -281,24 +322,31 @@ export const executionAttempts = sqliteTable('execution_attempts', {
   createdAt: text('created_at').notNull(),
 });
 
-export const fills = sqliteTable('fills', {
-  fillId: text('fill_id').primaryKey(),
-  intentId: text('intent_id').notNull(),
-  positionId: text('position_id'),
-  mode: text('mode').notNull(), // paper|live (demo never writes here)
-  txSignature: text('tx_signature'),
-  inputAmountBase: text('input_amount_base').notNull(),
-  outputAmountBase: text('output_amount_base').notNull(),
-  priceUsdMicro: text('price_usd_micro'),
-  feeEstimateUsdMicro: text('fee_estimate_usd_micro').notNull().default('0'),
-  balanceEvidenceJson: text('balance_evidence_json'),
-  commitment: text('commitment'),
-  confirmedAt: text('confirmed_at').notNull(),
-});
+export const fills = sqliteTable(
+  'fills',
+  {
+    fillId: text('fill_id').primaryKey(),
+    intentId: text('intent_id').notNull(),
+    positionId: text('position_id'),
+    mode: text('mode').notNull(), // paper|live (demo never writes here)
+    txSignature: text('tx_signature'),
+    inputAmountBase: text('input_amount_base').notNull(),
+    outputAmountBase: text('output_amount_base').notNull(),
+    priceUsdMicro: text('price_usd_micro'),
+    feeEstimateUsdMicro: text('fee_estimate_usd_micro').notNull().default('0'),
+    balanceEvidenceJson: text('balance_evidence_json'),
+    commitment: text('commitment'),
+    confirmedAt: text('confirmed_at').notNull(),
+  },
+  // One transaction finalizes one intent; reconciliation must be idempotent.
+  (t) => [uniqueIndex('uniq_fill_intent').on(t.intentId)],
+);
 
 export const realizedPnlLots = sqliteTable('realized_pnl_lots', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   positionId: text('position_id').notNull(),
+  /** The book this close belongs to (denormalized from the position). */
+  mode: text('mode').notNull().default('paper'), // paper|live
   closedBase: text('closed_base').notNull(),
   proceedsUsdMicro: text('proceeds_usd_micro').notNull(),
   costBasisUsdMicro: text('cost_basis_usd_micro').notNull(),
@@ -324,6 +372,8 @@ export const firingEvents = sqliteTable('firing_events', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   activationId: text('activation_id').notNull(),
   candidateId: text('candidate_id').notNull(),
+  /** The book the firing belongs to; re-entry is judged per book. */
+  mode: text('mode').notNull().default('paper'), // paper|live
   reason: text('reason').notNull(),
   lossStreak: integer('loss_streak').notNull(),
   positionPolicy: text('position_policy').notNull(),
@@ -356,6 +406,8 @@ export const candidateRejections = sqliteTable('candidate_rejections', {
 export const riskRejections = sqliteTable('risk_rejections', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   activationId: text('activation_id'),
+  /** The book the rejection belongs to. */
+  mode: text('mode').notNull().default('paper'),
   rule: text('rule').notNull(),
   limitValue: text('limit_value').notNull(),
   actualValue: text('actual_value').notNull(),
@@ -365,15 +417,50 @@ export const riskRejections = sqliteTable('risk_rejections', {
 
 export const reconciliationCases = sqliteTable('reconciliation_cases', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  kind: text('kind').notNull(), // unknown_execution|balance_mismatch|missing_position
+  kind: text('kind').notNull(), // unknown_execution|close_failed|late_fill|unknown_withdrawal|balance_mismatch|missing_position
+  /** The book the case belongs to; only current-mode cases block arming. */
+  mode: text('mode').notNull().default('paper'), // paper|live
   intentId: text('intent_id'),
   positionId: text('position_id'),
+  /** Present whenever a signature was created, even if confirmation was lost. */
   signature: text('signature'),
+  withdrawalId: text('withdrawal_id'),
   status: text('status').notNull().default('open'), // open|resolved
   detail: text('detail'),
   createdAt: text('created_at').notNull(),
   resolvedAt: text('resolved_at'),
 });
+
+/**
+ * Every real-money withdrawal. The row is written before signing, carries the
+ * idempotency key, and is the reconciliation anchor for an ambiguous send.
+ */
+export const withdrawals = sqliteTable(
+  'withdrawals',
+  {
+    withdrawalId: text('withdrawal_id').primaryKey(),
+    mode: text('mode').notNull().default('live'), // paper is refused; live only
+    asset: text('asset').notNull(), // SOL|USDC
+    amountBase: text('amount_base').notNull(),
+    /** USDC only: base units equal micro-USD. Null for SOL. */
+    amountUsdMicro: text('amount_usd_micro'),
+    destination: text('destination').notNull(),
+    status: text('status').notNull().default('pending'), // pending|signed|submitted|sent|unknown|failed
+    signature: text('signature'),
+    blockhash: text('blockhash'),
+    lastValidBlockHeight: integer('last_valid_block_height'),
+    idempotencyKey: text('idempotency_key').notNull(),
+    error: text('error'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    resolvedAt: text('resolved_at'),
+  },
+  (t) => [
+    uniqueIndex('uniq_withdrawal_idem').on(t.idempotencyKey),
+    index('idx_withdrawal_status').on(t.status),
+    index('idx_withdrawal_mode_status').on(t.mode, t.status),
+  ],
+);
 
 export const controlEvents = sqliteTable('control_events', {
   id: integer('id').primaryKey({ autoIncrement: true }),

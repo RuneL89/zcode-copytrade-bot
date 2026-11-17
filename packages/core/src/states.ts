@@ -39,12 +39,17 @@ export function dashboardBadges(input: {
   armed: boolean;
   appState: AppState;
   dataStale: boolean;
+  /** The live executor is mounted and the wallet is unlocked. */
+  executorMounted?: boolean;
+  /** The last readiness sweep had no blockers. */
+  liveHealthy?: boolean;
 }): DashboardBadge[] {
   const badges: DashboardBadge[] = [];
   if (input.mode === 'demo') badges.push('DEMO');
   else if (input.mode === 'paper') badges.push('PAPER');
-  else if (input.armed) badges.push('LIVE');
-  else badges.push('PAPER'); // live mode but not armed must not display LIVE
+  else if (input.armed && input.executorMounted !== false && input.liveHealthy !== false) {
+    badges.push('LIVE');
+  } else badges.push('PAPER'); // live mode but not armed/mounted/healthy must not display LIVE
   if (input.appState.startsWith('PAUSED') || input.appState === 'EMERGENCY_STOPPED') {
     badges.push('PAUSED');
   }

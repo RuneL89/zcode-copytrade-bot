@@ -82,19 +82,28 @@ Live mode signs real Solana transactions with real money. Do not rush this.
    somewhere safe; without it the wallet cannot be recovered.
 2. Fund that wallet with a **small operating balance** only: USDC for the buys,
    a little SOL for fees and rent.
-3. In `.env`: `MODE=live`, a Jupiter production key
-   (`JUPITER_BASE_URL=https://api.jup.ag` + `JUPITER_API_KEY=...`), and
-   `LIVE_TRADING_ACK=<the exact string SETTINGS shows you>`.
-4. Restart, then SETTINGS → **LIVE READINESS** — every line must be green.
-5. Arm live from SETTINGS. The badge only shows **LIVE** when armed _and_
-   healthy.
+3. In `.env`: `MODE=live`, `LIVE_TRADING=true`, a Helius key, a Jupiter
+   production key (`JUPITER_BASE_URL=https://api.jup.ag` + `JUPITER_API_KEY=...`),
+   and `LIVE_TRADING_ACK=<the exact string SETTINGS shows you>`.
+4. Restart, then SETTINGS → **LIVE READINESS** — every blocker must be ✅.
+   The checklist includes the wallet SOL/USDC balances and a cash
+   reconciliation against the book (`EQUITY_START_USD`), so fund the wallet
+   before arming.
+5. Settings → **Live** → ARM LIVE. The badge only shows **LIVE** when the mode
+   is live, the executor is mounted, and the last readiness sweep is green.
+   Live starts with a clean book: paper seats and P&L are excluded; the roster
+   fills from the watch record after arming.
 
-Emergency stop (SETTINGS) instantly blocks new entries and new signing. It
-cannot recall a transaction already sent.
+Disarm stops new entries but keeps open positions exitable. Emergency stop
+(SETTINGS) blocks new entries and disarms; it cannot recall a transaction
+already sent. Use **Close all** to flatten, then **LOCK WALLET** (only when flat)
+to forget the key. Clearing an emergency does not re-arm.
 
 ## 7. Daily housekeeping
 
-- **Backup:** OPS → _Back up data now_ (also copies the encrypted wallet file).
+- **Backup:** OPS → _Back up data now_ (consistent SQLite snapshot, the configured
+  `WALLET_FILE`, and a hash manifest). Restore with
+  `pnpm db:restore <backup-dir> [--wallet]` while the server is stopped.
 - **Stop the bot:** OPS → _Shut server down_. Start again with the Desktop
   shortcut.
 - **After editing `.env`:** always OPS → _Restart server_.

@@ -65,10 +65,16 @@ export const api = {
       body: JSON.stringify({ format, content }),
     }),
   activate: (candidateId: string) =>
-    request<{ ok: boolean }>('/api/activate', { method: 'POST', body: JSON.stringify({ candidateId }) }),
+    request<{ ok: boolean }>('/api/activate', {
+      method: 'POST',
+      body: JSON.stringify({ candidateId, confirm: 'ACTIVATE' }),
+    }),
   // The roster addresses one chair: the dashboard always names the activation.
   fire: (activationId: string) =>
-    request<{ ok: boolean }>('/api/fire', { method: 'POST', body: JSON.stringify({ activationId }) }),
+    request<{ ok: boolean }>('/api/fire', {
+      method: 'POST',
+      body: JSON.stringify({ activationId, confirm: 'FIRE' }),
+    }),
   pause: (reason?: string) =>
     request<{ ok: boolean }>('/api/control/pause', { method: 'POST', body: JSON.stringify({ reason }) }),
   resume: () => request<{ ok: boolean }>('/api/control/resume', { method: 'POST', body: '{}' }),
@@ -77,10 +83,13 @@ export const api = {
   emergencyClear: () =>
     request<{ ok: boolean }>('/api/control/emergency-clear', { method: 'POST', body: '{}' }),
   closeAll: () =>
-    request<{ ok: boolean; result?: { closed: number; unknown: number } }>('/api/control/close-all', {
-      method: 'POST',
-      body: JSON.stringify({ confirm: 'CLOSE-ALL' }),
-    }),
+    request<{ ok: boolean; result?: { closed: number; unknown: number; failed: number } }>(
+      '/api/control/close-all',
+      {
+        method: 'POST',
+        body: JSON.stringify({ confirm: 'CLOSE-ALL' }),
+      },
+    ),
   armLive: (ack: string, walletSecret: string) =>
     request<{ ok: boolean }>('/api/control/arm-live', {
       method: 'POST',
@@ -92,6 +101,11 @@ export const api = {
       body: JSON.stringify(input),
     }),
   disarm: () => request<{ ok: boolean }>('/api/control/disarm', { method: 'POST', body: '{}' }),
+  lockWallet: () =>
+    request<{ ok: boolean }>('/api/control/lock-wallet', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'LOCK-WALLET' }),
+    }),
   demoStart: () => request<{ ok: boolean }>('/api/demo/start', { method: 'POST', body: '{}' }),
   audit: () => request<{ events: Array<Record<string, unknown>> }>('/api/audit'),
   weeklyReview: (week?: string) =>

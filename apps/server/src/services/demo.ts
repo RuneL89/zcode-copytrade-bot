@@ -254,6 +254,7 @@ export class DemoEngine {
         idleFireHoursLeft: null,
         feesPaidUsdMicro: '0',
         feesLamports: null,
+        feesTipLamports: null,
         rentUsdMicro: null,
         rentLamports: null,
         openTokenAccounts: null,

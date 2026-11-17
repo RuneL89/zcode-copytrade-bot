@@ -32,7 +32,7 @@ export function liveStartDecision(input: LiveStartInput): LiveStartDecision {
 }
 
 /** The checks P1 already pins in CI. Live boot runs them again and refuses on any failure. */
-export function evaluateP1Acceptance(nowMs = Date.parse('2026-11-14T00:00:00.000Z')): {
+export function evaluateP1Acceptance(nowMs = Date.now()): {
   ok: boolean;
   failures: string[];
 } {

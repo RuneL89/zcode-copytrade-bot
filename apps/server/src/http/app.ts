@@ -45,12 +45,21 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const sessions = new SessionManager(rt.config.env.SESSION_SECRET);
   const db: AppDatabase = rt.db.db;
+  const bookMode = rt.config.mode === 'live' ? 'live' : 'paper';
 
   // ---- local agent hooks (no session; a separate token; no order or arm routes)
   const agentDenied = (c: Context<AppEnv>) => {
     const expected = rt.config.env.AGENT_API_TOKEN;
     if (!expected) return c.json({ error: 'agent api disabled' }, 404);
     if (c.req.header('authorization') !== `Bearer ${expected}`) return c.json({ error: 'unauthorized' }, 401);
+    if (rt.config.mode === 'live' && !rt.config.env.AGENT_LIVE_CONTROL) {
+      return c.json(
+        {
+          error: 'agent trading control is disabled while MODE=live (set AGENT_LIVE_CONTROL=true to opt in)',
+        },
+        403,
+      );
+    }
     return null;
   };
 
@@ -63,6 +72,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       rt.config.risk,
       rt.lifecycle,
       (body ?? {}) as Record<string, unknown>,
+      rt.config.mode === 'live' ? 'live' : 'paper',
     );
     return c.json(result.body, result.status as 200);
   });
@@ -91,7 +101,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     return c.json({
       needsSetup,
       mode: rt.config.mode,
-      armed: rt.control.flags.armed,
+      armed: rt.control.flags.armed && rt.liveExecutorMounted(),
       fictional: rt.config.mode === 'demo',
       appState: state?.appState ?? 'PAUSED_NO_TRADER',
       setupTokenFileHint: needsSetup ? 'the one-time setup token is printed on the server console' : null,
@@ -198,10 +208,12 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     c.json({ series: (rt.store.get() ?? rt.rebuildState()).equity.series }),
   );
   app.get('/api/trader/history', requireAuth(sessions), (c) =>
-    c.json({ activations: repo.listActivations(db, 100) }),
+    c.json({ activations: repo.listActivations(db, 100, bookMode) }),
   );
-  app.get('/api/positions', requireAuth(sessions), (c) => c.json({ positions: repo.listPositions(db, 200) }));
-  app.get('/api/closes', requireAuth(sessions), (c) => c.json({ lots: repo.listPnlLots(db, 500) }));
+  app.get('/api/positions', requireAuth(sessions), (c) =>
+    c.json({ positions: repo.listPositions(db, 200, bookMode) }),
+  );
+  app.get('/api/closes', requireAuth(sessions), (c) => c.json({ lots: repo.listPnlLots(db, 500, bookMode) }));
   app.get('/api/candidates', requireAuth(sessions), (c) =>
     c.json({
       candidates: repo.listCandidates(db),
@@ -223,20 +235,30 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       ...row,
       handle: repo.getCandidate(db, row.candidateId)?.handle ?? row.candidateId,
     }));
-    return c.json({ rejections: repo.listRiskRejections(db, 300), candidateRejections });
+    return c.json({
+      rejections: repo.listRiskRejections(db, 300, bookMode),
+      candidateRejections,
+    });
   });
   app.get('/api/reconciliation', requireAuth(sessions), (c) =>
     c.json({ cases: repo.openReconciliationCases(db) }),
   );
   app.get('/api/observed-events', requireAuth(sessions), (c) =>
-    c.json({ events: repo.listObservedEvents(db, undefined, 200) }),
+    c.json({ events: repo.listObservedEvents(db, undefined, 200, bookMode) }),
   );
 
   // ---- settings -----------------------------------------------------------------
-  app.get('/api/settings', requireAuth(sessions), (c) => {
+  app.get('/api/settings', requireAuth(sessions), async (c) => {
+    const readiness = await rt.readiness();
+    let publicKey: string | null = null;
+    try {
+      publicKey = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE);
+    } catch {
+      publicKey = null;
+    }
     return c.json({
       mode: rt.config.mode,
-      armed: rt.control.flags.armed && rt.config.mode === 'live',
+      armed: rt.control.flags.armed && rt.config.mode === 'live' && rt.liveExecutorMounted(),
       risk: rt.config.risk,
       paperAssumptions: PAPER_ASSUMPTIONS,
       providers: {
@@ -252,15 +274,18 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         fomoApiBaseUrl: rt.config.env.FOMOAPI_BASE_URL,
       },
       wallet: {
-        exists: Boolean(walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)),
-        publicKey: walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE),
+        exists: Boolean(publicKey),
+        publicKey,
       },
-      readiness: rt.readiness(),
+      readiness,
+      live: {
+        executorMounted: rt.liveExecutorMounted(),
+      },
       control: rt.control.flags,
       hiring: {
         mode: rt.config.env.HIRE_APPROVAL,
         hiresToday: repo
-          .listActivations(db, 500)
+          .listActivations(db, 500, bookMode)
           .filter((a) => a.startedAt >= new Date(new Date().toISOString().slice(0, 10)).toISOString()).length,
       },
       liveAckString: LIVE_ACK_STRING,
@@ -444,12 +469,18 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
 
   // ---- candidate + trader controls --------------------------------------------------
   app.post('/api/activate', requireAuth(sessions), requireCsrf, async (c) => {
+    const ip = c.req.header('x-forwarded-for') ?? 'local';
+    const rl = controlLimiter.check(ip + 'activate');
+    if (!rl.allowed) return c.json({ error: `rate limited; retry in ${rl.retryAfterSeconds}s` }, 429);
     const body = await c.req.json().catch(() => null);
-    const { candidateId } = (body ?? {}) as { candidateId?: string };
+    const { candidateId, confirm } = (body ?? {}) as { candidateId?: string; confirm?: string };
     if (!candidateId) return c.json({ error: 'candidateId required' }, 400);
+    if (rt.config.mode === 'live' && confirm !== 'ACTIVATE') {
+      return c.json({ error: 'live activation requires {"confirm":"ACTIVATE"}' }, 400);
+    }
     // The roster is addressed per candidate: a candidate already holding a chair
     // is refused here rather than silently double-booked (plan 05).
-    if (repo.listActiveActivations(db).some((a) => a.candidateId === candidateId)) {
+    if (repo.listActiveActivations(db, bookMode).some((a) => a.candidateId === candidateId)) {
       return c.json({ error: 'that candidate already holds a roster chair' }, 409);
     }
     const result = await rt.lifecycle.activate(candidateId, 'manual');
@@ -459,10 +490,20 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   });
 
   app.post('/api/fire', requireAuth(sessions), requireCsrf, async (c) => {
+    const ip = c.req.header('x-forwarded-for') ?? 'local';
+    const rl = controlLimiter.check(ip + 'fire');
+    if (!rl.allowed) return c.json({ error: `rate limited; retry in ${rl.retryAfterSeconds}s` }, 429);
     // The roster addresses ONE chair: an explicit activationId (or candidateId)
     // picks it; a bare call is only unambiguous with a single active leader.
-    const body = (await c.req.json().catch(() => ({}))) as { activationId?: string; candidateId?: string };
-    const active = repo.listActiveActivations(db);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      activationId?: string;
+      candidateId?: string;
+      confirm?: string;
+    };
+    if (rt.config.mode === 'live' && body.confirm !== 'FIRE') {
+      return c.json({ error: 'live firing requires {"confirm":"FIRE"}' }, 400);
+    }
+    const active = repo.listActiveActivations(db, bookMode);
     const target = body.activationId
       ? active.find((a) => a.activationId === body.activationId)
       : body.candidateId
@@ -806,6 +847,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       amount?: string;
       walletSecret?: string;
       confirm?: string;
+      idempotencyKey?: string;
     };
     const result = await rt.withdraw.send({
       asset: body.asset === 'SOL' ? 'SOL' : 'USDC',
@@ -813,6 +855,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       amount: body.amount ?? '',
       walletSecret: body.walletSecret ?? '',
       confirm: body.confirm ?? '',
+      idempotencyKey: body.idempotencyKey,
     });
     if (!result.ok) return c.json({ error: result.error, code: result.code }, 400);
     rt.rebuildState();
@@ -902,7 +945,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     rt.control.emergencyStop();
     return {
       ok: true,
-      note: 'new entries and non-risk-reducing signing blocked; already-submitted transactions cannot be recalled',
+      note: 'new entries blocked; risk-reducing exits remain signable; use close-all to flatten, then lock-wallet',
     };
   });
   controlRoute('/api/control/emergency-clear', () => {
@@ -931,10 +974,28 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     return { ok: true, result };
   });
 
+  controlRoute('/api/control/reconcile-now', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { confirm?: string };
+    if (body.confirm !== 'RECONCILE') {
+      return { error: 'reconcile-now requires {"confirm":"RECONCILE"}' };
+    }
+    const result = await rt.reconcileNow();
+    return { ok: true, result };
+  });
+
   app.post('/api/control/arm-live', requireAuth(sessions), requireCsrf, async (c) => {
+    const ip = c.req.header('x-forwarded-for') ?? 'local';
+    const rl = controlLimiter.check(ip + 'arm-live');
+    if (!rl.allowed) return c.json({ error: `rate limited; retry in ${rl.retryAfterSeconds}s` }, 429);
     if (rt.config.mode !== 'live') return c.json({ error: 'MODE is not live' }, 400);
-    const readiness = rt.readiness();
+    const readiness = await rt.readiness();
+    rt.setLiveReadiness(readiness.ready);
     if (!readiness.ready) {
+      repo.audit(db, 'control', 'arm-live refused: readiness blockers', {
+        blockers: readiness.items
+          .filter((item) => item.severity === 'blocker' && !item.ok)
+          .map((item) => item.id),
+      });
       return c.json({ error: 'readiness blockers remain', readiness }, 400);
     }
     if (!rt.config.env.LIVE_TRADING) {
@@ -942,27 +1003,27 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     const body = (await c.req.json().catch(() => ({}))) as { ack?: string; walletSecret?: string };
     if (body.ack !== LIVE_ACK_STRING) {
+      repo.audit(db, 'control', 'arm-live refused: confirmation string mismatch');
       return c.json(
         { error: `ack must equal the documented confirmation string`, expected: LIVE_ACK_STRING },
         400,
       );
     }
+    const passphrase = rt.config.env.COPYDESK_WALLET_PASSPHRASE || (body.walletSecret ?? '');
     let secret: Uint8Array;
     try {
-      secret = loadWalletSecret(
-        rt.config.env.DATA_DIR,
-        rt.config.env.COPYDESK_WALLET_PASSPHRASE || (body.walletSecret ?? ''),
-        rt.config.env.WALLET_FILE,
-      );
+      secret = loadWalletSecret(rt.config.env.DATA_DIR, passphrase, rt.config.env.WALLET_FILE);
     } catch (e) {
+      repo.audit(db, 'control', 'arm-live refused: wallet unlock failed', {
+        error: (e as Error).message,
+      });
       return c.json({ error: `wallet unlock failed: ${(e as Error).message}` }, 400);
     }
-    // Seal the passphrase to this Windows account so a restart can restore
-    // live arming without operator input. A failure here does not block
-    // arming; it only means the next restart will disarm as before.
+    // Seal the ACTUAL passphrase (env or body) so a restart can restore live
+    // arming. A sealing failure only means the next restart disarms.
     let survivesRestart = false;
     try {
-      survivesRestart = rememberWalletPassphrase(rt.config.env.DATA_DIR, body.walletSecret ?? '');
+      survivesRestart = rememberWalletPassphrase(rt.config.env.DATA_DIR, passphrase);
       if (!survivesRestart) {
         repo.audit(
           db,
@@ -975,11 +1036,19 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
         error: (e as Error).message,
       });
     }
-    const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE)!;
+    let pk: string | null = null;
+    try {
+      pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE);
+    } catch {
+      pk = null;
+    }
+    if (!pk) return c.json({ error: 'wallet public key is unreadable' }, 400);
     rt.mountLiveExecutor(
       new LiveExecutor(rt.jupiter, rt.heliusRpcUrl(), secret, pk, undefined, rt.liveSubmit()),
     );
     rt.control.armLive();
+    repo.audit(db, 'control', 'arm-live succeeded', { survivesRestart });
+    rt.notifyUser('Copydesk LIVE armed. New entries may sign real transactions.');
     rt.rebuildState();
     return c.json({
       ok: true,
@@ -989,8 +1058,30 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   });
 
   controlRoute('/api/control/disarm', () => {
+    // Exits stay signable: the executor is intentionally NOT unmounted here.
     rt.control.disarm();
+    return { ok: true, note: 'new entries stopped; exits remain signable' };
+  });
+
+  controlRoute('/api/control/lock-wallet', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { confirm?: string };
+    if (body.confirm !== 'LOCK-WALLET') {
+      return { error: 'lock-wallet requires {"confirm":"LOCK-WALLET"}' };
+    }
+    const liveMode = rt.config.mode === 'live' ? 'live' : 'paper';
+    if (
+      repo.exposurePositions(db, liveMode).length > 0 ||
+      repo.openReconciliationCases(db, liveMode).length > 0 ||
+      repo.signedIntents(db, liveMode).length > 0
+    ) {
+      return {
+        error:
+          'cannot lock the wallet while live positions, signed orders or reconciliation cases remain; close-all and resolve first',
+      };
+    }
     rt.unmountLiveExecutor();
+    rt.control.lockWallet();
+    rt.notifyUser('Copydesk wallet locked. No signing until re-armed.');
     return { ok: true };
   });
 
@@ -1002,7 +1093,12 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
   });
 
   app.get('/api/wallet/public-key', requireAuth(sessions), (c) => {
-    const pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE);
+    let pk: string | null = null;
+    try {
+      pk = walletPublicKey(rt.config.env.DATA_DIR, rt.config.env.WALLET_FILE);
+    } catch {
+      pk = null;
+    }
     return c.json({ publicKey: pk });
   });
 

@@ -46,8 +46,35 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
 - **Fail closed.** Unknown signed/submitted outcomes become
   `REQUIRES_RECONCILIATION`; never blind-retry. Stale or ambiguous inputs are
   skipped or rejected, not guessed.
-- **Paper never signs.** The live executor is constructed only after explicit
-  arming; tests and demo mode never construct it.
+- **Paper never signs.** The live executor is constructed only by an explicit
+  arm or a boot restore; paper mode never mounts it. Tests exercise it with
+  stubs/ephemeral keys and never submit a real transaction. Paper and live books
+  are separate (`mode` on activations,
+  positions, lots, events, rejections and cases); a live engine cannot close a
+  paper position and vice versa.
+- **Live execution is evidence-first.** The validated builder
+  (`src/services/txBuild.ts`) rejects partial/wrong-payer/unexpected-signer/
+  no-CU/oversized builds and supports v0/lookup tables; `LiveExecutor` persists
+  signature/blockhash/height/signed bytes through hooks before the send, matches
+  the provider signature to the local one, and confirms with the signed
+  transaction's own blockhash. `CopyEngine.reconcileSignedIntents` resolves
+  signed/submitted/unknown outcomes every 30 seconds from chain status and token
+  deltas; the runtime also reconciles withdrawals.
+- **Entries reserve, exits lock.** `src/services/locks.ts` serializes entries
+  per activation, exits per position, firing per activation and withdrawals.
+  Entry caps count `reserved_usd_micro`, remaining cost basis/fees and
+  reconciling exposure; a partial close releases basis. A fire cannot interleave
+  with an entry, and a late fill is frozen for reconciliation.
+- **Arming is a readiness gate.** `src/services/readiness.ts` is async and
+  covers the wallet, provider health, SOL/USDC, cash reconciliation against the
+  book, pending orders/withdrawals, clock and DB. Disarm/emergency stop block
+  new entries but keep exits signable; `lock-wallet` (flat only) forgets the
+  secret. Real withdrawals require `MODE=live` + `LIVE_TRADING=true`, are
+  idempotent, serialized and chain-reconciled.
+- **Backups follow the configured wallet.** OPS backup uses SQLite's online
+  backup API, copies `WALLET_FILE` (wherever it lives) plus the DPAPI file, and
+  writes a hash manifest; `pnpm db:restore` refuses while the worker lock is
+  held.
 - **Every dashboard number is traceable.** `src/services/state.ts` is the SSE /
   REST contract; each figure must trace to fixtures, paper calc, or persisted
   evidence with a source and freshness label.
@@ -92,7 +119,9 @@ public|helius`, free public RPC by default), `wallet-activity` (ad-hoc
 
 - `pnpm --filter @zcode-bot/server test` — `auth-api`, `engine-flow`,
   `daytrader`, `keys`, `ops`, `reports`, `withdraw`, `param-sweep`,
-  `weekly-review` suites.
+  `weekly-review`, plus `live-safety` (build validation, send classification,
+  durable signed state/reconciliation, readiness cash check) and `live-send`
+  (signer/send ladder with stubs).
 - `pnpm --filter @zcode-bot/server typecheck`
 - End-to-end behavior: `pnpm e2e` (the Playwright config boots this server in
   demo mode with an isolated `DATA_DIR`).

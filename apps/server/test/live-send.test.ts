@@ -2,13 +2,33 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 import { evaluateP1Acceptance, liveStartDecision } from '@zcode-bot/core';
 import type { JupiterProvider } from '@zcode-bot/providers';
 import { generateWalletFile, loadWalletSecret } from '../src/wallet.js';
 import { LiveExecutor, type IntentSpec } from '../src/services/executors.js';
 import { sendSignedTransaction } from '../src/services/sendPath.js';
 import { assembleJupiterBuild, withSenderTip } from '../src/services/txBuild.js';
+
+const JUPITER_PROGRAM = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
+
+/** A structurally valid `/build` body: CU limit + one Jupiter swap instruction. */
+function buildBody(payer: string) {
+  const cu = Buffer.alloc(5);
+  cu[0] = 2; // SetComputeUnitLimit
+  cu.writeUInt32LE(200_000, 1);
+  return {
+    computeBudgetInstructions: [
+      { programId: COMPUTE_BUDGET_PROGRAM, accounts: [], data: cu.toString('base64') },
+    ],
+    swapInstruction: {
+      programId: JUPITER_PROGRAM,
+      accounts: [{ pubkey: payer, isSigner: true, isWritable: true }],
+      data: '',
+    },
+  };
+}
 
 describe('live start gate', () => {
   it('refuses to sign unless LIVE_TRADING is on and the P1 checks pass', () => {
@@ -55,6 +75,7 @@ describe('send ladder', () => {
     const calls: string[] = [];
     const out = await sendSignedTransaction({
       signedBase64: body,
+      expectedSignature: 'sender-sig',
       heliusRpcUrl: 'https://helius.example',
       publicRpcUrl: 'https://public.example',
       apiKey: 'k',
@@ -73,6 +94,7 @@ describe('send ladder', () => {
     let staked = 0;
     const out = await sendSignedTransaction({
       signedBase64: body,
+      expectedSignature: 'public-sig',
       heliusRpcUrl: 'https://helius.example',
       publicRpcUrl: 'https://public.example',
       apiKey: 'k',
@@ -95,6 +117,7 @@ describe('send ladder', () => {
     let calls = 0;
     const out = await sendSignedTransaction({
       signedBase64: body,
+      expectedSignature: 'unknown-sig',
       heliusRpcUrl: 'https://helius.example',
       publicRpcUrl: 'https://public.example',
       apiKey: '',
@@ -111,28 +134,25 @@ describe('send ladder', () => {
 describe('jupiter build assembly and wallet file', () => {
   it('assembles instructions into a transaction and can add the SWQOS tip', () => {
     const payer = Keypair.generate().publicKey;
-    const program = SystemProgram.programId.toBase58();
-    const built = assembleJupiterBuild(
-      {
-        swapInstruction: {
-          programId: program,
-          accounts: [{ pubkey: payer.toBase58(), isSigner: true, isWritable: true }],
-          data: Buffer.from([2, 0, 0, 0]).toString('base64'),
-        },
-      },
-      '11111111111111111111111111111111',
-      payer.toBase58(),
-    );
-    expect(built.length).toBeGreaterThan(10);
-    const tipped = withSenderTip(built, payer.toBase58(), '11111111111111111111111111111111');
+    const built = assembleJupiterBuild(buildBody(payer.toBase58()), {
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: 9,
+      payer: payer.toBase58(),
+    });
+    expect(built.base64.length).toBeGreaterThan(10);
+    expect(built.kind).toBe('legacy');
+    expect(built.tipLamports).toBe(5_000);
+    expect(built.tipAccount).toBeTruthy();
+    const tipped = withSenderTip(built.base64, payer.toBase58(), '11111111111111111111111111111111');
     expect(tipped).toBeTruthy();
-    expect(tipped).not.toBe(built);
+    expect(tipped).not.toBe(built.base64);
   });
 
   it('skips the staked send when the governor refuses the credit', async () => {
     const calls: string[] = [];
     const out = await sendSignedTransaction({
       signedBase64: 'signed',
+      expectedSignature: 'public-sig',
       heliusRpcUrl: 'https://helius.example',
       publicRpcUrl: 'https://public.example',
       apiKey: 'k',
@@ -151,17 +171,6 @@ describe('jupiter build assembly and wallet file', () => {
 
   it('signs a /build transaction and hands it to the send ladder', async () => {
     const signer = Keypair.generate();
-    const built = assembleJupiterBuild(
-      {
-        swapInstruction: {
-          programId: SystemProgram.programId.toBase58(),
-          accounts: [{ pubkey: signer.publicKey.toBase58(), isSigner: true, isWritable: true }],
-          data: Buffer.from([2, 0, 0, 0]).toString('base64'),
-        },
-      },
-      '11111111111111111111111111111111',
-      signer.publicKey.toBase58(),
-    );
     const calls: boolean[] = [];
     const executor = new LiveExecutor(
       {
@@ -171,7 +180,7 @@ describe('jupiter build assembly and wallet file', () => {
           priceImpactPct: '0',
           slippageBps: 50,
           routePlan: [],
-          swapTransaction: built,
+          ...buildBody(signer.publicKey.toBase58()),
         }),
         buildSwap: async () => {
           throw new Error('buildSwap should not run when /build already returned a transaction');

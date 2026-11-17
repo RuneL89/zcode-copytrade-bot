@@ -5,32 +5,33 @@
 The worker's service layer. Each file owns one slice of runtime behavior and
 the whole set is constructed and scheduled by `runtime.ts`.
 
-| File                   | Owns                                                                                                                                                                                                                                                            |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents.                                                                                                                                     |
-| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the re-entry block (`canReenter` + `COOLDOWN_HOURS`), hand-off replacement tagging (`replacesActivationId`), and the seat-open webhook.                             |
-| `monitor.ts`           | Signature-first roster polling, risk-reducing code exits on ACTIVE and reconciling seats, completion of blocked fires after a full code exit, cursor persistence per hire, dedupe, restart reconciliation.                                                      |
-| `rosterStream.ts`      | Push filter: swap-program logs only, and the 60s outage switch back to the signature-first poll.                                                                                                                                                                |
-| `heliusStream.ts`      | Live Helius `logsSubscribe` for five seats, hot spare, roster-bucket byte meter, capped gap-fill (60s lookback, 4 transactions, 6 Helius calls per minute), a seat hired later is subscribed without waiting for the safety poll, and the outage poll switch.   |
-| `agentHooks.ts`        | Hire decision and tighten-only exit plan. Neither route can arm, sign, or withdraw.                                                                                                                                                                             |
-| `discovery.ts`         | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                                                                                                                |
-| `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling re-admission.                                                                                                                                 |
-| `dawn-targets.ts`      | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                                                                                                               |
-| `activity-check.ts`    | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                                                                                                                  |
-| `executors.ts`         | The execution boundary: paper simulation vs the armed live signer. Live submits through `sendPath.ts` (Sender, metered staked send, public RPC) and confirms. Pre-submission failures are retryable `failed`; only ambiguous sends/confirmations are `unknown`. |
-| `sendPath.ts`          | The live send ladder. A transport error after the request leaves the process is `unknown` and is not retried.                                                                                                                                                   |
-| `txBuild.ts`           | Assembles a Jupiter Swap v2 `/build` body into a legacy transaction and appends the SWQOS tip. Lookup-table messages skip Sender.                                                                                                                               |
-| `builder.ts`           | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                                                                                                                         |
-| `state.ts`             | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                                                                                                                          |
-| `control.ts`           | Pause, emergency stop, close-all, arm/disarm flags.                                                                                                                                                                                                             |
-| `readiness.ts`         | The live-readiness checklist; the wallet item follows the configured `WALLET_FILE`.                                                                                                                                                                             |
-| `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                                                                       |
-| `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                       |
-| `weeklyReview.ts`      | Read-only weekly "promised vs actual" report: DB queries, gap attribution, exit groups, hiring-rule/fired-trader checks, markdown/JSON, and the Monday 08:00 scheduler. Never writes trading state or calls providers.                                          |
-| `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`.                                                      |
-| `withdraw.ts`          | Wallet withdrawal flow and its guards.                                                                                                                                                                                                                          |
-| `paramSweep.ts`        | Read-only counterfactual replay: maps a DB copy to signals/hire windows, runs the real sizing/risk/exit/promotion rules with alternate parameters, splits train/test, and renders Markdown/JSON. Never applies a parameter.                                     |
-| `ops.ts`               | The fixed whitelisted operations runner.                                                                                                                                                                                                                        |
+| File                   | Owns                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.ts`            | The copy engine: classifies leader events, sizes 0.25x copies, evaluates entry risk, plans mirrored exits, records intents, reserves budget atomically, and reconciles signed/submitted outcomes from chain evidence.                                                                                                                                          |
+| `locks.ts`             | In-process `TradingLocks`: entries per activation, exits per position, firing per activation, the budget reservation lock and withdrawals. Lock order is activation → budget/position; never reverse.                                                                                                                                                          |
+| `lifecycle.ts`         | Activation (roster chairs), atomic firing, roster refill from the bench, the D4 bench gate, the re-entry block (`canReenter` + `COOLDOWN_HOURS`), hand-off replacement tagging (`replacesActivationId`), and the seat-open webhook.                                                                                                                            |
+| `monitor.ts`           | Signature-first roster polling, risk-reducing code exits on ACTIVE and reconciling seats, completion of blocked fires after a full code exit, cursor persistence per hire, dedupe, restart reconciliation.                                                                                                                                                     |
+| `rosterStream.ts`      | Push filter: swap-program logs only, and the 60s outage switch back to the signature-first poll.                                                                                                                                                                                                                                                               |
+| `heliusStream.ts`      | Live Helius `logsSubscribe` for five seats, hot spare, roster-bucket byte meter, capped gap-fill (60s lookback, 4 transactions, 6 Helius calls per minute), a seat hired later is subscribed without waiting for the safety poll, and the outage poll switch.                                                                                                  |
+| `agentHooks.ts`        | Hire decision and tighten-only exit plan. Neither route can arm, sign, or withdraw.                                                                                                                                                                                                                                                                            |
+| `discovery.ts`         | The fomoapi discovery inlet and the D5 demand trigger (bench/target, rate limit, credits audit).                                                                                                                                                                                                                                                               |
+| `watch.ts`             | The watch list and shadow ledger: admission, funded-swap application, ceilings, bench admission/demotion, cooling re-admission.                                                                                                                                                                                                                                |
+| `dawn-targets.ts`      | Pure Dawn target ordering: walletless-first (freshest board rows), then stale-stats oldest-first.                                                                                                                                                                                                                                                              |
+| `activity-check.ts`    | One candidate-wallet activity reading: free public RPC primary, Helius fallback; shared by the runtime refreshes and the CLIs.                                                                                                                                                                                                                                 |
+| `executors.ts`         | The execution boundary: paper simulation vs the armed live signer. Live validates/builds/simulates, persists signed/submitted evidence through hooks, checks entry balances, submits through `sendPath.ts`, and confirms with the signed transaction's blockhash. Pre-submission failures are retryable `failed`; ambiguous sends/confirmations are `unknown`. |
+| `sendPath.ts`          | The live send ladder. A provider signature must equal the locally signed signature; a transport error after the request leaves the process is `unknown` and stops the ladder. Already-processed is sent; preflight/simulation rejection is definitively failed.                                                                                                |
+| `txBuild.ts`           | Validates and assembles a Jupiter Swap v2 `/build` body: known Jupiter program, wallet as sole signer/fee payer, compute-unit limit, fresh blockhash, v0/lookup-table resolution, Sender tip, 1,232-byte limit. Partial/instruction-less builds are rejected.                                                                                                  |
+| `builder.ts`           | `StateBuilder`: composes the dashboard state from persisted evidence, with source and freshness labels.                                                                                                                                                                                                                                                        |
+| `state.ts`             | `DashboardState` payload contract plus the `StateStore` publish/subscribe used by SSE.                                                                                                                                                                                                                                                                         |
+| `control.ts`           | Pause, emergency stop, auto-pause, arm/disarm/lock-wallet flags. Disarm/emergency block entries but keep exits signable.                                                                                                                                                                                                                                       |
+| `readiness.ts`         | Async live-readiness checklist: mode/ACK/LIVE_TRADING, wallet, provider health, SOL/USDC, cash reconciliation vs the book, pending orders/withdrawals, worker, clock, DB integrity. Blockers gate arming; warnings do not.                                                                                                                                     |
+| `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                                                                                                                                                                      |
+| `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                                                                                                                      |
+| `weeklyReview.ts`      | Read-only weekly "promised vs actual" report: DB queries, gap attribution, exit groups, hiring-rule/fired-trader checks, markdown/JSON, and the Monday 08:00 scheduler. Never writes trading state or calls providers.                                                                                                                                         |
+| `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`.                                                                                                                                                     |
+| `withdraw.ts`          | Live-only, serialized, idempotent wallet withdrawals: a `withdrawals` row written before signing, signed evidence, unknown → reconciliation case, sent USDC reduces capital, chain reconciler.                                                                                                                                                                 |
+| `paramSweep.ts`        | Read-only counterfactual replay: maps a DB copy to signals/hire windows, runs the real sizing/risk/exit/promotion rules with alternate parameters, splits train/test, and renders Markdown/JSON. Never applies a parameter.                                                                                                                                    |
+| `ops.ts`               | The fixed whitelisted operations runner.                                                                                                                                                                                                                                                                                                                       |
 
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
@@ -96,7 +97,15 @@ no LLM in the loop (D6).
   audits exhaustion and leaves the code exits as the backstop — the monitor
   sweeps a `REQUIRES_RECONCILIATION` seat too. A signed,
   submitted, unknown, or reconciliation-owned intent is never retried; a retry
-  never freezes the chair.
+  never freezes the chair. A signed transaction that the chain proves expired
+  (past `lastValidBlockHeight + 150`, no status) is archived in the intent
+  reason and may be retried; a status read failure leaves it pending.
+- **Reconciliation is chain-evidence based.** `engine.reconcileSignedIntents`
+  processes signed, submitted and signature-bearing `requires_reconciliation`
+  intents; `withdraw.ts` does the same for withdrawals. The runtime runs both at
+  boot and every 30 s. A confirmed transaction is booked from actual token
+  deltas; an on-chain failure releases the position for the monitor; a live
+  blockhash stays pending.
 - **Admission reads fail closed, but a busy wallet is not disqualified.** A
   failed signature page or transaction detail read marks the activity check
   failed via `markCandidateActivityFailed`; the last good activity columns and
@@ -135,10 +144,28 @@ no LLM in the loop (D6).
   a stop, trail, green, bounce or grace-expired close.
 - **Signing only in `executors.ts`.** No other service may construct a signed
   transaction. Paper fills are simulated and labeled PAPER; live requires armed
-  state and readiness.
-- **Emergency stop** blocks new entries and non-risk-reducing signing, and
-  keeps monitoring/reconciliation running. It cannot recall submitted
-  transactions; neither code nor UI may imply otherwise.
+  state and readiness. The live executor validates the build, persists
+  `signed`/`submitted` evidence through hooks before the send, and re-checks the
+  seat/armed/pause state before signing and again before submitting.
+- **Books are mode-scoped.** Engine, lifecycle, monitor, builder, withdrawals
+  and reports pass the current mode. A live engine cannot close a paper
+  position (and vice versa); paper rows never count toward live equity, caps or
+  seats. Live starts with a clean book.
+- **Entry caps are reservations.** The budget lock recomputes exposure, sizes,
+  checks the per-mint/trader/bankroll caps and inserts the intent with
+  `reserved_usd_micro` atomically. Exposure includes remaining cost basis/fees,
+  pending reservations and unresolved entries. Partial closes release basis.
+- **Arming is a gate.** Readiness is async and includes chain balances plus cash
+  reconciliation; `restoreLiveArming` re-runs it, mounts the executor for exits
+  even when disarmed, and boot-disarms entries if a blocker remains. Disarm and
+  emergency stop keep exits signable; `lock-wallet` (flat only) forgets the key.
+- **Withdrawals are live-only and idempotent.** `withdraw.ts` refuses paper
+  mode, serializes with the withdraw lock, writes the `withdrawals` row before
+  signing, and turns an unknown broadcast into a reconciliation case that blocks
+  further withdrawals. Sent USDC reduces capital.
+- **Emergency stop** blocks new entries, disarms and keeps exits signable plus
+  monitoring/reconciliation running. It cannot recall submitted transactions;
+  neither code nor UI may imply otherwise. Clearing it does not re-arm.
 - **Nothing external writes trading state.** The retired research intake is gone (D6); the only writers are the worker's own services and the dashboard's authenticated, CSRF-guarded routes.
 - **`state.ts` is a public contract.** Every field it emits is consumed by the
   dashboard and must carry source + freshness. Do not emit an unlabeled
@@ -174,7 +201,10 @@ no LLM in the loop (D6).
   lifecycle, firing, and handoff; `ops.test.ts`, `withdraw.test.ts`,
   `reports.test.ts`, `daytrader.test.ts`, `auth-api.test.ts`, `keys.test.ts`
   cover their services; `param-sweep.test.ts` covers the read-only mapping,
-  report and empty-DB path.
+  report and empty-DB path; `live-safety.test.ts` covers build validation, send
+  classification, durable signed state + chain reconciliation, readiness cash
+  reconciliation and mode-scoped exits; `live-send.test.ts` covers the signer
+  and send ladder with stubs.
 - `pnpm --filter @zcode-bot/server typecheck`
 - Root gate before closeout.
 

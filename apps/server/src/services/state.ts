@@ -191,6 +191,8 @@ export interface DashboardState {
      */
     feesPaidUsdMicro: string | null;
     feesLamports: number | null;
+    /** Sender/SWQOS tips, counted in feesPaidUsdMicro. */
+    feesTipLamports: number | null;
     /** Rent currently locked in the wallet's SPL token accounts. */
     rentUsdMicro: string | null;
     rentLamports: number | null;

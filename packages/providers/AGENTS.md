@@ -51,12 +51,21 @@ notifications. This is the only package allowed to talk to the outside world.
   expired). Only a genuinely empty signature page is an `ok` zero; a
   signatures-present zero would erase an active wallet from the admission
   queue.
+- **Helius reconciliation reads are explicit.** `signatureStatus`,
+  `blockHeight`, `chainTime` and `transactionDetail(signature, owner)` provide
+  the evidence the worker needs for signed intents, blockhash expiry, clock
+  skew and actual token/SOL deltas. `solSpend` also reports Sender tips
+  (System transfers to the published tip accounts); the fee ledger counts them.
+  These are wallet-path reads and fail closed (null) rather than inventing zero.
 - **Jupiter uses Swap API v2** `GET /swap/v2/build` on `api.jup.ag` (free key,
   about 1 request/second, no platform fee). Every quote sends `taker`: the
   wallet pubkey when `WALLET_FILE` is present, otherwise a fixed valid pubkey.
-  Live assembly and
-  sending are not enabled. A rejected quote is not retried blind; paper falls
-  back to the cached price. A 400 `No routes found` is the typed
+  Live assembly is enabled through the server's validated builder (single
+  signer/payer, known Jupiter program, CU limit, v0/ALT, size); sending is the
+  server's send ladder, never this package. Quotes request
+  `dynamicComputeUnitLimit=true` and `wrapAndUnwrapSol=true` so the build
+  carries a CU limit and SOL setup/cleanup. A rejected quote is not retried
+  blind; paper falls back to the cached price. A 400 `No routes found` is the typed
   `JupiterNoRouteError`; `JupiterPriceProvider` wraps it as
   `PriceUnavailableError('no_route')` and caches it per mint for 60 minutes
   without HTTP. Transient failures (429/5xx/network) are never cached; a

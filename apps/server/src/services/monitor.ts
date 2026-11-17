@@ -108,6 +108,11 @@ export class LeaderMonitor {
    * stall watchers stay ACTIVE-only. A stuck reconciliation keeps its own chair
    * frozen and nothing else.
    */
+  /** Tests drive the idle/stall watchers with no engine; paper is the default book. */
+  private get bookMode(): 'paper' | 'live' {
+    return (this.engine as CopyEngine | null)?.mode ?? 'paper';
+  }
+
   async tick(now = new Date()): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
@@ -115,7 +120,7 @@ export class LeaderMonitor {
     try {
       this.lastError = null;
       let firstError: string | null = null;
-      for (const activation of repo.listActiveActivations(this.db)) {
+      for (const activation of repo.listActiveActivations(this.db, this.bookMode)) {
         try {
           await this.tickActivation(activation, now);
         } catch (e) {
@@ -219,7 +224,7 @@ export class LeaderMonitor {
    * reaches zero.
    */
   private async sweepPositions(activationId: string, now: Date): Promise<void> {
-    const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    const open = repo.openPositions(this.db, this.bookMode).filter((p) => p.activationId === activationId);
     const nowMs = now.getTime();
 
     for (const p of open) {
@@ -306,7 +311,9 @@ export class LeaderMonitor {
     }
 
     const lastOpenKey = `monitor.lastOpenAt:${activationId}`;
-    const stillOpen = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    const stillOpen = repo
+      .openPositions(this.db, this.bookMode)
+      .filter((p) => p.activationId === activationId);
     if (stillOpen.length > 0) {
       repo.kvSet(this.db, lastOpenKey, now.toISOString());
     }
@@ -341,6 +348,15 @@ export class LeaderMonitor {
    */
   private async checkStall(activationId: string, now: Date): Promise<void> {
     const nowMs = now.getTime();
+    // A frozen position must not be orphaned by a stall firing; the operator
+    // resolves it (or the monitor's code exits close the rest of the seat).
+    if (
+      repo
+        .exposurePositions(this.db, this.bookMode)
+        .some((p) => p.activationId === activationId && p.status === 'requires_reconciliation')
+    ) {
+      return;
+    }
     const activation = repo.getActivation(this.db, activationId);
     const candidate = activation ? repo.getCandidate(this.db, activation.candidateId) : null;
     if (activation && candidate) {
@@ -378,7 +394,11 @@ export class LeaderMonitor {
    */
   private async checkIdle(activationId: string, startedAt: string, now: Date): Promise<boolean> {
     const lastOpenKey = `monitor.lastOpenAt:${activationId}`;
-    const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    // A reconciling position is still a held position: an idle fire would
+    // orphan it under a FIRED seat.
+    const open = repo
+      .exposurePositions(this.db, this.bookMode)
+      .filter((p) => p.activationId === activationId);
     if (open.length > 0) {
       repo.kvSet(this.db, lastOpenKey, now.toISOString());
       return false;
@@ -462,8 +482,11 @@ export class LeaderMonitor {
 }
 
 /** Startup reconciliation of ambiguous intents. */
-export function reconcileOpenIntents(db: AppDatabase): { opened: number; resolved: number } {
-  const open = repo.openReconciliationCases(db);
+export function reconcileOpenIntents(
+  db: AppDatabase,
+  mode?: 'paper' | 'live',
+): { opened: number; resolved: number } {
+  const open = repo.openReconciliationCases(db, mode);
   let resolved = 0;
   for (const c of open) {
     if (!c.intentId) continue;
@@ -475,7 +498,7 @@ export function reconcileOpenIntents(db: AppDatabase): { opened: number; resolve
     }
     // Everything else stays open; an operator resolves via the Runbook.
   }
-  const stillOpen = repo.openReconciliationCases(db).length;
+  const stillOpen = repo.openReconciliationCases(db, mode).length;
   if (stillOpen > 0) {
     repo.audit(db, 'reconciliation', `${stillOpen} case(s) require manual reconciliation`, {});
   }

@@ -71,7 +71,15 @@ export function remainingCostBasis(p: {
   inputUsdMicro: string;
   copiedTokenBase: string;
   remainingTokenBase: string;
+  /** Authoritative stored basis on a persisted position row. */
+  remainingCostBasisUsdMicro?: string;
 }): bigint {
+  if (p.remainingCostBasisUsdMicro !== undefined) {
+    const stored = BigInt(p.remainingCostBasisUsdMicro);
+    // Legacy/test rows default to '0' without a real update. Only trust the
+    // stored value when it is positive or the position truly had no input.
+    if (stored > 0n || BigInt(p.inputUsdMicro) === 0n) return stored;
+  }
   const input = BigInt(p.inputUsdMicro);
   const copied = BigInt(p.copiedTokenBase);
   const remaining = BigInt(p.remainingTokenBase);
@@ -101,6 +109,20 @@ export class StateBuilder {
       jupiter: 'OK' | 'DEGRADED' | 'DOWN' | 'UNCONFIGURED';
     } = { helius: 'UNCONFIGURED', jupiter: 'UNCONFIGURED' },
   ) {}
+
+  /** Dashboard numbers are scoped to the book the runtime is trading. */
+  private get mode(): 'paper' | 'live' {
+    return this.config.mode === 'live' ? 'live' : 'paper';
+  }
+
+  /** Updated by the runtime when the live executor mounts/unmounts. */
+  private liveExecutorMounted = false;
+  private liveReadinessOk: boolean | null = null;
+
+  setLiveState(state: { executorMounted: boolean; readinessOk: boolean | null }): void {
+    this.liveExecutorMounted = state.executorMounted;
+    this.liveReadinessOk = state.readinessOk;
+  }
 
   setHealth(h: {
     helius: 'OK' | 'DEGRADED' | 'DOWN' | 'UNCONFIGURED';
@@ -132,12 +154,13 @@ export class StateBuilder {
   private feeLedger: {
     totals: {
       feeLamports: number;
+      tipLamports: number;
       rentLamports: number;
       accountsOpened: number;
       accountsClosed: number;
       txs: number;
     };
-    tx: Record<string, { feeLamports: number; rentLamports: number }>;
+    tx: Record<string, { feeLamports: number; tipLamports?: number; rentLamports: number }>;
     solUsdMicro: bigint | null;
   } | null = null;
 
@@ -180,7 +203,7 @@ export class StateBuilder {
     // --- app state -------------------------------------------------------
     // The roster (plan 05): the first chair keeps the legacy `activeTrader`
     // shape for one release; plan 06 removes it in favour of `roster`.
-    const activeActivations = repo.listActiveActivations(this.db);
+    const activeActivations = repo.listActiveActivations(this.db, this.mode);
     const activation = activeActivations[0] ?? null;
     let appState: DashboardState['appState'] = 'RUNNING';
     if (this.control.flags.emergencyStopped) appState = 'EMERGENCY_STOPPED';
@@ -195,8 +218,8 @@ export class StateBuilder {
     }
 
     // --- equity + closes ---------------------------------------------------
-    const positions = repo.listPositions(this.db, 200);
-    const lots = repo.listPnlLots(this.db, 500);
+    const positions = repo.listPositions(this.db, 200, this.mode);
+    const lots = repo.listPnlLots(this.db, 500, this.mode);
     const equityStart = this.equityStartUsdMicro;
     let equityNow = equityStart;
     for (const lot of lots) equityNow += BigInt(lot.pnlUsdMicro);
@@ -233,7 +256,7 @@ export class StateBuilder {
     const entrySpendByPosition = new Map<string, { feeLamports: number; rentLamports: number }>();
     if (this.feeLedger) {
       const fillsOldestFirst = repo
-        .listFills(this.db, 500)
+        .listFills(this.db, 500, this.mode)
         .slice()
         .sort((a, b) => Date.parse(a.confirmedAt) - Date.parse(b.confirmedAt));
       for (const fill of fillsOldestFirst) {
@@ -297,7 +320,7 @@ export class StateBuilder {
     let activeTrader: DashboardState['activeTrader'] = null;
     if (activation) {
       const candidate = repo.getCandidate(this.db, activation.candidateId);
-      const activations = repo.listActivations(this.db, 500);
+      const activations = repo.listActivations(this.db, 500, this.mode);
       const firedCount = activations.filter(
         (a) => a.candidateId === activation.candidateId && a.state === 'FIRED',
       ).length;
@@ -313,7 +336,7 @@ export class StateBuilder {
         (l) => this.activationOfPosition(l.positionId) === activation.activationId,
       );
       const bought = repo
-        .intentsInStates(this.db, ['confirmed'])
+        .intentsInStates(this.db, ['confirmed'], this.mode)
         .filter((i) => i.kind === 'entry' && i.activationId === activation.activationId)
         .reduce((acc, i) => ({ count: acc.count + 1, usd: acc.usd + BigInt(i.inputUsdMicro ?? '0') }), {
           count: 0,
@@ -344,23 +367,34 @@ export class StateBuilder {
     }
 
     // --- activity tape (leader buys → copy/skip, exits, unmatched sells) ----
-    const observedEvents = repo.listObservedEvents(this.db, undefined, OBSERVED_WINDOW);
+    const observedEvents = repo.listObservedEvents(this.db, undefined, OBSERVED_WINDOW, this.mode);
     const tape = this.buildActivity(positions, lots, observedEvents, now);
     const noise = tape.noiseCount;
 
     // --- counters (UTC day, same boundary the engine's risk gates use) ------
     const dayStartIso = new Date(new Date(now).toISOString().slice(0, 10)).toISOString();
     const intentsOfToday = repo
-      .intentsInStates(this.db, ['confirmed', 'skipped', 'quote_rejected'])
+      .intentsInStates(this.db, ['confirmed', 'skipped', 'quote_rejected'], this.mode)
       .filter((i) => i.kind === 'entry' && i.createdAt >= dayStartIso);
     const staleRejectionsToday = repo
-      .listRiskRejections(this.db, 200)
+      .listRiskRejections(this.db, 200, this.mode)
       .filter((r) => r.rule === 'MAX_COPY_EVENT_AGE_SECONDS' && r.createdAt >= dayStartIso);
+    const pendingEntries = repo.pendingEntryIntents(this.db, this.mode);
+    const unresolvedEntries = repo.unresolvedEntryIntents(this.db, this.mode);
+    const withdrawalTotals = repo.withdrawalTotals(this.db, this.mode);
+    const reservedEntryUsdMicro =
+      pendingEntries.reduce((acc, i) => acc + BigInt(i.reservedUsdMicro), 0n) +
+      unresolvedEntries.reduce((acc, i) => acc + BigInt(i.inputUsdMicro ?? '0'), 0n);
     const bank = bankrollHeadroom({
       equityStartUsdMicro: this.equityStartUsdMicro,
-      openEntriesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
-      openFeesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
-      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
+      openEntriesUsdMicro: openPositionRows.reduce(
+        (acc, p) => acc + BigInt(p.remainingCostBasisUsdMicro),
+        0n,
+      ),
+      openFeesUsdMicro: openPositionRows.reduce((acc, p) => acc + BigInt(p.remainingFeesUsdMicro), 0n),
+      reservedEntryUsdMicro,
+      capitalAdjustmentsUsdMicro: -(withdrawalTotals.sentUsdMicro + withdrawalTotals.reservedUsdMicro),
+      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z', this.mode),
       maxDeployedPct: this.config.risk.MAX_DEPLOYED_PCT,
     });
     const deployedPct =
@@ -376,7 +410,9 @@ export class StateBuilder {
     // evidence; nothing here is a guess. Null until the first ledger scan so
     // the dashboard can say "pending" instead of printing a fake zero.
     const feeLedgerTotals = this.feeLedger?.totals ?? null;
-    const networkFeesUsdMicro = feeLedgerTotals ? this.lamportsToUsdMicro(feeLedgerTotals.feeLamports) : null;
+    const networkFeesUsdMicro = feeLedgerTotals
+      ? this.lamportsToUsdMicro(feeLedgerTotals.feeLamports + feeLedgerTotals.tipLamports)
+      : null;
     const rentUsdMicro = feeLedgerTotals ? this.lamportsToUsdMicro(feeLedgerTotals.rentLamports) : null;
     const openTokenAccounts = feeLedgerTotals
       ? Math.max(0, feeLedgerTotals.accountsOpened - feeLedgerTotals.accountsClosed)
@@ -401,6 +437,7 @@ export class StateBuilder {
       idleFireHoursLeft,
       feesPaidUsdMicro: networkFeesUsdMicro?.toString() ?? null,
       feesLamports: feeLedgerTotals?.feeLamports ?? null,
+      feesTipLamports: feeLedgerTotals?.tipLamports ?? null,
       rentUsdMicro: rentUsdMicro?.toString() ?? null,
       rentLamports: feeLedgerTotals?.rentLamports ?? null,
       openTokenAccounts,
@@ -410,7 +447,7 @@ export class StateBuilder {
 
     // --- candidates panel ---------------------------------------------------
     const candidatesRows = repo.listCandidates(this.db);
-    const activations = repo.listActivations(this.db, 500);
+    const activations = repo.listActivations(this.db, 500, this.mode);
     const sessionStart = activations.length
       ? Date.parse(activations[activations.length - 1]!.startedAt)
       : now;
@@ -450,12 +487,14 @@ export class StateBuilder {
       version: 0,
       generatedAt: new Date(now).toISOString(),
       mode,
-      armed: this.control.flags.armed && mode === 'live',
+      armed: this.control.flags.armed && mode === 'live' && this.liveExecutorMounted,
       badges: dashboardBadges({
         mode,
-        armed: this.control.flags.armed,
+        armed: this.control.flags.armed && this.liveExecutorMounted,
         appState,
         dataStale: health.helius !== 'OK' && mode !== 'demo',
+        executorMounted: this.liveExecutorMounted,
+        liveHealthy: this.liveReadinessOk !== false,
       }),
       appState,
       control: {
@@ -770,7 +809,7 @@ export class StateBuilder {
     const replacements24h = activations.filter(
       (a) => a.source === 'watch_promotion' && a.startedAt >= cutoff24h,
     ).length;
-    const firings24h = repo.listFiringEventsSince(this.db, cutoff24h).length;
+    const firings24h = repo.listFiringEventsSince(this.db, cutoff24h, this.mode).length;
     const dayStart = new Date(new Date(now).toISOString().slice(0, 10)).toISOString();
     const hiresToday = activations.filter((a) => a.startedAt >= dayStart).length;
     // The fired lane: the newest firings, each with the chair's replacement
@@ -779,7 +818,7 @@ export class StateBuilder {
     // (another chair, another day) must not be reported as this firing's
     // replacement. The window allows one slow pass or a quick reconciliation
     // retry without stretching into a different story.
-    const firedLane = repo.listRecentFirings(this.db, 5).map((f) => {
+    const firedLane = repo.listRecentFirings(this.db, 5, this.mode).map((f) => {
       const firedMs = Date.parse(f.firedAt);
       const hire = Number.isFinite(firedMs)
         ? activations
@@ -905,9 +944,9 @@ export class StateBuilder {
     observed: ReturnType<typeof repo.listObservedEvents>,
     nowMs: number,
   ): { rows: DashboardState['activity']; noiseCount: number } {
-    const intents = repo.intentsInStates(this.db, ['confirmed', 'skipped', 'quote_rejected']);
+    const intents = repo.intentsInStates(this.db, ['confirmed', 'skipped', 'quote_rejected'], this.mode);
     const staleBySig = new Map<string, string>();
-    for (const r of repo.listRiskRejections(this.db, 200)) {
+    for (const r of repo.listRiskRejections(this.db, 200, this.mode)) {
       if (r.rule === 'MAX_COPY_EVENT_AGE_SECONDS' && r.detail?.includes('stale buy ')) {
         staleBySig.set(r.detail.replace('stale buy ', '').trim(), r.rule);
       }

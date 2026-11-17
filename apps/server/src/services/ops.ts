@@ -1,10 +1,20 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, cpSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  statSync,
+  cpSync,
+  rmSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { findRepoRoot } from '@zcode-bot/config';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { AppDatabase } from '@zcode-bot/db';
-import { generateWalletFile, walletExists, walletPublicKey } from '../wallet.js';
+import { generateWalletFile, walletExists, walletPublicKey, walletFilePath } from '../wallet.js';
 import type { Runtime } from '../runtime.js';
 
 /**
@@ -20,7 +30,10 @@ import type { Runtime } from '../runtime.js';
  * - Everything is audited (start, success, failure, rejection).
  */
 
-const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..', '..');
+// Canonical repo root (the package-relative `..` walk landed in apps/, not
+// the workspace root, so the supervisor stop file was written to the wrong
+// directory).
+const repoRoot = findRepoRoot(import.meta.url);
 
 export type OpGroup = 'setup' | 'server' | 'testing' | 'maintenance' | 'wallet';
 export type Danger = 'normal' | 'confirm' | 'destructive';
@@ -162,6 +175,12 @@ export function opDefinitions(rt: Runtime): OpDefinition[] {
       confirmWord: 'RUN',
       terminatesServer: true,
       action: (ctx) => {
+        if (process.env.COPYDESK_SUPERVISED === '1') {
+          // The supervisor owns the restart; spawning a second interpreter
+          // would race it for worker.lock.
+          setTimeout(() => process.exit(0), 400);
+          return 'supervised restart scheduled';
+        }
         ctx.spawnDetached(restartCommand(ctx.repoRoot));
         setTimeout(() => process.exit(0), 400);
         return 'restart scheduled';
@@ -171,14 +190,21 @@ export function opDefinitions(rt: Runtime): OpDefinition[] {
       id: 'shutdown-server',
       label: 'Shut server down',
       group: 'server',
-      description: 'Stops the app. Relaunch with the Desktop shortcut or install.bat.',
+      description: 'Stops the app and tells the supervisor not to restart it.',
       kind: 'action',
       danger: 'confirm',
       confirmWord: 'RUN',
       terminatesServer: true,
-      action: (ctx) => {
-        spawnDetachedRaw(`taskkill /F /PID ${process.pid} /T`);
-        return 'shutdown scheduled';
+      action: () => {
+        // The supervisor restarts any exit unless this file exists; the older
+        // watchdog honors it too.
+        const stop = join(repoRoot, 'logs', 'copydesk.stop');
+        mkdirSync(join(repoRoot, 'logs'), { recursive: true });
+        writeFileSync(stop, `${new Date().toISOString()} ops shutdown\n`, 'utf8');
+        const cmd =
+          process.platform === 'win32' ? `taskkill /F /PID ${process.pid} /T` : `kill -9 ${process.pid}`;
+        spawnDetachedRaw(cmd);
+        return 'shutdown scheduled (supervisor stop file written)';
       },
     },
     {
@@ -352,6 +378,7 @@ export function opDefinitions(rt: Runtime): OpDefinition[] {
               .slice(1)
               .map((a) => `"${a}"`)
               .join(' '),
+            process.env.COPYDESK_SUPERVISED === '1',
           ),
         );
         setTimeout(() => process.exit(0), 400);
@@ -621,17 +648,20 @@ function resetDbCommand(
   serverPid: number,
   execPath: string,
   serverArgs: string,
+  supervised: boolean,
 ): string {
   void port; // the relaunched server reads PORT from the environment it inherits
   const script = [
     '@echo off',
     `taskkill /F /PID ${serverPid} /T >nul 2>&1`,
-    'timeout /t 2 /nobreak >nul',
+    'timeout /t 3 /nobreak >nul',
     `del /q "${join(dataDir, 'zcode-bot.db')}" 2>nul`,
     `del /q "${join(dataDir, 'zcode-bot.db-wal')}" 2>nul`,
     `del /q "${join(dataDir, 'zcode-bot.db-shm')}" 2>nul`,
     `cd /d "${repoRootDir}"`,
-    `start "" /b "${execPath}" ${serverArgs}`,
+    // Under the supervisor, let it restart the single worker instead of
+    // spawning a second process that races the lock.
+    ...(supervised ? [] : [`start "" /b "${execPath}" ${serverArgs}`]),
   ].join('\r\n');
   // Persist the helper for auditability, then the returned command runs it detached.
   const helperPath = join(dataDir, 'reset-db-helper.cmd');
@@ -640,22 +670,51 @@ function resetDbCommand(
   return `"${helperPath}"`;
 }
 
-function backupData(rt: Runtime): string {
+async function backupData(rt: Runtime): Promise<string> {
   const dataDir = resolve(rt.config.env.DATA_DIR);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const dest = join(dataDir, 'backups', stamp);
   mkdirSync(dest, { recursive: true });
-  for (const name of ['zcode-bot.db', 'zcode-bot.db-wal', 'zcode-bot.db-shm']) {
-    const src = join(dataDir, name);
-    if (existsSync(src)) cpSync(src, join(dest, name));
-  }
-  // Wallet + research config (never any secret plaintext — wallet is encrypted at rest).
-  const wallet = join(dataDir, 'wallet', 'zcode-bot-wallet.json');
+
+  // Consistent SQLite snapshot (checkpoints WAL internally), not a raw copy of
+  // a live database file.
+  await rt.backupDatabase(join(dest, 'zcode-bot.db'));
+  const files = ['zcode-bot.db'];
+
+  // The configured wallet may live outside DATA_DIR; back up that exact file.
+  const wallet = walletFilePath(dataDir, rt.config.env.WALLET_FILE);
   if (existsSync(wallet)) {
     mkdirSync(join(dest, 'wallet'), { recursive: true });
-    cpSync(wallet, join(dest, 'wallet', 'zcode-bot-wallet.json'));
+    cpSync(wallet, join(dest, 'wallet', basename(wallet)));
+    files.push(`wallet/${basename(wallet)}`);
   }
-  return `backup written to ${basename(dest)}`;
+  // DPAPI-sealed passphrase: encrypted to the current Windows account. Included
+  // so a restore on the same account can auto-unlock; the backup folder itself
+  // must be protected.
+  const unlock = join(dataDir, 'wallet-unlock.dpapi');
+  if (existsSync(unlock)) {
+    cpSync(unlock, join(dest, 'wallet-unlock.dpapi'));
+    files.push('wallet-unlock.dpapi');
+  }
+
+  const manifest = {
+    createdAt: new Date().toISOString(),
+    mode: rt.config.mode,
+    walletFileConfigured: Boolean(rt.config.env.WALLET_FILE),
+    files: files.map((file) => {
+      const path = join(dest, file);
+      return {
+        file,
+        bytes: statSync(path).size,
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+      };
+    }),
+  };
+  writeFileSync(join(dest, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  for (const file of files) {
+    if (!existsSync(join(dest, file))) throw new Error(`backup verification failed: ${file} missing`);
+  }
+  return `backup written to ${basename(dest)} (${files.length} files, verified)`;
 }
 
 export { repoRoot as opsRepoRoot };

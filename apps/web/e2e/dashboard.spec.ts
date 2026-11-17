@@ -63,12 +63,12 @@ test.describe('redesigned demo desk', () => {
     await expect(page.getByRole('heading', { name: 'Audit' })).toBeVisible();
     await page.getByRole('button', { name: '← dashboard' }).click();
 
-    // Provider keys and the manual import are still reachable, but the legacy
-    // risk editor and arm-live tab are hidden.
+    // Provider keys and the manual import are still reachable; the legacy risk
+    // editor stays hidden, but the Live tab is the arm/disarm/lock control.
     await page.getByRole('link', { name: 'Provider keys & imports' }).click();
     await expect(page.getByTestId('provider-fomoapi')).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Risk', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('tab', { name: 'Live', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: 'Live', exact: true })).toBeVisible();
   });
 
   test('control endpoints reject requests without a CSRF header; state needs a session', async ({

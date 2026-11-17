@@ -24,8 +24,8 @@ reachable.
   and `src/redesign-extra.css`. Legacy/auth styling stays in `src/index.css`.
 - Legacy operator surfaces: `src/pages/Operations.tsx`, `Audit.tsx`,
   `WeeklyReview.tsx`, and `Settings.tsx` (reached via `#/legacy-settings`; its
-  Risk and Live tabs are hidden, so keys/imports stay available without a
-  second risk editor or an arm-live control).
+  Risk tab is hidden, but the **Live** tab remains the arm/disarm/lock-wallet
+  control and shows the readiness blockers).
 - Screenshots: `docs/screenshots/redesign/` — committed desktop/mobile
   captures of every main screen plus the PIN, seat/watch drawer and fire-modal
   states.

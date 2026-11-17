@@ -95,11 +95,12 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function seedPosition(recordsBase: string, inputUsdMicro = '90000000') {
+function seedPosition(recordsBase: string, inputUsdMicro = '90000000', mode: 'paper' | 'live' = 'live') {
   const activationId = 'act_' + crypto.randomUUID();
   repo.createActivation(handle.db, {
     activationId,
     candidateId: 'cand_test',
+    mode,
     state: 'ACTIVE',
     startedAt: new Date().toISOString(),
     endedAt: null,
@@ -113,17 +114,22 @@ function seedPosition(recordsBase: string, inputUsdMicro = '90000000') {
     positionId,
     activationId,
     candidateId: 'cand_test',
+    mode,
     mint: 'MintGTA6',
     mintSymbol: 'GTA6',
     status: 'open',
     entryIntentId: null,
     inputMint: USDC,
     inputUsdMicro: inputUsdMicro,
+    remainingCostBasisUsdMicro: inputUsdMicro,
+    remainingFeesUsdMicro: '0',
     copiedTokenBase: recordsBase,
     remainingTokenBase: recordsBase,
     leaderTokenBase: null,
     realizedPnlUsdMicro: '0',
     feesUsdMicro: '0',
+    mintDecimals: 6,
+    inputDecimals: 6,
     openedAt: new Date(Date.now() - 3600_000).toISOString(),
     closedAt: null,
     closeReason: null,
@@ -448,7 +454,7 @@ describe('exit queue retry', () => {
   });
 
   it('retries on the paper executor path too', async () => {
-    const { positionId } = seedPosition('1000');
+    const { positionId } = seedPosition('1000', '90000000', 'paper');
     let priceCalls = 0;
     const paper = new PaperExecutor(null, async () => {
       priceCalls++;
@@ -627,5 +633,62 @@ describe('exit queue retry', () => {
     const position = repo.getPosition(handle.db, positionId)!;
     expect(position.status).toBe('partially_closed');
     expect(position.remainingTokenBase).toBe('600');
+  });
+});
+
+describe('book boundaries and partial-close accounting', () => {
+  it('releases half the remaining cost basis on a partial close', async () => {
+    const { positionId } = seedPosition('1000', '10000000');
+    // Sell half for exactly its $5 basis: a break-even partial close.
+    const engine = engineWith(
+      new ScriptedExecutor([
+        {
+          kind: 'filled',
+          signature: 'sig-partial-basis',
+          inputAmountBase: '500',
+          outputAmountBase: '5000000',
+          feeUsdMicro: '0',
+          evidence: {},
+          commitment: 'confirmed',
+        },
+      ]),
+    );
+    expect(engine.headroomUsdMicro()).toBe(790_000_000n);
+
+    const result = await engine.closeShare(positionId, 5000, 'partial_tp');
+    expect(result).toBe('partial');
+    const position = repo.getPosition(handle.db, positionId)!;
+    expect(position.status).toBe('partially_closed');
+    expect(position.remainingTokenBase).toBe('500');
+    expect(position.remainingCostBasisUsdMicro).toBe('5000000');
+    expect(position.remainingFeesUsdMicro).toBe('0');
+    // The released half stops consuming bankroll headroom.
+    expect(engine.headroomUsdMicro()).toBe(795_000_000n);
+  });
+
+  it('refuses to close a paper position with a live engine', async () => {
+    const { positionId } = seedPosition('1000', '90000000', 'paper');
+    const engine = engineWith(new ScriptedExecutor([]));
+    const result = await engine.closePosition(positionId, 'manual');
+    expect(result).toBe('failed');
+    const position = repo.getPosition(handle.db, positionId)!;
+    expect(position.status).toBe('open');
+    expect(position.remainingTokenBase).toBe('1000');
+  });
+
+  it('refuses a direct close of a frozen position but allows the reconciliation retry', async () => {
+    const { positionId } = seedPosition('1000');
+    repo.updatePosition(handle.db, positionId, { status: 'requires_reconciliation' });
+    const engine = engineWith(new ScriptedExecutor([]));
+
+    // An agent/manual close must not re-sell while an exit is ambiguous.
+    expect(await engine.closePosition(positionId, 'agent_exit_now')).toBe('failed');
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('requires_reconciliation');
+
+    const result = await engine.closePosition(positionId, 'reconciliation_retry', {
+      allowFrozen: true,
+    });
+    expect(result).toBe('closed');
+    expect(repo.getPosition(handle.db, positionId)!.status).toBe('closed');
   });
 });

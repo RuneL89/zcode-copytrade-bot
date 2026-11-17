@@ -17,6 +17,7 @@
     "db:generate": "pnpm --filter @zcode-bot/db run db:generate",
     "db:migrate": "pnpm --filter @zcode-bot/db run db:migrate",
     "db:seed": "pnpm --filter @zcode-bot/db run db:seed",
+    "db:restore": "pnpm --filter @zcode-bot/server run db:restore --",
     "dev:server": "pnpm --filter @zcode-bot/server run dev",
     "dev:web": "pnpm --filter @zcode-bot/web run dev",
     "demo": "pnpm --filter @zcode-bot/server run demo",

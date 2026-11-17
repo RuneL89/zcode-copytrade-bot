@@ -54,6 +54,14 @@ export const envSchema = z.object({
    * cookie and cannot arm, sign, or withdraw.
    */
   AGENT_API_TOKEN: z.string().default(''),
+  /**
+   * Allow the agent API to fire/exit when MODE=live. Off by default: the
+   * authenticated agent channel is read-mostly unless the operator opts in.
+   */
+  AGENT_LIVE_CONTROL: z
+    .string()
+    .default('false')
+    .transform((v) => ['1', 'true', 'yes'].includes(v.trim().toLowerCase())),
   /** Outbound webhook for an opened seat. Empty disables the post. */
   AGENT_WEBHOOK_URL: z.string().url().optional(),
   /** `auto` fills a free seat from the bench. `agent` waits for a hire decision. */

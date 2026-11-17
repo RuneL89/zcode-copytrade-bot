@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { CopyEngine } from '../src/services/engine.js';
 import { TraderLifecycle } from '../src/services/lifecycle.js';
 import { ControlService } from '../src/services/control.js';
-import { PaperExecutor } from '../src/services/executors.js';
+import { PaperExecutor, type IntentSpec, type QuoteCheck } from '../src/services/executors.js';
 import { DemoEngine } from '../src/services/demo.js';
 import { StateBuilder } from '../src/services/builder.js';
 import { LeaderMonitor } from '../src/services/monitor.js';
@@ -697,7 +697,12 @@ describe('live mode: no trading before ARM', () => {
     const liveStub = {
       mode: 'live' as const,
       quote: paper.quote.bind(paper),
-      execute: paper.execute.bind(paper),
+      execute: async (spec: IntentSpec, quote: QuoteCheck) => {
+        const out = await paper.execute(spec, quote);
+        // A real live executor always returns the signature of the bytes it
+        // signed; the stub keeps paper prices but adds that evidence.
+        return out.kind === 'filled' ? { ...out, signature: 'test-live-sig' } : out;
+      },
     };
     const liveEngine = new CopyEngine(
       handle.db,
@@ -725,6 +730,7 @@ describe('live mode: no trading before ARM', () => {
     repo.createActivation(handle.db, {
       activationId: 'act_livegate',
       candidateId: 'cand_livegate',
+      mode: 'live',
       state: 'ACTIVE',
       startedAt: new Date().toISOString(),
       endedAt: null,

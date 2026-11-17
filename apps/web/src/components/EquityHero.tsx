@@ -60,7 +60,10 @@ export function EquityHero({ state }: { state: DashboardState }) {
         <p className="label !text-[10px] text-right shrink-0 pt-0.5" data-testid="equity-source">
           {SOURCE_LABEL[eq.source] ?? eq.source}
           <br />
-          <span className="text-faint">fees included · {new Date(eq.asOf).toLocaleTimeString()}</span>
+          <span className="text-faint">
+            network fees paid from the SOL reserve (not in trade P&amp;L) ·{' '}
+            {new Date(eq.asOf).toLocaleTimeString()}
+          </span>
         </p>
       </div>
 

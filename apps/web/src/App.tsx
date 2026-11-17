@@ -86,16 +86,15 @@ export function App() {
     );
   }
   if (route === 'legacy-settings') {
-    // Provider keys and the manual leaderboard import stay reachable, but the
-    // legacy Risk and Live tabs are hidden: the redesign has one risk editor
-    // and no arm-live control.
+    // Provider keys, the manual import and the live arming card stay reachable
+    // here; the redesign has one risk editor, so its Risk tab stays hidden.
     return (
       <div className="relative min-h-[100svh] w-full max-w-[1080px] mx-auto px-4">
         <div className="aurora" aria-hidden="true">
           <div className="blob-cyan" />
           <div className="blob-violet" />
         </div>
-        <SettingsPage onBack={() => go('line')} initialTab="keys" showRisk={false} showLive={false} />
+        <SettingsPage onBack={() => go('line')} initialTab="keys" showRisk={false} showLive />
       </div>
     );
   }

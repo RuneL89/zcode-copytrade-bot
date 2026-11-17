@@ -23,6 +23,17 @@ Everything is re-exported from `src/index.ts`.
 - **The order state machine is guarded** (`orderState.ts`). There is no
   transition from signed/submitted back to quotable. Do not add escape hatches
   for convenience; unknown outcomes stay unresolved until reconciliation.
+  `quoted → confirmed` is the PAPER simulation path only; a live executor must
+  walk `pending_sign → signed → submitted` so the durable signature exists
+  before the send. A pre-sign failure may go `quoted → failed`.
+- **Bankroll input is remaining-basis aware.** `bankrollHeadroom` accepts
+  `capitalAdjustmentsUsdMicro` (deposits less sent USDC withdrawals) and
+  `reservedEntryUsdMicro` (pending entry reservations). Callers pass remaining
+  cost basis/fees, not original input, so a partial close releases room. There
+  is no daily-loss/drawdown rule (D7); per-position exits and the deployment
+  cap are the safety model.
+- **Sender constants live here** (`sender.ts`): the published SWQOS tip
+  accounts and 5,000-lamport minimum, shared by the executor and the fee ledger.
 - **Copy sizing is 0.25x measured input notional**, then the per-trade ceiling
   ($10), the per-trader open cap ($40), and the shared deployed cap (80% of
   the $100 bankroll, so $80). A remainder under the $2 floor is skipped.

@@ -31,6 +31,26 @@ and every repository function the server calls.
 - **Money is stored as text micro-USD** (`*_usd_micro` / `*_micro` columns),
   matching `packages/core` bigints. Never store a float for an authoritative
   amount.
+- **The books are separate.** `trader_activations`, `copied_positions`,
+  `realized_pnl_lots`, `observed_leader_events`, `risk_rejections`,
+  `firing_events` and `reconciliation_cases` carry `mode` (`paper|live`).
+  Every trading query takes an optional mode filter; the engine/runtime always
+  passes it. `order_intents.mode` and `fills.mode` already existed.
+- **Deployed basis is remaining, not original.** `copied_positions` stores
+  `remaining_cost_basis_usd_micro` and `remaining_fees_usd_micro`; a partial
+  close releases them. Caps and cash read these, never the original input.
+  `mint_decimals` / `input_decimals` carry the token precision for exit pricing.
+- **Signed evidence is durable.** `order_intents` stores `tx_signature`,
+  `blockhash`, `last_valid_block_height`, `signed_tx_base64`, `signed_at`,
+  `submitted_at`, `submit_via`, `build_kind`, `input/output_decimals` and the
+  entry `reserved_usd_micro`. `transitionIntent` enforces the guarded state
+  machine; `resolveIntentWithEvidence` is the only reconciliation exit.
+- **Withdrawals are ledgered.** `withdrawals` (idempotency key, asset, amount,
+  status, signature/blockhash/height) is written before signing; `sent` USDC
+  reduces capital, open states reserve cash. `reconciliation_cases` can link a
+  withdrawal via `withdrawal_id`.
+- **One fill per intent.** `uniq_fill_intent` makes reconciliation idempotent;
+  use `insertFillIfAbsent`.
 - **No business logic here.** Repositories read and write; decisions belong in
   `packages/core` and the server services.
 - **Shadow provenance and the funded clock.** `shadow_trades.backfilled` marks
@@ -73,7 +93,9 @@ and every repository function the server calls.
 - **Paths anchor at the repo root** (`findRepoRoot` / `resolveDataDir`), not
   `process.cwd()`, because pnpm runs scripts inside this package folder.
 - **WAL backups need the side files.** When copying the database, include
-  `-wal` and `-shm`, or stop the server first.
+  `-wal` and `-shm`, or stop the server first. The OPS backup uses the online
+  backup API (`db.backup`) for a consistent snapshot and copies the configured
+  wallet separately; `pnpm db:restore` refuses while the worker lock is held.
 - **Replay tools read a snapshot.** `pnpm sweep` uses SQLite's online backup
   API to snapshot a live WAL DB (no side-file copy), then opens the snapshot
   with `openReadOnlyDatabase`. Replay code never migrates, seeds or writes the

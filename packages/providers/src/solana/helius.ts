@@ -1,6 +1,7 @@
 import {
   scanForRecentBuy,
   METHOD_CREDITS,
+  SENDER_TIP_ACCOUNTS,
   type CreditGovernor,
   type CreditPath,
   type HeliusMethod,
@@ -231,6 +232,7 @@ export class HeliusProvider {
     owner: string,
   ): Promise<{
     feeLamports: number;
+    tipLamports: number;
     rentLamports: number;
     accountsOpened: number;
     accountsClosed: number;
@@ -245,10 +247,24 @@ export class HeliusProvider {
           postBalances?: number[];
           preTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
           postTokenBalances?: Array<{ accountIndex: number; owner?: string }>;
+          innerInstructions?: Array<{
+            instructions?: Array<{
+              program?: string;
+              parsed?: { type?: string; info?: { destination?: string; lamports?: number | string } };
+            }>;
+          }>;
         } | null;
+        transaction?: {
+          message?: {
+            instructions?: Array<{
+              program?: string;
+              parsed?: { type?: string; info?: { destination?: string; lamports?: number | string } };
+            }>;
+          };
+        };
       }>(
         'getTransaction',
-        [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1, commitment: 'confirmed' }],
+        [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
         'wallet',
       );
       const meta = tx?.meta;
@@ -273,8 +289,22 @@ export class HeliusProvider {
         accountsClosed++;
       }
 
+      const tips = new Set<string>(SENDER_TIP_ACCOUNTS);
+      const instructions = [
+        ...(tx.transaction?.message?.instructions ?? []),
+        ...(meta.innerInstructions ?? []).flatMap((inner) => inner.instructions ?? []),
+      ];
+      let tipLamports = 0;
+      for (const ix of instructions) {
+        if (ix.program !== 'system' || ix.parsed?.type !== 'transfer') continue;
+        const destination = ix.parsed.info?.destination;
+        if (!destination || !tips.has(destination)) continue;
+        tipLamports += Number(ix.parsed.info?.lamports ?? 0);
+      }
+
       return {
         feeLamports: meta.fee ?? 0,
+        tipLamports,
         rentLamports,
         accountsOpened,
         accountsClosed,
@@ -302,6 +332,159 @@ export class HeliusProvider {
         total += BigInt(account.account.data.parsed.info.tokenAmount.amount);
       }
       return total;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Signature status for reconciliation. Null means the RPC read failed (not
+   * "not found"): callers must leave the intent pending rather than guessing.
+   */
+  async signatureStatus(signature: string): Promise<{
+    found: boolean;
+    err: unknown;
+    confirmationStatus?: string;
+  } | null> {
+    try {
+      const result = await this.rpc<{
+        value: Array<{ err: unknown; confirmationStatus?: string } | null>;
+      }>('getSignatureStatuses', [[signature], { searchTransactionHistory: true }], 'wallet');
+      const value = result?.value?.[0];
+      if (!value) return { found: false, err: null };
+      return { found: true, err: value.err, confirmationStatus: value.confirmationStatus };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Current confirmed block height, for blockhash-expiry checks. */
+  async blockHeight(): Promise<number | null> {
+    try {
+      return await this.rpc<number>('getBlockHeight', [{ commitment: 'confirmed' }], 'wallet');
+    } catch {
+      return null;
+    }
+  }
+
+  /** Chain wall-clock time (unix seconds), for the readiness clock-skew check. */
+  async chainTime(): Promise<number | null> {
+    try {
+      const slot = await this.rpc<number>('getSlot', [{ commitment: 'confirmed' }], 'health');
+      const time = await this.rpc<number | null>('getBlockTime', [slot], 'health');
+      return typeof time === 'number' ? time : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * One transaction's effect on the trading wallet: SPL token deltas by mint,
+   * native SOL delta, network fee and Sender tips. Used to book a fill or an
+   * exit that was signed but whose confirmation was lost.
+   */
+  async transactionDetail(
+    signature: string,
+    owner: string,
+  ): Promise<{
+    err: unknown;
+    slot: number | null;
+    blockTime: number | null;
+    tokenDeltas: Record<string, { pre: bigint; post: bigint }>;
+    solLamportsDelta: bigint;
+    feeLamports: number;
+    tipLamports: number;
+  } | null> {
+    try {
+      const tx = await this.rpc<{
+        slot?: number;
+        blockTime?: number | null;
+        meta?: {
+          err?: unknown;
+          fee?: number;
+          preBalances?: number[];
+          postBalances?: number[];
+          preTokenBalances?: Array<{
+            accountIndex: number;
+            mint: string;
+            owner?: string;
+            uiTokenAmount: { amount: string };
+          }>;
+          postTokenBalances?: Array<{
+            accountIndex: number;
+            mint: string;
+            owner?: string;
+            uiTokenAmount: { amount: string };
+          }>;
+          innerInstructions?: Array<{
+            instructions?: Array<{
+              program?: string;
+              parsed?: { type?: string; info?: { destination?: string; lamports?: number | string } };
+            }>;
+          }>;
+        } | null;
+        transaction?: {
+          message?: {
+            accountKeys?: Array<{ pubkey?: string } | string>;
+            instructions?: Array<{
+              program?: string;
+              parsed?: { type?: string; info?: { destination?: string; lamports?: number | string } };
+            }>;
+          };
+        };
+      }>(
+        'getTransaction',
+        [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+        'wallet',
+      );
+      if (!tx?.meta) return null;
+
+      const keys = tx.transaction?.message?.accountKeys ?? [];
+      const ownerIndex = keys.findIndex((key) =>
+        typeof key === 'string' ? key === owner : key.pubkey === owner,
+      );
+      const solLamportsDelta =
+        ownerIndex >= 0
+          ? BigInt(tx.meta.postBalances?.[ownerIndex] ?? 0) - BigInt(tx.meta.preBalances?.[ownerIndex] ?? 0)
+          : 0n;
+
+      const pre = new Map<string, bigint>();
+      const post = new Map<string, bigint>();
+      for (const b of tx.meta.preTokenBalances ?? []) {
+        if (b.owner !== owner) continue;
+        pre.set(b.mint, (pre.get(b.mint) ?? 0n) + BigInt(b.uiTokenAmount.amount));
+      }
+      for (const b of tx.meta.postTokenBalances ?? []) {
+        if (b.owner !== owner) continue;
+        post.set(b.mint, (post.get(b.mint) ?? 0n) + BigInt(b.uiTokenAmount.amount));
+      }
+      const tokenDeltas: Record<string, { pre: bigint; post: bigint }> = {};
+      for (const mint of new Set([...pre.keys(), ...post.keys()])) {
+        tokenDeltas[mint] = { pre: pre.get(mint) ?? 0n, post: post.get(mint) ?? 0n };
+      }
+
+      const tips = new Set<string>(SENDER_TIP_ACCOUNTS);
+      const instructions = [
+        ...(tx.transaction?.message?.instructions ?? []),
+        ...(tx.meta.innerInstructions ?? []).flatMap((inner) => inner.instructions ?? []),
+      ];
+      let tipLamports = 0;
+      for (const ix of instructions) {
+        if (ix.program !== 'system' || ix.parsed?.type !== 'transfer') continue;
+        const destination = ix.parsed.info?.destination;
+        if (!destination || !tips.has(destination)) continue;
+        tipLamports += Number(ix.parsed.info?.lamports ?? 0);
+      }
+
+      return {
+        err: tx.meta.err ?? null,
+        slot: tx.slot ?? null,
+        blockTime: tx.blockTime ?? null,
+        tokenDeltas,
+        solLamportsDelta,
+        feeLamports: tx.meta.fee ?? 0,
+        tipLamports,
+      };
     } catch {
       return null;
     }

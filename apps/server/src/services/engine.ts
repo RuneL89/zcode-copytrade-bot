@@ -20,9 +20,17 @@ import {
   type LeaderClassifiedEvent,
   type LeaderTxSummary,
 } from '@zcode-bot/core';
-import type { Executor, ExecOutcome, IntentSpec, QuoteCheck } from './executors.js';
+import type {
+  Executor,
+  ExecOutcome,
+  ExecutionHooks,
+  IntentSpec,
+  QuoteCheck,
+  SignedTransactionInfo,
+} from './executors.js';
 import { MIN_SOL_FOR_FEES_LAMPORTS, SOL_LOW_WATERMARK_LAMPORTS } from './executors.js';
 import type { ControlService } from './control.js';
+import { createTradingLocks, type TradingLocks } from './locks.js';
 import type { Notifier } from '@zcode-bot/providers';
 
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -31,6 +39,8 @@ export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 /** Same-mint buys inside this window are one burst, not a second position (D4). */
 export const COALESCE_SAME_MINT_MS = 60_000;
+/** Budget held for a pending entry on top of its notional (fees/tip/rent). */
+export const ENTRY_FEE_RESERVE_USD_MICRO = 10_000n;
 /** Close-out attempts per position during a fire (pre-submission failures only). */
 const CLOSE_ATTEMPTS = 3;
 const CLOSE_BACKOFF_MS = 800;
@@ -77,6 +87,30 @@ export function remainingAfterForSale(recordedBase: bigint, exitBase: bigint, fu
   return recordedBase > exitBase ? recordedBase - exitBase : 0n;
 }
 
+/** One confirmed transaction's effects on the trading wallet. */
+export interface ChainTransactionDetail {
+  err: unknown;
+  slot: number | null;
+  blockTime: number | null;
+  /** SPL token balance deltas by mint (post - pre). */
+  tokenDeltas: Record<string, { pre: bigint; post: bigint }>;
+  /** Native SOL balance delta for the wallet (post - pre). */
+  solLamportsDelta: bigint;
+  feeLamports: number;
+  tipLamports: number;
+}
+
+/** Read-only chain evidence used by reconciliation (implemented by Helius). */
+export interface ReconciliationReader {
+  signatureStatus(signature: string): Promise<{
+    found: boolean;
+    err: unknown;
+    confirmationStatus?: string;
+  } | null>;
+  blockHeight(): Promise<number | null>;
+  transactionDetail(signature: string, owner: string): Promise<ChainTransactionDetail | null>;
+}
+
 export interface EngineCallbacks {
   /** Called when a close unit pushes the streak to the fire threshold. */
   onFired: (activationId: string, candidateId: string, reason: string) => void;
@@ -98,10 +132,104 @@ export class CopyEngine {
     private walletPublicKey: string | null,
     private equityStartUsdMicro: bigint = 1_000_000_000n,
     private liveMode: boolean = false,
+    private locks: TradingLocks = createTradingLocks(),
   ) {}
+
+  /** The book this engine trades. Paper rows are invisible to live and vice versa. */
+  get mode(): 'paper' | 'live' {
+    return this.liveMode ? 'live' : 'paper';
+  }
 
   setRisk(risk: RiskConfig): void {
     this.risk = risk;
+  }
+
+  /** Shared with the lifecycle so firing and entries cannot interleave. */
+  withActivationLock<T>(activationId: string, fn: () => Promise<T> | T): Promise<T> {
+    return this.locks.activation(activationId, fn);
+  }
+
+  /**
+   * Current-mode exposure: remaining cost basis + remaining entry fees of
+   * open/partial/reconciling positions, plus entry reservations and unresolved
+   * entries. Partial closes release basis; reconciling lots still consume it.
+   */
+  /**
+   * Stored remaining basis, with a proportional fallback for legacy rows whose
+   * added column is still the default zero. New rows and the migration fill it.
+   */
+  private remainingBasis(p: {
+    inputUsdMicro: string;
+    copiedTokenBase: string;
+    remainingTokenBase: string;
+    remainingCostBasisUsdMicro: string;
+  }): bigint {
+    const stored = BigInt(p.remainingCostBasisUsdMicro);
+    if (stored > 0n || BigInt(p.inputUsdMicro) === 0n) return stored;
+    const copied = BigInt(p.copiedTokenBase);
+    return copied > 0n ? (BigInt(p.inputUsdMicro) * BigInt(p.remainingTokenBase)) / copied : 0n;
+  }
+
+  private remainingFees(p: {
+    feesUsdMicro: string;
+    copiedTokenBase: string;
+    remainingTokenBase: string;
+    remainingFeesUsdMicro: string;
+  }): bigint {
+    const stored = BigInt(p.remainingFeesUsdMicro);
+    if (stored > 0n || BigInt(p.feesUsdMicro) === 0n) return stored;
+    const copied = BigInt(p.copiedTokenBase);
+    return copied > 0n ? (BigInt(p.feesUsdMicro) * BigInt(p.remainingTokenBase)) / copied : 0n;
+  }
+
+  private exposure() {
+    const positions = repo.exposurePositions(this.db, this.mode);
+    const pending = repo.pendingEntryIntents(this.db, this.mode);
+    const unresolved = repo.unresolvedEntryIntents(this.db, this.mode);
+    const withdrawals = repo.withdrawalTotals(this.db, this.mode);
+    const openEntriesUsdMicro = positions.reduce((acc, p) => acc + this.remainingBasis(p), 0n);
+    const openFeesUsdMicro = positions.reduce((acc, p) => acc + this.remainingFees(p), 0n);
+    const reservedEntryUsdMicro =
+      pending.reduce((acc, i) => acc + BigInt(i.reservedUsdMicro), 0n) +
+      unresolved.reduce((acc, i) => acc + BigInt(i.inputUsdMicro ?? '0'), 0n);
+    return {
+      positions,
+      pending,
+      unresolved,
+      openEntriesUsdMicro,
+      openFeesUsdMicro,
+      reservedEntryUsdMicro,
+      capitalAdjustmentsUsdMicro: -(withdrawals.sentUsdMicro + withdrawals.reservedUsdMicro),
+    };
+  }
+
+  /**
+   * Leaderboard staleness applies to board-sourced hires. A watch-list hire is
+   * judged by its on-chain funded-buy record, not by a board row it may not
+   * have; passing null makes the rule inapplicable instead of fake-fresh.
+   */
+  private leaderboardAgeSeconds(candidateId: string): number | null {
+    const candidate = repo.getCandidate(this.db, candidateId);
+    if (!candidate?.observedAt) return null;
+    if (repo.getWatchWallet(this.db, candidateId)) return null;
+    const ms = Date.parse(candidate.observedAt);
+    return Number.isFinite(ms) ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : null;
+  }
+
+  private bank() {
+    const exposure = this.exposure();
+    return {
+      exposure,
+      bank: bankrollHeadroom({
+        equityStartUsdMicro: this.equityStartUsdMicro,
+        openEntriesUsdMicro: exposure.openEntriesUsdMicro,
+        openFeesUsdMicro: exposure.openFeesUsdMicro,
+        reservedEntryUsdMicro: exposure.reservedEntryUsdMicro,
+        capitalAdjustmentsUsdMicro: exposure.capitalAdjustmentsUsdMicro,
+        realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z', this.mode),
+        maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
+      }),
+    };
   }
 
   /**
@@ -110,14 +238,7 @@ export class CopyEngine {
    * the roster.
    */
   headroomUsdMicro(): bigint {
-    const openAll = repo.openPositions(this.db);
-    return bankrollHeadroom({
-      equityStartUsdMicro: this.equityStartUsdMicro,
-      openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
-      openFeesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
-      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
-      maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
-    }).headroomUsdMicro;
+    return this.bank().bank.headroomUsdMicro;
   }
 
   // ---------------------------------------------------------------------
@@ -129,7 +250,7 @@ export class CopyEngine {
     // activations accept no new entries (exits for pending closes are handled
     // by the lifecycle's own close paths).
     const activation = repo.getActivation(this.db, activationId);
-    if (!activation || activation.state !== 'ACTIVE') return;
+    if (!activation || activation.state !== 'ACTIVE' || activation.mode !== this.mode) return;
 
     const event = classifyLeaderEvent(summary);
     const dedupeKey = `${summary.chain}:${summary.leaderAddress}:${summary.signature}:0`;
@@ -163,6 +284,38 @@ export class CopyEngine {
     summary: LeaderTxSummary,
     event: Extract<LeaderClassifiedEvent, { kind: 'swap_buy' }>,
   ): Promise<void> {
+    // Serialize entries with fire and with other entries for this seat. Fire
+    // takes the same lock before enumerating positions, so a fill cannot land
+    // after close-out and become an orphan.
+    await this.locks.activation(activationId, () =>
+      this.handleLeaderBuyLocked(activationId, candidateId, summary, event),
+    );
+  }
+
+  private async handleLeaderBuyLocked(
+    activationId: string,
+    candidateId: string,
+    summary: LeaderTxSummary,
+    event: Extract<LeaderClassifiedEvent, { kind: 'swap_buy' }>,
+  ): Promise<void> {
+    void summary;
+    // Re-check inside the lock: firing may have completed while this buy waited.
+    const activation = repo.getActivation(this.db, activationId);
+    if (!activation || activation.state !== 'ACTIVE' || activation.mode !== this.mode) return;
+    // An unknown outcome on this seat means its exposure is not trustworthy.
+    // Freeze new entries until reconciliation resolves the case.
+    if (repo.openReconciliationCaseForActivation(this.db, activationId)) {
+      repo.insertRiskRejection(this.db, {
+        activationId,
+        rule: 'RECONCILIATION_OPEN',
+        limitValue: '0',
+        actualValue: '1',
+        detail: 'new entries frozen while this seat has an open reconciliation case',
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+
     // Old events are never entered late.
     if (isEventTooOld(event.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) {
       repo.insertRiskRejection(this.db, {
@@ -192,32 +345,12 @@ export class CopyEngine {
       return;
     }
 
-    // Per-mint exposure cap across the whole roster; 0 disables it (operator
-    // decision: no cap for now).
-    if (this.risk.PER_MINT_CAP_USD > 0) {
-      const capMicro = usdToMicro(this.risk.PER_MINT_CAP_USD);
-      const openForMint = repo
-        .openPositions(this.db)
-        .filter((p) => p.mint === event.mint)
-        .reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n);
-      if (openForMint >= capMicro) {
-        repo.insertRiskRejection(this.db, {
-          activationId,
-          rule: 'PER_MINT_CAP',
-          limitValue: capMicro.toString(),
-          actualValue: openForMint.toString(),
-          detail: `per-mint cap reached for ${event.mint} across the roster`,
-          createdAt: new Date().toISOString(),
-        });
-        return;
-      }
-    }
-
     // Measure leader input notional from the funding leg with fresh pricing.
     let leaderInputUsdMicro: bigint;
     let inputMint: string;
     let inputDecimals: number;
     let inputAmountBase: bigint;
+    let priceObservedAt: number | null = null;
     if (event.fundingMint === USDC_MINT || event.fundingMint === USDT_MINT) {
       inputMint = event.fundingMint;
       inputDecimals = event.fundingDecimals;
@@ -229,56 +362,130 @@ export class CopyEngine {
       inputDecimals = 9;
       inputAmountBase = event.fundingDeltaBase;
       const price = await this.prices.priceOf(SOL_MINT, 9);
+      priceObservedAt = price.observedAt;
       leaderInputUsdMicro = (inputAmountBase * price.priceUsdMicro) / 10n ** 9n;
     }
 
     const intentId = 'intent_' + randomUUID();
     const idempotencyKey = `entry:${activationId}:${event.signature}:${event.mint}`;
-    const openAll = repo.openPositions(this.db);
-    const traderOpen = openAll
-      .filter((p) => p.candidateId === candidateId)
-      .reduce((acc, p) => acc + BigInt(p.inputUsdMicro) + BigInt(p.feesUsdMicro), 0n);
-    const bank = bankrollHeadroom({
-      equityStartUsdMicro: this.equityStartUsdMicro,
-      openEntriesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.inputUsdMicro), 0n),
-      openFeesUsdMicro: openAll.reduce((acc, p) => acc + BigInt(p.feesUsdMicro), 0n),
-      realizedNetUsdMicro: repo.realizedPnlSince(this.db, '1970-01-01T00:00:00.000Z'),
-      maxDeployedPct: this.risk.MAX_DEPLOYED_PCT,
-    });
-    const sizing = sizeCopy({
-      leaderInputUsdMicro,
-      scaleNumerator: BigInt(Math.round(this.risk.COPY_SCALE * 10000)),
-      scaleDenominator: 10000n,
-      minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
-      maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
-      traderOpenUsdMicro: traderOpen,
-      maxOpenPerTraderUsdMicro: usdToMicro(this.risk.MAX_OPEN_PER_TRADER_USD),
-      bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
+
+    // Atomic reserve: recompute exposure, size, apply the per-mint cap and
+    // insert the intent while holding the budget lock. Concurrent leader buys
+    // then see this reservation instead of both passing the same headroom.
+    let sizing!: ReturnType<typeof sizeCopy>;
+    let bank!: ReturnType<typeof bankrollHeadroom>;
+    let skipReason: string | null = null;
+    await this.locks.budget(async () => {
+      const book = this.bank();
+      bank = book.bank;
+      const exposure = book.exposure;
+      const traderOpen =
+        exposure.positions
+          .filter((p) => p.candidateId === candidateId)
+          .reduce((acc, p) => acc + this.remainingBasis(p) + this.remainingFees(p), 0n) +
+        exposure.pending
+          .filter((i) => i.candidateId === candidateId)
+          .reduce((acc, i) => acc + BigInt(i.reservedUsdMicro), 0n) +
+        exposure.unresolved
+          .filter((i) => i.candidateId === candidateId)
+          .reduce((acc, i) => acc + BigInt(i.inputUsdMicro ?? '0'), 0n);
+      sizing = sizeCopy({
+        leaderInputUsdMicro,
+        scaleNumerator: BigInt(Math.round(this.risk.COPY_SCALE * 10000)),
+        scaleDenominator: 10000n,
+        minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
+        maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
+        traderOpenUsdMicro: traderOpen,
+        maxOpenPerTraderUsdMicro: usdToMicro(this.risk.MAX_OPEN_PER_TRADER_USD),
+        bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
+      });
+      // A pending entry for the same mint is this burst's copy; the position
+      // does not exist yet, so the position-based coalescing check cannot see
+      // it. Skip the second intent instead of reserving budget twice.
+      const pendingSameMint = exposure.pending.find(
+        (i) =>
+          i.candidateId === candidateId &&
+          i.mint === event.mint &&
+          Date.now() - Date.parse(i.createdAt) < COALESCE_SAME_MINT_MS,
+      );
+      if (pendingSameMint) {
+        skipReason = 'COALESCED_SAME_MINT_BURST: a pending entry for this mint is in flight';
+      }
+      if (skipReason === null && sizing.action === 'copy' && this.risk.PER_MINT_CAP_USD > 0) {
+        const capMicro = usdToMicro(this.risk.PER_MINT_CAP_USD);
+        const openForMint =
+          exposure.positions
+            .filter((p) => p.mint === event.mint)
+            .reduce((acc, p) => acc + this.remainingBasis(p) + this.remainingFees(p), 0n) +
+          exposure.pending
+            .filter((i) => i.mint === event.mint)
+            .reduce((acc, i) => acc + BigInt(i.reservedUsdMicro), 0n) +
+          exposure.unresolved
+            .filter((i) => i.mint === event.mint)
+            .reduce((acc, i) => acc + BigInt(i.inputUsdMicro ?? '0'), 0n);
+        if (openForMint + sizing.finalUsdMicro > capMicro) {
+          repo.insertRiskRejection(this.db, {
+            activationId,
+            rule: 'PER_MINT_CAP',
+            limitValue: capMicro.toString(),
+            actualValue: (openForMint + sizing.finalUsdMicro).toString(),
+            detail: `per-mint cap would be exceeded for ${event.mint} across the roster`,
+            createdAt: new Date().toISOString(),
+          });
+          skipReason = 'PER_MINT_CAP: would exceed the roster mint cap';
+        }
+      }
+      const nowIso = new Date().toISOString();
+      if (sizing.action === 'copy' && skipReason === null) {
+        repo.insertIntent(this.db, {
+          intentId,
+          kind: 'entry',
+          mode: this.mode,
+          activationId,
+          candidateId,
+          positionId: null,
+          mint: event.mint,
+          inputMint,
+          inputAmountBase: '0',
+          inputUsdMicro: sizing.finalUsdMicro.toString(),
+          inputDecimals,
+          outputDecimals: event.mintDecimals,
+          state: 'pending_quote',
+          idempotencyKey,
+          reservedUsdMicro: (sizing.finalUsdMicro + ENTRY_FEE_RESERVE_USD_MICRO).toString(),
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+      } else {
+        repo.insertIntent(this.db, {
+          intentId,
+          kind: 'entry',
+          mode: this.mode,
+          activationId,
+          candidateId,
+          positionId: null,
+          mint: event.mint,
+          inputMint,
+          inputAmountBase: '0',
+          inputUsdMicro: '0',
+          state: 'skipped',
+          idempotencyKey,
+          reason:
+            skipReason ??
+            (sizing.action === 'skip_invalid'
+              ? 'invalid input'
+              : sizing.action === 'skip_headroom'
+                ? sizing.rule === 'MAX_DEPLOYED_PCT'
+                  ? 'MAX_DEPLOYED_PCT: bankroll cap'
+                  : `${sizing.rule}: headroom`
+                : 'skipped'),
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+      }
     });
 
-    if (sizing.action !== 'copy') {
-      repo.insertIntent(this.db, {
-        intentId,
-        kind: 'entry',
-        mode: this.executor.mode,
-        activationId,
-        candidateId,
-        positionId: null,
-        mint: event.mint,
-        inputMint,
-        inputAmountBase: '0',
-        inputUsdMicro: '0',
-        state: 'skipped',
-        idempotencyKey,
-        reason:
-          sizing.action === 'skip_invalid'
-            ? 'invalid input'
-            : sizing.rule === 'MAX_DEPLOYED_PCT'
-              ? 'MAX_DEPLOYED_PCT: bankroll cap'
-              : `${sizing.rule}: headroom`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+    if (sizing.action !== 'copy' || skipReason !== null) {
       if (sizing.action === 'skip_headroom') {
         repo.insertRiskRejection(this.db, {
           activationId,
@@ -304,8 +511,12 @@ export class CopyEngine {
       amountBase = notional; // micro-USD == base units of 6-dec stables
     } else {
       const price = await this.prices.priceOf(inputMint, inputDecimals);
+      priceObservedAt = price.observedAt;
       amountBase = (notional * 10n ** BigInt(inputDecimals)) / price.priceUsdMicro;
       if (amountBase <= 0n) {
+        repo.transitionIntent(this.db, intentId, 'skipped', {
+          reason: 'sized amount rounded to zero at current price',
+        });
         repo.insertRiskRejection(this.db, {
           activationId,
           rule: 'PRICE_MAX_AGE_SECONDS',
@@ -317,32 +528,23 @@ export class CopyEngine {
         return;
       }
     }
+    repo.updateIntent(this.db, intentId, { inputAmountBase: amountBase.toString() });
+    const priceAgeSeconds =
+      priceObservedAt === null ? 0 : Math.max(0, Math.round((Date.now() - priceObservedAt) / 1000));
 
     const decision = evaluateEntryRisk(this.risk, {
       entryUsdMicro: notional,
       eventAgeSeconds: Math.max(0, Math.round((Date.now() - event.blockTime * 1000) / 1000)),
-      priceAgeSeconds: 0,
-      leaderboardAgeSeconds: 0,
+      priceAgeSeconds: priceAgeSeconds,
+      leaderboardAgeSeconds: this.leaderboardAgeSeconds(candidateId),
       quoteSlippageBps: null,
       quotePriceImpactBps: null,
     });
     if (!decision.allowed) {
-      repo.insertIntent(this.db, {
-        intentId,
-        kind: 'entry',
-        mode: this.executor.mode,
-        activationId,
-        candidateId,
-        positionId: null,
-        mint: event.mint,
-        inputMint,
+      repo.transitionIntent(this.db, intentId, 'skipped', {
         inputAmountBase: amountBase.toString(),
         inputUsdMicro: notional.toString(),
-        state: 'skipped',
-        idempotencyKey,
         reason: `${decision.rule}: ${decision.detail}`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       });
       repo.insertRiskRejection(this.db, {
         activationId,
@@ -360,54 +562,31 @@ export class CopyEngine {
     // executor check is belt-and-braces: an armed flag without a mounted live
     // executor would otherwise fall through to the paper simulator.
     if (this.liveMode && (!this.control.flags.armed || this.executor.mode !== 'live')) {
-      repo.insertIntent(this.db, {
-        intentId,
-        kind: 'entry',
-        mode: 'live',
-        activationId,
-        candidateId,
-        positionId: null,
-        mint: event.mint,
-        inputMint,
+      repo.transitionIntent(this.db, intentId, 'skipped', {
         inputAmountBase: '0',
         inputUsdMicro: sizing.finalUsdMicro!.toString(),
-        state: 'skipped',
-        idempotencyKey,
         reason: this.control.flags.armed ? 'wallet locked: live executor not mounted' : 'live mode not armed',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       });
       return;
     }
 
     // Entry gates: pause/emergency.
     if (!this.control.entriesAllowed()) {
-      repo.insertIntent(this.db, {
-        intentId,
-        kind: 'entry',
-        mode: this.executor.mode,
-        activationId,
-        candidateId,
-        positionId: null,
-        mint: event.mint,
-        inputMint,
+      repo.transitionIntent(this.db, intentId, 'skipped', {
         inputAmountBase: amountBase.toString(),
         inputUsdMicro: notional.toString(),
-        state: 'skipped',
-        idempotencyKey,
         reason: this.control.flags.emergencyStopped
           ? 'EMERGENCY STOP'
           : this.control.withdrawInFlight
             ? 'withdrawal in progress'
             : 'new entries paused',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       });
       return;
     }
 
     const spec: IntentSpec = {
       intentId,
+      activationId,
       kind: 'entry',
       inputMint,
       outputMint: event.mint,
@@ -419,27 +598,7 @@ export class CopyEngine {
       userPublicKey: this.walletPublicKey,
     };
 
-    // Persist the intent BEFORE any quote/sign (audit-first).
-    repo.insertIntent(this.db, {
-      intentId,
-      kind: 'entry',
-      mode: this.executor.mode,
-      activationId,
-      candidateId,
-      positionId: null,
-      mint: event.mint,
-      inputMint,
-      inputAmountBase: amountBase.toString(),
-      inputUsdMicro: notional.toString(),
-      state: 'pending_quote',
-      idempotencyKey,
-      slippageBps: null,
-      priceImpactBps: null,
-      reason: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-
+    // Persisted (pending_quote + reservation) before any quote/sign.
     await this.runIntent(spec, { activationId, candidateId, eventSignature: event.signature });
   }
 
@@ -450,7 +609,7 @@ export class CopyEngine {
     event: Extract<LeaderClassifiedEvent, { kind: 'swap_sell' }>,
   ): Promise<void> {
     // Mirrored exits continue even when new entries are paused.
-    const position = repo.openPositionForMint(this.db, candidateId, event.mint);
+    const position = repo.openPositionForMint(this.db, candidateId, event.mint, this.mode);
     if (!position) return;
 
     const delta = summary.tokenDeltas.find((d) => d.mint === event.mint);
@@ -532,13 +691,23 @@ export class CopyEngine {
     if (clearAttempt) repo.kvDelete(this.db, `exit.attempt:${positionId}`);
   }
 
-  /** Close the entire remaining position (fire policy / close-all / emergency). */
-  async closePosition(positionId: string, reason: string): Promise<'closed' | 'unknown' | 'failed'> {
+  /**
+   * Close the entire remaining position (fire policy / close-all / emergency).
+   * A frozen (requires_reconciliation) position is refused unless the caller
+   * has already proved the exit is safe (`allowFrozen`): the signature-less
+   * reconciliation retry and the late-fill flattener pass it; an agent/manual
+   * close does not.
+   */
+  async closePosition(
+    positionId: string,
+    reason: string,
+    opts: { allowFrozen?: boolean } = {},
+  ): Promise<'closed' | 'unknown' | 'failed'> {
     const position = repo.getPosition(this.db, positionId);
     if (!position) return 'failed';
     const remaining = BigInt(position.remainingTokenBase);
     if (remaining <= 0n) return 'closed';
-    const out = await this.executeExit(positionId, remaining, 0n, true, reason, null);
+    const out = await this.executeExit(positionId, remaining, 0n, true, reason, null, opts);
     this.callbacks.onStateChanged();
     if (out === 'no-position') return 'failed';
     if (out.kind === 'filled') return 'closed';
@@ -551,7 +720,7 @@ export class CopyEngine {
     unknown: number;
     failed: number;
   }> {
-    const positions = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
+    const positions = repo.openPositions(this.db, this.mode).filter((p) => p.activationId === activationId);
     let closed = 0;
     let unknown = 0;
     let failed = 0;
@@ -871,11 +1040,34 @@ export class CopyEngine {
   // Intent execution + fills + PnL
   // ---------------------------------------------------------------------
 
+  /** Re-check the seat and entry gates at the last moment before signing/submitting. */
+  private assertCanSign(spec: IntentSpec): void {
+    if (!spec.activationId) return;
+    const activation = repo.getActivation(this.db, spec.activationId);
+    if (!activation || activation.mode !== this.mode) {
+      throw new Error('activation no longer belongs to this book');
+    }
+    if (spec.kind === 'entry') {
+      if (activation.state !== 'ACTIVE') throw new Error(`activation is ${activation.state}`);
+      if (this.liveMode && (!this.control.flags.armed || this.executor.mode !== 'live')) {
+        throw new Error('live mode is not armed');
+      }
+      if (!this.control.entriesAllowed()) throw new Error('new entries are paused');
+    }
+  }
+
   private async runIntent(
     spec: IntentSpec,
     ctx: { activationId: string; candidateId: string; eventSignature: string | null },
-  ): Promise<void> {
-    const attemptNo = repo.recordAttempt(this.db, {
+    exit?: {
+      positionId: string;
+      exitBase: bigint;
+      remainingAfter: bigint;
+      full: boolean;
+      closeReason: string;
+    },
+  ): Promise<ExecOutcome | null> {
+    repo.recordAttempt(this.db, {
       intentId: spec.intentId,
       attemptNo: 1,
       phase: 'quote',
@@ -884,28 +1076,31 @@ export class CopyEngine {
       error: null,
       createdAt: new Date().toISOString(),
     });
-    void attemptNo;
 
     let quote: QuoteCheck;
     try {
       quote = await this.executor.quote(spec);
     } catch (e) {
-      repo.updateIntent(this.db, spec.intentId, {
-        state: 'failed',
-        reason: `quote failed: ${(e as Error).message}`,
-      });
-      return;
+      // A risk-reducing exit is not blocked by an advisory quote failure: the
+      // executor re-quotes immediately before signing anyway.
+      if (!exit) {
+        const outcome: ExecOutcome = { kind: 'failed', error: `quote failed: ${(e as Error).message}` };
+        repo.transitionIntent(this.db, spec.intentId, 'failed', { reason: outcome.error });
+        return outcome;
+      }
+      quote = { slippageBps: 0, priceImpactBps: 0, minOutputBase: '0', source: 'assumed' };
     }
 
-    // Slippage/impact gates on the actual quote.
+    // Slippage/impact gates apply to entries. Exits are risk-reducing; the
+    // fresh min-out check in the executor still protects them.
     if (
-      quote.priceImpactBps > this.risk.MAX_PRICE_IMPACT_BPS ||
-      quote.slippageBps > this.risk.MAX_SLIPPAGE_BPS
+      !exit &&
+      (quote.priceImpactBps > this.risk.MAX_PRICE_IMPACT_BPS ||
+        quote.slippageBps > this.risk.MAX_SLIPPAGE_BPS)
     ) {
       const rule =
         quote.priceImpactBps > this.risk.MAX_PRICE_IMPACT_BPS ? 'MAX_PRICE_IMPACT_BPS' : 'MAX_SLIPPAGE_BPS';
-      repo.updateIntent(this.db, spec.intentId, {
-        state: 'quote_rejected',
+      repo.transitionIntent(this.db, spec.intentId, 'quote_rejected', {
         slippageBps: quote.slippageBps,
         priceImpactBps: quote.priceImpactBps,
         reason: `${rule} breach`,
@@ -920,65 +1115,132 @@ export class CopyEngine {
         detail: 'quote gate',
         createdAt: new Date().toISOString(),
       });
-      return;
+      return { kind: 'skipped', reason: `${rule} breach` };
     }
 
-    repo.updateIntent(this.db, spec.intentId, {
-      state: 'quoted',
+    repo.transitionIntent(this.db, spec.intentId, 'quoted', {
       slippageBps: quote.slippageBps,
       priceImpactBps: quote.priceImpactBps,
       minOutputBase: quote.minOutputBase,
       quoteJson: JSON.stringify(quote),
     });
 
+    const live = this.executor.mode === 'live';
+    if (live) repo.transitionIntent(this.db, spec.intentId, 'pending_sign');
+
+    const hooks: ExecutionHooks = live
+      ? {
+          beforeSign: () => this.assertCanSign(spec),
+          afterSign: (info: SignedTransactionInfo) => {
+            repo.transitionIntent(this.db, spec.intentId, 'signed', {
+              txSignature: info.signature,
+              blockhash: info.blockhash,
+              lastValidBlockHeight: info.lastValidBlockHeight,
+              signedTxBase64: info.signedBase64,
+              signedAt: new Date().toISOString(),
+              buildKind: info.buildKind,
+            });
+          },
+          afterSubmit: (info) => {
+            repo.transitionIntent(this.db, spec.intentId, 'submitted', {
+              submittedAt: new Date().toISOString(),
+              submitVia: info.via,
+            });
+          },
+        }
+      : {};
+
     let outcome: ExecOutcome;
     try {
-      outcome = await this.executor.execute(spec, quote);
+      outcome = await this.executor.execute(spec, quote, hooks);
     } catch (e) {
-      repo.updateIntent(this.db, spec.intentId, {
-        state: 'requires_reconciliation',
-        reason: `executor error: ${(e as Error).message}`,
-      });
-      repo.insertReconciliationCase(this.db, {
-        kind: 'unknown_execution',
-        intentId: spec.intentId,
-        positionId: null,
-        signature: null,
-        status: 'open',
-        detail: (e as Error).message,
-        createdAt: new Date().toISOString(),
-        resolvedAt: null,
-      });
-      return;
+      const current = repo.getIntent(this.db, spec.intentId);
+      const signature = current?.txSignature ?? null;
+      const detail = `executor error: ${(e as Error).message}`;
+      if (current && (current.state === 'signed' || current.state === 'submitted')) {
+        repo.transitionIntent(this.db, spec.intentId, 'requires_reconciliation', { reason: detail });
+        repo.insertReconciliationCase(this.db, {
+          kind: 'unknown_execution',
+          mode: this.mode,
+          intentId: spec.intentId,
+          positionId: exit?.positionId ?? null,
+          signature,
+          status: 'open',
+          detail,
+          createdAt: new Date().toISOString(),
+          resolvedAt: null,
+        });
+        return { kind: 'unknown', detail, signature: signature ?? undefined };
+      }
+      repo.transitionIntent(this.db, spec.intentId, 'failed', { reason: detail });
+      return { kind: 'failed', error: detail };
     }
 
     if (outcome.kind === 'skipped') {
-      repo.updateIntent(this.db, spec.intentId, { state: 'skipped', reason: outcome.reason });
-      return;
+      const current = repo.getIntent(this.db, spec.intentId);
+      if (current?.state === 'quoted') {
+        repo.transitionIntent(this.db, spec.intentId, 'skipped', { reason: outcome.reason });
+      } else {
+        repo.transitionIntent(this.db, spec.intentId, 'failed', { reason: outcome.reason });
+      }
+      return outcome;
     }
     if (outcome.kind === 'failed') {
-      repo.updateIntent(this.db, spec.intentId, { state: 'failed', reason: outcome.error });
-      return;
+      repo.transitionIntent(this.db, spec.intentId, 'failed', {
+        reason: outcome.error,
+        ...(outcome.signature ? { txSignature: outcome.signature } : {}),
+      });
+      return outcome;
     }
     if (outcome.kind === 'unknown') {
-      // Submitted/signed with unknown outcome: reconcile, never blind-retry.
-      repo.updateIntent(this.db, spec.intentId, { state: 'requires_reconciliation', reason: outcome.detail });
+      const current = repo.getIntent(this.db, spec.intentId);
+      const signature = outcome.signature ?? current?.txSignature ?? null;
+      if (current?.state === 'quoted') {
+        repo.transitionIntent(this.db, spec.intentId, 'pending_sign');
+      }
+      repo.transitionIntent(this.db, spec.intentId, 'requires_reconciliation', {
+        reason: outcome.detail,
+        txSignature: signature,
+      });
       repo.insertReconciliationCase(this.db, {
         kind: 'unknown_execution',
+        mode: this.mode,
         intentId: spec.intentId,
-        positionId: null,
-        signature: null,
+        positionId: exit?.positionId ?? null,
+        signature,
         status: 'open',
         detail: outcome.detail,
         createdAt: new Date().toISOString(),
         resolvedAt: null,
       });
-      return;
+      return outcome;
     }
 
-    // Filled.
-    repo.updateIntent(this.db, spec.intentId, {
-      state: 'confirmed',
+    // Filled. Some injected executors (tests, custom runtimes) return a filled
+    // outcome without invoking the afterSign/afterSubmit hooks; synthesize the
+    // guarded path from the signature they returned so the state machine stays
+    // the single authority.
+    const beforeFill = repo.getIntent(this.db, spec.intentId);
+    if (beforeFill?.state === 'pending_sign') {
+      if (!outcome.signature) {
+        repo.transitionIntent(this.db, spec.intentId, 'failed', {
+          reason: 'executor returned filled without a signature',
+        });
+        return { kind: 'failed', error: 'executor returned filled without a signature' };
+      }
+      repo.transitionIntent(this.db, spec.intentId, 'signed', {
+        txSignature: outcome.signature,
+        signedAt: new Date().toISOString(),
+      });
+      repo.transitionIntent(this.db, spec.intentId, 'submitted', {
+        submittedAt: new Date().toISOString(),
+      });
+    } else if (beforeFill?.state === 'signed') {
+      repo.transitionIntent(this.db, spec.intentId, 'submitted', {
+        submittedAt: new Date().toISOString(),
+      });
+    }
+    repo.transitionIntent(this.db, spec.intentId, 'confirmed', {
       txSignature: outcome.signature,
       reason: null,
     });
@@ -991,11 +1253,11 @@ export class CopyEngine {
       error: null,
       createdAt: new Date().toISOString(),
     });
-    repo.insertFill(this.db, {
+    repo.insertFillIfAbsent(this.db, {
       fillId: 'fill_' + randomUUID(),
       intentId: spec.intentId,
-      positionId: null,
-      mode: this.executor.mode,
+      positionId: exit?.positionId ?? null,
+      mode: this.mode,
       txSignature: outcome.signature,
       inputAmountBase: outcome.inputAmountBase,
       outputAmountBase: outcome.outputAmountBase,
@@ -1009,9 +1271,10 @@ export class CopyEngine {
     if (spec.kind === 'entry') {
       this.openPositionFromFill(spec, ctx, outcome);
     } else {
-      await this.settleExitFromFill(spec, ctx, outcome);
+      await this.settleExitFromFill(spec, ctx, outcome, exit);
     }
     this.callbacks.onStateChanged();
+    return outcome;
   }
 
   private openPositionFromFill(
@@ -1019,19 +1282,30 @@ export class CopyEngine {
     ctx: { activationId: string; candidateId: string; eventSignature: string | null },
     outcome: Extract<ExecOutcome, { kind: 'filled' }>,
   ): void {
+    const activation = repo.getActivation(this.db, ctx.activationId);
+    // The activation lock should make this impossible; if it happens anyway,
+    // track the real tokens in a frozen row and surface a case instead of
+    // stranding them outside the book.
+    const frozen = !activation || activation.state !== 'ACTIVE' || activation.mode !== this.mode;
     // Pyramiding: a leader add into a mint we already hold updates the ONE
     // position for that mint (the mirrored-exit path assumes a single
     // position per candidate+mint) instead of opening a second one. Scoped to
-    // THIS activation — a new hire never inherits the previous hire's slots.
-    const existing = repo.openPositionForMint(this.db, ctx.candidateId, spec.outputMint);
-    if (existing && existing.activationId === ctx.activationId) {
+    // THIS activation and this book — a new hire never inherits prior slots.
+    const existing = repo.openPositionForMint(this.db, ctx.candidateId, spec.outputMint, this.mode);
+    if (!frozen && existing && existing.activationId === ctx.activationId) {
       repo.updatePosition(this.db, existing.positionId, {
         inputUsdMicro: (BigInt(existing.inputUsdMicro) + BigInt(spec.inputUsdMicro)).toString(),
+        remainingCostBasisUsdMicro: (
+          BigInt(existing.remainingCostBasisUsdMicro) + BigInt(spec.inputUsdMicro)
+        ).toString(),
         copiedTokenBase: (BigInt(existing.copiedTokenBase) + BigInt(outcome.outputAmountBase)).toString(),
         remainingTokenBase: (
           BigInt(existing.remainingTokenBase) + BigInt(outcome.outputAmountBase)
         ).toString(),
         feesUsdMicro: (BigInt(existing.feesUsdMicro) + BigInt(outcome.feeUsdMicro)).toString(),
+        remainingFeesUsdMicro: (
+          BigInt(existing.remainingFeesUsdMicro) + BigInt(outcome.feeUsdMicro)
+        ).toString(),
       });
       const intent = repo.getIntent(this.db, spec.intentId);
       if (intent) repo.updateIntent(this.db, spec.intentId, { positionId: existing.positionId });
@@ -1039,7 +1313,7 @@ export class CopyEngine {
         positionId: existing.positionId,
         mint: spec.outputMint,
         usdMicro: spec.inputUsdMicro,
-        mode: this.executor.mode,
+        mode: this.mode,
         signature: ctx.eventSignature,
       });
       return;
@@ -1049,28 +1323,53 @@ export class CopyEngine {
       positionId,
       activationId: ctx.activationId,
       candidateId: ctx.candidateId,
+      mode: this.mode,
       mint: spec.outputMint,
       mintSymbol: null,
-      status: 'open',
+      status: frozen ? 'requires_reconciliation' : 'open',
       entryIntentId: spec.intentId,
       inputMint: spec.inputMint,
       inputUsdMicro: spec.inputUsdMicro,
+      remainingCostBasisUsdMicro: spec.inputUsdMicro,
+      remainingFeesUsdMicro: outcome.feeUsdMicro,
       copiedTokenBase: outcome.outputAmountBase,
       remainingTokenBase: outcome.outputAmountBase,
       leaderTokenBase: null,
       realizedPnlUsdMicro: '0',
       feesUsdMicro: outcome.feeUsdMicro,
+      mintDecimals: spec.outputDecimals,
+      inputDecimals: spec.inputDecimals,
       openedAt: new Date().toISOString(),
       closedAt: null,
       closeReason: null,
     });
     const intent = repo.getIntent(this.db, spec.intentId);
     if (intent) repo.updateIntent(this.db, spec.intentId, { positionId });
+    if (frozen) {
+      repo.insertReconciliationCase(this.db, {
+        kind: 'late_fill',
+        mode: this.mode,
+        // Deliberately not linked by intent: resolveCasesForIntent must not
+        // auto-close this case before the frozen position is flat.
+        intentId: null,
+        positionId,
+        signature: outcome.signature,
+        status: 'open',
+        detail: `fill landed while activation was ${activation?.state ?? 'missing'} [activation:${ctx.activationId}] [intent:${spec.intentId}]`,
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+      });
+      repo.audit(this.db, 'reconciliation', 'late fill frozen for reconciliation', {
+        positionId,
+        activationId: ctx.activationId,
+        signature: outcome.signature,
+      });
+    }
     repo.audit(this.db, 'trade', 'copied entry filled', {
       positionId,
       mint: spec.outputMint,
       usdMicro: spec.inputUsdMicro,
-      mode: this.executor.mode,
+      mode: this.mode,
       signature: ctx.eventSignature,
     });
   }
@@ -1082,9 +1381,52 @@ export class CopyEngine {
     full: boolean,
     closeReason: string,
     leaderSignature: string | null,
+    opts: { allowFrozen?: boolean } = {},
+  ): Promise<ExecOutcome | 'no-position'> {
+    // Mirrored, code, retry and manual exits all serialize per position. The
+    // retry consumer re-enters this lock and re-reads the position, so two
+    // callers can never quote/sign the same remaining tokens.
+    return this.locks.position(positionId, () =>
+      this.executeExitLocked(positionId, exitBase, remainingAfter, full, closeReason, leaderSignature, opts),
+    );
+  }
+
+  private async executeExitLocked(
+    positionId: string,
+    exitBase: bigint,
+    remainingAfter: bigint,
+    full: boolean,
+    closeReason: string,
+    leaderSignature: string | null,
+    opts: { allowFrozen?: boolean } = {},
   ): Promise<ExecOutcome | 'no-position'> {
     const position = repo.getPosition(this.db, positionId);
     if (!position) return 'no-position';
+    if (position.mode !== this.mode) {
+      const detail = `exit refused: ${this.mode} book cannot close a ${position.mode} position`;
+      repo.audit(this.db, 'monitor', `exit refused — ${detail}`, { positionId, mint: position.mint });
+      return { kind: 'failed', error: detail };
+    }
+    // A frozen position may be settled only by a caller that has already
+    // proved the exit is safe: the signature-less reconciliation retry and the
+    // late-fill flattener pass `allowFrozen`. An agent/manual close does not,
+    // so it cannot re-sell while an unknown exit is still ambiguous.
+    if (position.status === 'requires_reconciliation' && !opts.allowFrozen) {
+      const detail = 'frozen position: reconcile the ambiguous exit before submitting another close';
+      repo.audit(this.db, 'monitor', `exit refused — ${detail}`, {
+        positionId,
+        mint: position.mint,
+      });
+      return { kind: 'failed', error: detail };
+    }
+    // `requires_reconciliation` with `allowFrozen` is the safe retry path.
+    if (
+      position.status !== 'open' &&
+      position.status !== 'partially_closed' &&
+      position.status !== 'requires_reconciliation'
+    ) {
+      return 'no-position';
+    }
 
     // Sell what the wallet actually holds, never more. Recorded amounts come
     // from quoted outputs at entry and can exceed the delivered balance after
@@ -1110,7 +1452,11 @@ export class CopyEngine {
     remainingAfter = remainingAfterForSale(remainingRecorded, exitBase, full);
 
     // Output notional estimation for the exit (token -> funding mint).
-    const inputUsdEstimate = await this.estimateUsdMicroForTokens(position.mint, exitBase).catch(() => 0n);
+    const inputUsdEstimate = await this.estimateUsdMicroForTokens(
+      position.mint,
+      exitBase,
+      position.mintDecimals,
+    ).catch(() => 0n);
     const intentId = 'intent_' + randomUUID();
 
     // Nothing on chain to sell: record it and fail closed. The position stays
@@ -1121,7 +1467,7 @@ export class CopyEngine {
       repo.insertIntent(this.db, {
         intentId,
         kind: full ? 'fire_close' : 'exit',
-        mode: this.executor.mode,
+        mode: this.mode,
         activationId: position.activationId,
         candidateId: position.candidateId,
         positionId,
@@ -1129,6 +1475,8 @@ export class CopyEngine {
         inputMint: position.mint,
         inputAmountBase: '0',
         inputUsdMicro: '0',
+        inputDecimals: position.mintDecimals,
+        outputDecimals: position.inputDecimals,
         state: 'failed',
         reason: detail,
         idempotencyKey: `exit:${positionId}:0:${Date.now()}`,
@@ -1150,6 +1498,7 @@ export class CopyEngine {
 
     const spec: IntentSpec = {
       intentId,
+      activationId: position.activationId,
       kind: full
         ? closeReason === 'leader_exit' || closeReason === 'time_exit'
           ? 'exit'
@@ -1158,8 +1507,8 @@ export class CopyEngine {
       inputMint: position.mint,
       outputMint: position.inputMint,
       inputAmountBase: exitBase.toString(),
-      inputDecimals: 6, // best-effort; priced via provider anyway
-      outputDecimals: 6,
+      inputDecimals: position.mintDecimals,
+      outputDecimals: position.inputDecimals,
       inputUsdMicro: inputUsdEstimate.toString(),
       slippageBpsCap: exitSlippageBps(this.exitAttempt(positionId), [
         this.risk.EXIT_SLIPPAGE_BPS_1,
@@ -1171,7 +1520,7 @@ export class CopyEngine {
     repo.insertIntent(this.db, {
       intentId,
       kind: spec.kind,
-      mode: this.executor.mode,
+      mode: this.mode,
       activationId: position.activationId,
       candidateId: position.candidateId,
       positionId,
@@ -1179,8 +1528,11 @@ export class CopyEngine {
       inputMint: position.mint,
       inputAmountBase: exitBase.toString(),
       inputUsdMicro: inputUsdEstimate.toString(),
+      inputDecimals: position.mintDecimals,
+      outputDecimals: position.inputDecimals,
       state: 'pending_quote',
       idempotencyKey: `exit:${positionId}:${exitBase}:${Date.now()}`,
+      reservedUsdMicro: '0',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -1188,16 +1540,9 @@ export class CopyEngine {
     // A paper executor must not fill a live position, and a live executor must
     // not fill a paper one. No signature was sent, so the position stays open
     // and the chair is not frozen in reconciliation.
-    const entryIntent = position.entryIntentId ? repo.getIntent(this.db, position.entryIntentId) : undefined;
-    const positionMode =
-      entryIntent?.mode === 'live' || entryIntent?.mode === 'paper'
-        ? entryIntent.mode
-        : this.liveMode
-          ? 'live'
-          : 'paper';
-    if (guardExitMode(positionMode, this.executor.mode) === 'refuse') {
-      const detail = `exit refused: ${this.executor.mode} executor cannot close a ${positionMode} position`;
-      repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
+    if (guardExitMode(position.mode, this.executor.mode) === 'refuse') {
+      const detail = `exit refused: ${this.executor.mode} executor cannot close a ${position.mode} position`;
+      repo.transitionIntent(this.db, intentId, 'failed', { reason: detail });
       this.queueExit(positionId, detail, {
         intentId,
         exitBase,
@@ -1218,7 +1563,7 @@ export class CopyEngine {
     if (this.executor.mode === 'live' && solLamports !== null) {
       if (solLamports < MIN_SOL_FOR_FEES_LAMPORTS) {
         const detail = `insufficient SOL for fees: ${solLamports} lamports (need ${MIN_SOL_FOR_FEES_LAMPORTS}) — exit NOT sent`;
-        repo.updateIntent(this.db, intentId, { state: 'failed', reason: detail });
+        repo.transitionIntent(this.db, intentId, 'failed', { reason: detail });
         this.queueExit(positionId, detail, {
           intentId,
           exitBase,
@@ -1239,90 +1584,49 @@ export class CopyEngine {
       if (solLamports < SOL_LOW_WATERMARK_LAMPORTS) this.alertLowSol(solLamports);
     }
 
-    // Exits are risk-reducing: run them even under pause; skip quote gates for
-    // mirrored exits (leader already sold; our job is to mirror, fast).
-    let outcome: ExecOutcome;
-    try {
-      const quote = await this.executor.quote(spec).catch(() => ({
-        slippageBps: 0,
-        priceImpactBps: 0,
-        minOutputBase: '0',
-        source: 'assumed' as const,
-      }));
-      outcome = await this.executor.execute(spec, quote);
-    } catch (e) {
-      // execute() contains its own send/confirm classification, so anything
-      // escaping it happened before a signature existed: retryable, not unknown.
-      outcome = { kind: 'failed', error: `executor error before submission: ${(e as Error).message}` };
-    }
-
-    if (
-      outcome.kind === 'unknown' ||
-      (outcome.kind !== 'filled' && outcome.kind !== 'skipped' && outcome.kind !== 'failed')
-    ) {
-      repo.updateIntent(this.db, intentId, {
-        state: 'requires_reconciliation',
-        reason: outcome.kind === 'unknown' ? outcome.detail : 'unexpected',
-      });
-      repo.insertReconciliationCase(this.db, {
-        kind: 'unknown_execution',
-        intentId,
-        positionId,
-        signature: null,
-        status: 'open',
-        detail: outcome.kind === 'unknown' ? outcome.detail : 'unexpected exit outcome',
-        createdAt: new Date().toISOString(),
-        resolvedAt: null,
-      });
-      repo.updatePosition(this.db, positionId, { status: 'requires_reconciliation' });
-      return outcome;
-    }
-    if (outcome.kind === 'failed') {
-      repo.updateIntent(this.db, intentId, { state: 'failed', reason: outcome.error });
-      this.queueExit(positionId, outcome.error, {
-        intentId,
-        exitBase,
-        remainingBefore: remainingRecorded,
-        remainingAfter,
-        full,
-        closeReason,
-        leaderSignature,
-      });
-      return outcome;
-    }
-    if (outcome.kind === 'skipped') {
-      repo.updateIntent(this.db, intentId, { state: 'skipped', reason: outcome.reason });
-      return outcome;
-    }
-
-    // Filled exit: settle the lot.
     const ctx = {
       activationId: position.activationId,
       candidateId: position.candidateId,
       eventSignature: leaderSignature,
     };
-    repo.updateIntent(this.db, intentId, { state: 'confirmed', txSignature: outcome.signature });
-    repo.insertFill(this.db, {
-      fillId: 'fill_' + randomUUID(),
-      intentId,
-      positionId,
-      mode: this.executor.mode,
-      txSignature: outcome.signature,
-      inputAmountBase: outcome.inputAmountBase,
-      outputAmountBase: outcome.outputAmountBase,
-      priceUsdMicro: null,
-      feeEstimateUsdMicro: outcome.feeUsdMicro,
-      balanceEvidenceJson: JSON.stringify(outcome.evidence),
-      commitment: outcome.commitment,
-      confirmedAt: new Date().toISOString(),
-    });
-    await this.settleExitFromFill(spec, ctx, outcome, {
+    const outcome = await this.runIntent(spec, ctx, {
       positionId,
       exitBase,
       remainingAfter,
       full,
       closeReason,
     });
+    if (!outcome) return { kind: 'failed', error: 'exit produced no outcome' };
+
+    if (outcome.kind === 'unknown') {
+      repo.updatePosition(this.db, positionId, { status: 'requires_reconciliation' });
+      return outcome;
+    }
+    if (outcome.kind === 'failed') {
+      // A pre-submission failure, or a chain-proven dead transaction, is safe
+      // to retry. A chain failure with no token movement is also retryable; the
+      // signature is archived in the intent reason so the queue guard can
+      // remain "no signature = provably unsent".
+      if (outcome.retryable === true || !outcome.signature) {
+        const intent = repo.getIntent(this.db, intentId);
+        if (intent?.txSignature) {
+          repo.updateIntent(this.db, intentId, {
+            txSignature: null,
+            reason: `${outcome.error} (previous signature ${intent.txSignature} proved not landed)`,
+          });
+        }
+        this.queueExit(positionId, outcome.error, {
+          intentId,
+          exitBase,
+          remainingBefore: remainingRecorded,
+          remainingAfter,
+          full,
+          closeReason,
+          leaderSignature,
+        });
+      }
+      return outcome;
+    }
     return outcome;
   }
 
@@ -1344,36 +1648,49 @@ export class CopyEngine {
 
     const closedBase = exit.exitBase;
     const copiedTotal = BigInt(position.copiedTokenBase);
-    // A full close must charge every remaining cent of cost basis. An exit is
-    // clamped to the wallet's real balance, which can be below the recorded
-    // quantity (recorded sizes include quoted-but-undelivered slippage); a
-    // proportional share would leave that basis on the books as phantom equity
-    // for a position that no longer exists.
+    const remainingTokens = BigInt(position.remainingTokenBase);
+    // Release the cost basis that is actually still deployed. A partial close
+    // must reduce `remaining_cost_basis` or the bankroll keeps charging the
+    // full original input after half the position was sold.
     const priorLots = repo.listPnlLots(this.db, 10000).filter((l) => l.positionId === exit.positionId);
     const bookedCost = priorLots.reduce((sum, l) => sum + BigInt(l.costBasisUsdMicro), 0n);
-    const proportionalCost = (BigInt(position.inputUsdMicro) * closedBase) / copiedTotal;
+    let remainingCostTotal = BigInt(position.remainingCostBasisUsdMicro);
+    if (remainingCostTotal === 0n) {
+      const fallback = BigInt(position.inputUsdMicro) - bookedCost;
+      if (fallback > 0n) remainingCostTotal = fallback;
+    }
+    let remainingFeesTotal = BigInt(position.remainingFeesUsdMicro);
+    if (remainingFeesTotal === 0n && copiedTotal > 0n) {
+      remainingFeesTotal = (BigInt(position.feesUsdMicro) * remainingTokens) / copiedTotal;
+    }
     const fullyClosed = exit.remainingAfter <= 0n;
-    const remainingCost = BigInt(position.inputUsdMicro) - bookedCost;
-    const costBasis = fullyClosed && remainingCost > proportionalCost ? remainingCost : proportionalCost;
+    const proportionalCost = remainingTokens > 0n ? (remainingCostTotal * closedBase) / remainingTokens : 0n;
+    const costBasis = fullyClosed
+      ? remainingCostTotal
+      : proportionalCost > remainingCostTotal
+        ? remainingCostTotal
+        : proportionalCost;
+    const feeShare = remainingTokens > 0n ? (remainingFeesTotal * closedBase) / remainingTokens : 0n;
     // Proceeds in USD micro from the funding mint received.
     let proceedsUsdMicro: bigint;
     if (position.inputMint === USDC_MINT || position.inputMint === USDT_MINT) {
       proceedsUsdMicro = BigInt(outcome.outputAmountBase);
     } else {
-      const price = await this.prices.priceOf(position.inputMint, 9).catch(() => null);
+      const price = await this.prices.priceOf(position.inputMint, position.inputDecimals).catch(() => null);
       proceedsUsdMicro = price
-        ? (BigInt(outcome.outputAmountBase) * price.priceUsdMicro) / 10n ** 9n
+        ? (BigInt(outcome.outputAmountBase) * price.priceUsdMicro) / 10n ** BigInt(position.inputDecimals)
         : BigInt(spec.inputUsdMicro);
     }
     // Fees are paid in SOL from the fee reserve, NOT out of USDC capital: the
     // equity ledger is USDC-only, so PnL = proceeds − cost basis and the fee
     // estimate is kept as informational context on the lot (the real SOL spend
     // is measured by the fee ledger and shown separately on the dashboard).
-    const fees = BigInt(outcome.feeUsdMicro) + (BigInt(position.feesUsdMicro) * closedBase) / copiedTotal;
+    const fees = BigInt(outcome.feeUsdMicro) + feeShare;
     const pnl = proceedsUsdMicro - costBasis;
 
     repo.insertPnlLot(this.db, {
       positionId: exit.positionId,
+      mode: this.mode,
       closedBase: closedBase.toString(),
       proceedsUsdMicro: proceedsUsdMicro.toString(),
       costBasisUsdMicro: costBasis.toString(),
@@ -1386,8 +1703,12 @@ export class CopyEngine {
 
     const newRemaining = exit.remainingAfter;
     const realizedTotal = BigInt(position.realizedPnlUsdMicro) + pnl;
+    const remainingCostAfter = remainingCostTotal - costBasis;
+    const remainingFeesAfter = remainingFeesTotal - feeShare;
     repo.updatePosition(this.db, exit.positionId, {
       remainingTokenBase: newRemaining.toString(),
+      remainingCostBasisUsdMicro: (remainingCostAfter > 0n ? remainingCostAfter : 0n).toString(),
+      remainingFeesUsdMicro: (remainingFeesAfter > 0n ? remainingFeesAfter : 0n).toString(),
       realizedPnlUsdMicro: realizedTotal.toString(),
       status: newRemaining <= 0n ? 'closed' : 'partially_closed',
       closedAt: newRemaining <= 0n ? new Date().toISOString() : null,
@@ -1425,9 +1746,347 @@ export class CopyEngine {
     }
   }
 
-  private async estimateUsdMicroForTokens(mint: string, base: bigint): Promise<bigint> {
+  /**
+   * Reconcile every signed/submitted intent against chain evidence. This is
+   * the only path that may turn `requires_reconciliation` into confirmed or
+   * failed. It runs at boot and on the runtime's reconciliation timer.
+   */
+  async reconcileSignedIntents(
+    reader: ReconciliationReader,
+    nowMs = Date.now(),
+  ): Promise<{
+    reviewed: number;
+    confirmed: number;
+    failed: number;
+    pending: number;
+    lateFillsClosed: number;
+  }> {
+    const out = { reviewed: 0, confirmed: 0, failed: 0, pending: 0, lateFillsClosed: 0 };
+
+    // A late fill is a confirmed entry whose seat was no longer ACTIVE. The
+    // position is real and frozen; flatten it with a normal exit and resolve
+    // the case once the book is flat. This is risk-reducing, never a re-sign.
+    for (const c of repo.openReconciliationCases(this.db, this.mode)) {
+      if (c.kind !== 'late_fill' || !c.positionId) continue;
+      const position = repo.getPosition(this.db, c.positionId);
+      if (!position) {
+        repo.resolveReconciliationCase(this.db, c.id);
+        continue;
+      }
+      if (position.status === 'closed') {
+        repo.resolveReconciliationCase(this.db, c.id);
+        continue;
+      }
+      // Never re-close while an exit outcome is still ambiguous: an unknown
+      // exit with a signature must be reconciled first or this loop could
+      // double-sell. A separate case or signed intent for the position means
+      // "wait for the reconciler"; a failed/dead outcome clears it next pass.
+      const otherCase = repo
+        .openReconciliationCases(this.db, this.mode)
+        .some((other) => other.id !== c.id && other.positionId === c.positionId);
+      const exitInFlight = repo.signedIntents(this.db, this.mode).some((i) => i.positionId === c.positionId);
+      if (otherCase || exitInFlight) continue;
+      const result = await this.closePosition(c.positionId, 'late_fill_close', {
+        allowFrozen: true,
+      });
+      if (result === 'closed') {
+        repo.resolveReconciliationCase(this.db, c.id);
+        repo.audit(this.db, 'reconciliation', 'late fill closed and case resolved', {
+          positionId: c.positionId,
+          caseId: c.id,
+        });
+        out.lateFillsClosed++;
+      }
+    }
+
+    // A crash before signing leaves pending_quote/quoted/pending_sign. The new
+    // writer persists `signed` before the send, so these are provably unsent.
+    for (const stale of repo.stalePreSignIntents(
+      this.db,
+      new Date(nowMs - 5 * 60_000).toISOString(),
+      this.mode,
+    )) {
+      if (stale.txSignature) continue;
+      const current = repo.getIntent(this.db, stale.intentId);
+      if (
+        !current ||
+        ['confirmed', 'failed', 'skipped', 'cancelled', 'quote_rejected'].includes(current.state)
+      ) {
+        continue;
+      }
+      repo.transitionIntent(this.db, stale.intentId, 'failed', {
+        reason: 'stale pre-sign intent recovered after restart (never signed)',
+      });
+      repo.audit(this.db, 'reconciliation', 'stale pre-sign intent marked failed', {
+        intentId: stale.intentId,
+        state: stale.state,
+      });
+      out.failed++;
+    }
+
+    for (const intent of repo.signedIntents(this.db, this.mode)) {
+      out.reviewed++;
+      const signature = intent.txSignature;
+      if (!signature) continue;
+      const status = await reader.signatureStatus(signature);
+      if (status === null) {
+        // The status read failed. Not the same as "not found": leave it alone.
+        out.pending++;
+        continue;
+      }
+      if (status.found) {
+        const settled =
+          status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+        if (!settled) {
+          out.pending++;
+          continue;
+        }
+        const detail = await reader.transactionDetail(signature, this.walletPublicKey ?? '');
+        if (!detail) {
+          out.pending++;
+          continue;
+        }
+        if (detail.err != null) {
+          this.failReconciledIntent(intent, signature, `on-chain failure: ${JSON.stringify(detail.err)}`);
+          out.failed++;
+        } else {
+          const applied = await this.applyReconciledIntent(intent, detail, signature);
+          if (applied) out.confirmed++;
+          else out.pending++;
+        }
+        continue;
+      }
+
+      const height = await reader.blockHeight();
+      if (
+        intent.lastValidBlockHeight !== null &&
+        height !== null &&
+        height > intent.lastValidBlockHeight + 150
+      ) {
+        this.failReconciledIntent(intent, signature, 'transaction expired without landing');
+        out.failed++;
+      } else {
+        out.pending++;
+      }
+    }
+    return out;
+  }
+
+  private async applyReconciledIntent(
+    intent: NonNullable<ReturnType<typeof repo.getIntent>>,
+    detail: ChainTransactionDetail,
+    signature: string,
+  ): Promise<boolean> {
+    const current = repo.getIntent(this.db, intent.intentId);
+    if (!current || current.state === 'confirmed') return true;
+    if (current.state === 'signed' || current.state === 'submitted') {
+      repo.transitionIntent(this.db, intent.intentId, 'requires_reconciliation', {
+        reason: 'chain-confirmed transaction reconciled',
+        txSignature: signature,
+      });
+    }
+    const spec = this.specFromIntent(intent);
+    const fillBase = {
+      fillId: 'fill_' + randomUUID(),
+      intentId: intent.intentId,
+      mode: this.mode,
+      txSignature: signature,
+      priceUsdMicro: null,
+      feeEstimateUsdMicro: usdToMicro(0.0015).toString(),
+      balanceEvidenceJson: JSON.stringify({
+        signature,
+        slot: detail.slot,
+        reconciled: true,
+        tokenDeltas: Object.fromEntries(
+          Object.entries(detail.tokenDeltas).map(([mint, delta]) => [
+            mint,
+            { pre: delta.pre.toString(), post: delta.post.toString() },
+          ]),
+        ),
+      }),
+      commitment: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+    };
+
+    if (intent.kind === 'entry') {
+      if (!intent.activationId || !intent.candidateId) {
+        repo.resolveIntentWithEvidence(this.db, intent.intentId, 'failed', {
+          reason: 'reconciled entry is missing its activation/candidate',
+          txSignature: signature,
+        });
+        this.resolveCasesForIntent(intent.intentId);
+        return false;
+      }
+      const output = detail.tokenDeltas[intent.mint];
+      const received = output && output.post > output.pre ? output.post - output.pre : 0n;
+      if (received <= 0n) {
+        repo.audit(this.db, 'reconciliation', 'entry landed but no output token delta was readable', {
+          intentId: intent.intentId,
+          signature,
+        });
+        return false;
+      }
+      repo.resolveIntentWithEvidence(this.db, intent.intentId, 'confirmed', { txSignature: signature });
+      repo.insertFillIfAbsent(this.db, {
+        ...fillBase,
+        positionId: null,
+        inputAmountBase: intent.inputAmountBase,
+        outputAmountBase: received.toString(),
+      });
+      this.openPositionFromFill(
+        spec,
+        {
+          activationId: intent.activationId,
+          candidateId: intent.candidateId,
+          eventSignature: null,
+        },
+        {
+          kind: 'filled',
+          signature,
+          inputAmountBase: intent.inputAmountBase,
+          outputAmountBase: received.toString(),
+          feeUsdMicro: usdToMicro(0.0015).toString(),
+          evidence: { signature, reconciled: true },
+          commitment: 'confirmed',
+        },
+      );
+      this.resolveCasesForIntent(intent.intentId);
+      this.callbacks.onStateChanged();
+      return true;
+    }
+
+    if (!intent.positionId) {
+      repo.resolveIntentWithEvidence(this.db, intent.intentId, 'failed', {
+        reason: 'reconciled exit has no position',
+        txSignature: signature,
+      });
+      this.resolveCasesForIntent(intent.intentId);
+      return false;
+    }
+    const position = repo.getPosition(this.db, intent.positionId);
+    if (!position) {
+      repo.resolveIntentWithEvidence(this.db, intent.intentId, 'failed', {
+        reason: 'reconciled exit position is missing',
+        txSignature: signature,
+      });
+      this.resolveCasesForIntent(intent.intentId);
+      return false;
+    }
+    const tokenDelta = detail.tokenDeltas[position.mint];
+    const sold =
+      tokenDelta && tokenDelta.pre > tokenDelta.post
+        ? tokenDelta.pre - tokenDelta.post
+        : BigInt(intent.inputAmountBase);
+    const remainingBefore = BigInt(position.remainingTokenBase);
+    const full = intent.kind === 'fire_close' || sold >= remainingBefore;
+    const remainingAfter = full ? 0n : remainingBefore - sold;
+    let outputAmountBase = '0';
+    if (position.inputMint === SOL_MINT) {
+      // The native delta is net of the network fee and tip; add them back so
+      // the settlement books the SOL the swap actually produced.
+      const received = detail.solLamportsDelta + BigInt(detail.feeLamports) + BigInt(detail.tipLamports);
+      outputAmountBase = (received > 0n ? received : 0n).toString();
+    } else {
+      const outDelta = detail.tokenDeltas[position.inputMint];
+      outputAmountBase =
+        outDelta && outDelta.post > outDelta.pre ? (outDelta.post - outDelta.pre).toString() : '0';
+    }
+    repo.resolveIntentWithEvidence(this.db, intent.intentId, 'confirmed', { txSignature: signature });
+    repo.insertFillIfAbsent(this.db, {
+      ...fillBase,
+      positionId: intent.positionId,
+      inputAmountBase: sold.toString(),
+      outputAmountBase,
+    });
+    await this.settleExitFromFill(
+      spec,
+      {
+        activationId: position.activationId,
+        candidateId: position.candidateId,
+        eventSignature: null,
+      },
+      {
+        kind: 'filled',
+        signature,
+        inputAmountBase: sold.toString(),
+        outputAmountBase,
+        feeUsdMicro: usdToMicro(0.0015).toString(),
+        evidence: { signature, reconciled: true },
+        commitment: 'confirmed',
+      },
+      {
+        positionId: intent.positionId,
+        exitBase: sold,
+        remainingAfter,
+        full,
+        closeReason: 'reconciled_exit',
+      },
+    );
+    this.resolveCasesForIntent(intent.intentId);
+    if (intent.kind === 'fire_close') {
+      await this.callbacks.onFireCloseFilled?.(position.activationId);
+    }
+    this.callbacks.onStateChanged();
+    return true;
+  }
+
+  private failReconciledIntent(
+    intent: NonNullable<ReturnType<typeof repo.getIntent>>,
+    signature: string,
+    reason: string,
+  ): void {
+    const current = repo.getIntent(this.db, intent.intentId);
+    if (current && (current.state === 'signed' || current.state === 'submitted')) {
+      repo.transitionIntent(this.db, intent.intentId, 'requires_reconciliation', {
+        reason,
+        txSignature: signature,
+      });
+    }
+    const latest = repo.getIntent(this.db, intent.intentId);
+    if (latest?.state === 'requires_reconciliation') {
+      repo.resolveIntentWithEvidence(this.db, intent.intentId, 'failed', {
+        reason: `${reason} (signature ${signature})`,
+        txSignature: signature,
+      });
+    }
+    if (intent.positionId) {
+      const position = repo.getPosition(this.db, intent.positionId);
+      if (position?.status === 'requires_reconciliation' && BigInt(position.remainingTokenBase) > 0n) {
+        repo.updatePosition(this.db, position.positionId, { status: 'open' });
+      }
+    }
+    this.resolveCasesForIntent(intent.intentId);
+    repo.audit(this.db, 'reconciliation', `intent failed after chain check: ${reason}`, {
+      intentId: intent.intentId,
+      signature,
+    });
+    this.callbacks.onStateChanged();
+  }
+
+  private resolveCasesForIntent(intentId: string): void {
+    for (const c of repo.openReconciliationCases(this.db, this.mode)) {
+      if (c.intentId === intentId) repo.resolveReconciliationCase(this.db, c.id);
+    }
+  }
+
+  private specFromIntent(intent: NonNullable<ReturnType<typeof repo.getIntent>>): IntentSpec {
+    return {
+      intentId: intent.intentId,
+      activationId: intent.activationId ?? undefined,
+      kind: intent.kind as IntentSpec['kind'],
+      inputMint: intent.inputMint,
+      outputMint: intent.mint,
+      inputAmountBase: intent.inputAmountBase,
+      inputDecimals: intent.inputDecimals,
+      outputDecimals: intent.outputDecimals,
+      inputUsdMicro: intent.inputUsdMicro ?? '0',
+      slippageBpsCap: this.risk.MAX_SLIPPAGE_BPS,
+      userPublicKey: this.walletPublicKey,
+    };
+  }
+
+  private async estimateUsdMicroForTokens(mint: string, base: bigint, decimals = 6): Promise<bigint> {
     if (mint === USDC_MINT || mint === USDT_MINT) return base;
-    const decimals = 6; // sane default for memecoins; priced per whole token
     const price = await this.prices.priceOf(mint, decimals);
     return (base * price.priceUsdMicro) / 10n ** BigInt(decimals);
   }

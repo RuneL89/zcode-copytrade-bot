@@ -11,6 +11,7 @@ export * from './activity.js';
 export * from './watch.js';
 export * from './eventOrder.js';
 export * from './orderState.js';
+export * from './sender.js';
 export * from './risk.js';
 export * from './positionAge.js';
 export * from './transfer.js';

@@ -368,6 +368,65 @@ produced between 00:00 and 05:14 predating the next board scan.
 
 ---
 
+## D7 — Production live-trading safety
+
+**Decided:** 2026-11-17 (operator). Live mode remains off; the code must be safe
+before it is armed.
+
+**Clean live book.** Live mode starts with its own activations, positions and
+realized P&L. Every trading row carries `mode`; the engine, roster, caps,
+withdrawals and dashboard read only the current mode. Paper history stays in the
+database for review but never counts toward live equity, exposure or seats. The
+live roster starts empty and promotes from the watch record.
+
+**Durable signed state.** An order intent walks the guarded
+`pending_quote → quoted → pending_sign → signed → submitted → confirmed` path.
+Signature, blockhash, last-valid block height and signed bytes are persisted
+before the network send. Any ambiguous send or lost confirmation becomes
+`requires_reconciliation` and is resolved from chain status plus actual token
+deltas; signed bytes are never blindly re-sent. A pre-sign crash is provably
+unsent; a signed transaction past `lastValidBlockHeight + 150` with no signature
+status is provably dead.
+
+**Build validation and send matching.** A live build must contain a known
+Jupiter aggregator instruction, exactly the wallet as required signer and fee
+payer, a compute-unit limit, a fresh blockhash, and fit 1,232 bytes after the
+Sender tip. v0 transactions and lookup tables are resolved and recompiled. The
+send ladder accepts a provider signature only when it equals the locally signed
+signature; a transport error stops the ladder as unknown.
+
+**Arming, disarm and exits.** Arming requires the full readiness checklist
+(mode, exact ACK, LIVE_TRADING, wallet, provider health, balances, cash
+reconciliation, no pending orders/reconciliation, worker, clock, DB). Disarm and
+emergency stop block new entries but keep the live executor mounted so open
+positions can still exit; `lock-wallet` (`LOCK-WALLET`, only when flat) forgets
+the secret. Clearing an emergency does not re-arm. A continuous health sweep
+auto-pauses new entries on a live blocker.
+
+**No portfolio daily-loss breaker.** The operator's safety model is the
+per-position stop/trail/time exits plus the 80% deployment cap and the $10/$40
+trade/trader ceilings. There is no daily realized-loss or lifetime-drawdown
+gate; the stale `MAX_DAILY_REALIZED_LOSS_USD` env key and README claim are
+removed rather than re-enforced.
+
+**Withdrawals.** Real withdrawals require `MODE=live` and `LIVE_TRADING=true`.
+Every attempt is serialized, carries an idempotency key, is written before
+signing, and is reconciled by signature. An unknown outcome blocks further
+withdrawals. Sent USDC reduces the book's capital; SOL withdrawals only reduce
+the fee reserve.
+
+**Fees.** Network fees and Sender tips are paid in SOL from a separate reserve
+and are excluded from USDC trade P&L. The fee ledger measures them (including
+tips) and the dashboard labels them separately. Rent remains refundable when the
+token account closes.
+
+**Backups.** OPS backup uses SQLite's online backup API, copies the configured
+`WALLET_FILE` (wherever it lives) and the DPAPI-sealed passphrase, and writes a
+hash manifest. `pnpm db:restore <dir> [--wallet]` refuses while the worker lock
+is held and takes a safety snapshot first.
+
+---
+
 # Topics in progress (NOT decided)
 
 Explored and discussed, but the operator is not locked in on any of these.

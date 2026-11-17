@@ -74,6 +74,11 @@ export class JupiterProvider {
       amount: params.amount,
       slippageBps: String(params.slippageBps),
       taker,
+      // The live builder relies on Jupiter's CU limit and SOL wrap/unwrap
+      // setup instructions; without these the assembled swap can run out of
+      // compute or leave wrapped SOL behind.
+      dynamicComputeUnitLimit: 'true',
+      wrapAndUnwrapSol: 'true',
     });
     const res = await fetch(`${this.baseUrl}/swap/v2/build?${qs}`, { headers: this.headers() });
     if (res.status === 429) throw new Error('jupiter: rate limited (429)');
@@ -93,11 +98,12 @@ export class JupiterProvider {
     /** Funding mint to receive/forward. */
     wrapAndUnwrapSol?: boolean;
   }): Promise<BuiltSwap> {
-    // `/build` already returned instructions on the quote call. Signing and
-    // sending are the live gate, which this paper rebuild does not exercise.
+    // `/build` already returned instructions on the quote call. Production
+    // assembly uses that validated body in the server's txBuild; this method
+    // exists as a test seam and refuses to fabricate a live transaction.
     void params.wrapAndUnwrapSol;
     if (!params.userPublicKey) throw new Error('jupiter: build requires the taker public key');
-    throw new Error('jupiter: live transaction assembly is not enabled (paper mode only)');
+    throw new Error('jupiter: buildSwap is a test seam only; use the /build body');
   }
 
   /** Price impact expressed in whole basis points from the quote's fraction string. */

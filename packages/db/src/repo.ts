@@ -1,8 +1,11 @@
-import { and, desc, eq, gt, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { transitionOrder, type OrderIntentState } from '@zcode-bot/core';
 import type { AppDatabase } from './connection.js';
 import { schema } from './connection.js';
 
 type Db = AppDatabase;
+/** The two independent books. A missing filter means "every row" (legacy readers/tests). */
+export type BookMode = 'paper' | 'live';
 
 type ActivationInsert = (typeof schema.traderActivations)['$inferInsert'];
 type ObservedEventInsert = (typeof schema.observedLeaderEvents)['$inferInsert'];
@@ -575,47 +578,54 @@ export function getActivation(db: Db, activationId: string) {
     .get();
 }
 
-export function activeActivation(db: Db) {
+const CHAIR_STATES = ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION'] as const;
+
+export function activeActivation(db: Db, mode?: BookMode) {
+  const conditions = [inArray(schema.traderActivations.state, [...CHAIR_STATES])];
+  if (mode) conditions.push(eq(schema.traderActivations.mode, mode));
   return db
     .select()
     .from(schema.traderActivations)
-    .where(inArray(schema.traderActivations.state, ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION']))
+    .where(and(...conditions))
     .orderBy(desc(schema.traderActivations.startedAt))
     .limit(1)
     .get();
 }
 
-export function listActivations(db: Db, limit = 50) {
-  return db
-    .select()
-    .from(schema.traderActivations)
+export function listActivations(db: Db, limit = 50, mode?: BookMode) {
+  const q = db.select().from(schema.traderActivations);
+  return (mode ? q.where(eq(schema.traderActivations.mode, mode)) : q)
     .orderBy(desc(schema.traderActivations.startedAt))
     .limit(limit)
     .all();
 }
 
 /** Every activation that still owns a roster chair (D4: roster of N, not one). */
-export function listActiveActivations(db: Db) {
+export function listActiveActivations(db: Db, mode?: BookMode) {
+  const conditions = [inArray(schema.traderActivations.state, [...CHAIR_STATES])];
+  if (mode) conditions.push(eq(schema.traderActivations.mode, mode));
   return db
     .select()
     .from(schema.traderActivations)
-    .where(inArray(schema.traderActivations.state, ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION']))
+    .where(and(...conditions))
     .orderBy(schema.traderActivations.startedAt)
     .all();
 }
 
-export function activeActivationCount(db: Db): number {
+export function activeActivationCount(db: Db, mode?: BookMode): number {
+  const conditions = [inArray(schema.traderActivations.state, [...CHAIR_STATES])];
+  if (mode) conditions.push(eq(schema.traderActivations.mode, mode));
   const row = db
     .select({ n: sql<number>`count(*)` })
     .from(schema.traderActivations)
-    .where(inArray(schema.traderActivations.state, ['ACTIVE', 'FIRING', 'REQUIRES_RECONCILIATION']))
+    .where(and(...conditions))
     .get();
   return row?.n ?? 0;
 }
 
 /** Free roster chairs for a configured roster size (D4: a roster of N leaders). */
-export function freeRosterSlots(db: Db, rosterSize: number): number {
-  return Math.max(0, rosterSize - activeActivationCount(db));
+export function freeRosterSlots(db: Db, rosterSize: number, mode?: BookMode): number {
+  return Math.max(0, rosterSize - activeActivationCount(db, mode));
 }
 
 export function getCursor(db: Db, address: string) {
@@ -642,19 +652,25 @@ export function setCursor(
 }
 
 export function insertObservedEvent(db: Db, input: ObservedEventInsert): boolean {
-  const res = db.insert(schema.observedLeaderEvents).values(input).onConflictDoNothing().run();
+  const mode =
+    input.mode ?? (input.activationId ? (getActivation(db, input.activationId)?.mode ?? 'paper') : 'paper');
+  const res = db
+    .insert(schema.observedLeaderEvents)
+    .values({ ...input, mode })
+    .onConflictDoNothing()
+    .run();
   return res.changes > 0;
 }
 
-export function listObservedEvents(db: Db, activationId?: string, limit = 100) {
+export function listObservedEvents(db: Db, activationId?: string, limit = 100, mode?: BookMode) {
+  const conditions = [];
+  if (activationId) conditions.push(eq(schema.observedLeaderEvents.activationId, activationId));
+  if (mode) conditions.push(eq(schema.observedLeaderEvents.mode, mode));
   const q = db.select().from(schema.observedLeaderEvents);
-  return activationId
-    ? q
-        .where(eq(schema.observedLeaderEvents.activationId, activationId))
-        .orderBy(desc(schema.observedLeaderEvents.id))
-        .limit(limit)
-        .all()
-    : q.orderBy(desc(schema.observedLeaderEvents.id)).limit(limit).all();
+  return (conditions.length > 0 ? q.where(and(...conditions)) : q)
+    .orderBy(desc(schema.observedLeaderEvents.id))
+    .limit(limit)
+    .all();
 }
 
 // --- positions / intents / fills -------------------------------------------------
@@ -675,33 +691,51 @@ export function getPosition(db: Db, positionId: string) {
     .get();
 }
 
-export function openPositions(db: Db) {
+export function openPositions(db: Db, mode?: BookMode) {
+  const conditions = [inArray(schema.copiedPositions.status, ['open', 'partially_closed'])];
+  if (mode) conditions.push(eq(schema.copiedPositions.mode, mode));
   return db
     .select()
     .from(schema.copiedPositions)
-    .where(inArray(schema.copiedPositions.status, ['open', 'partially_closed']))
+    .where(and(...conditions))
     .all();
 }
 
-export function openPositionForMint(db: Db, candidateId: string, mint: string) {
+/**
+ * Exposure that consumes budget: live/partially-closed plus frozen
+ * reconciliation lots. The engine and withdrawals must count these; the
+ * dashboard shows them too.
+ */
+export function exposurePositions(db: Db, mode?: BookMode) {
+  const conditions = [
+    inArray(schema.copiedPositions.status, ['open', 'partially_closed', 'requires_reconciliation']),
+  ];
+  if (mode) conditions.push(eq(schema.copiedPositions.mode, mode));
   return db
     .select()
     .from(schema.copiedPositions)
-    .where(
-      and(
-        eq(schema.copiedPositions.candidateId, candidateId),
-        eq(schema.copiedPositions.mint, mint),
-        inArray(schema.copiedPositions.status, ['open', 'partially_closed']),
-      ),
-    )
+    .where(and(...conditions))
+    .all();
+}
+
+export function openPositionForMint(db: Db, candidateId: string, mint: string, mode?: BookMode) {
+  const conditions = [
+    eq(schema.copiedPositions.candidateId, candidateId),
+    eq(schema.copiedPositions.mint, mint),
+    inArray(schema.copiedPositions.status, ['open', 'partially_closed']),
+  ];
+  if (mode) conditions.push(eq(schema.copiedPositions.mode, mode));
+  return db
+    .select()
+    .from(schema.copiedPositions)
+    .where(and(...conditions))
     .limit(1)
     .get();
 }
 
-export function listPositions(db: Db, limit = 200) {
-  return db
-    .select()
-    .from(schema.copiedPositions)
+export function listPositions(db: Db, limit = 200, mode?: BookMode) {
+  const q = db.select().from(schema.copiedPositions);
+  return (mode ? q.where(eq(schema.copiedPositions.mode, mode)) : q)
     .orderBy(desc(schema.copiedPositions.openedAt))
     .limit(limit)
     .all();
@@ -722,8 +756,163 @@ export function getIntent(db: Db, intentId: string) {
   return db.select().from(schema.orderIntents).where(eq(schema.orderIntents.intentId, intentId)).get();
 }
 
-export function intentsInStates(db: Db, states: string[]) {
-  return db.select().from(schema.orderIntents).where(inArray(schema.orderIntents.state, states)).all();
+export function intentsInStates(db: Db, states: string[], mode?: BookMode) {
+  const conditions = [inArray(schema.orderIntents.state, states)];
+  if (mode) conditions.push(eq(schema.orderIntents.mode, mode));
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(and(...conditions))
+    .all();
+}
+
+/**
+ * Enforced intent transition. Every write that changes state goes through
+ * here so the guarded map in @zcode-bot/core is the only authority. Paper
+ * simulation may go quoted -> confirmed; live execution must walk
+ * pending_sign -> signed -> submitted.
+ */
+export function transitionIntent(
+  db: Db,
+  intentId: string,
+  to: OrderIntentState,
+  patch: Partial<IntentInsert> = {},
+): void {
+  const current = getIntent(db, intentId);
+  if (!current) throw new Error(`intent not found: ${intentId}`);
+  transitionOrder(current.state as OrderIntentState, to);
+  db.update(schema.orderIntents)
+    .set({ ...patch, state: to, updatedAt: nowIso() })
+    .where(eq(schema.orderIntents.intentId, intentId))
+    .run();
+}
+
+/**
+ * Reconciliation-only transition: requires chain evidence. The caller has
+ * already checked signature status / token deltas.
+ */
+export function resolveIntentWithEvidence(
+  db: Db,
+  intentId: string,
+  to: 'confirmed' | 'failed',
+  patch: Partial<IntentInsert> = {},
+): void {
+  const current = getIntent(db, intentId);
+  if (!current) throw new Error(`intent not found: ${intentId}`);
+  if (current.state !== 'requires_reconciliation') {
+    throw new Error(`intent ${intentId} is ${current.state}, not requires_reconciliation`);
+  }
+  db.update(schema.orderIntents)
+    .set({ ...patch, state: to, updatedAt: nowIso() })
+    .where(eq(schema.orderIntents.intentId, intentId))
+    .run();
+}
+
+/** Entry intents that still hold budget (pre-fill or signed-but-unresolved). */
+export function pendingEntryIntents(db: Db, mode?: BookMode) {
+  const conditions = [
+    eq(schema.orderIntents.kind, 'entry'),
+    inArray(schema.orderIntents.state, ['pending_quote', 'quoted', 'pending_sign', 'signed', 'submitted']),
+  ];
+  if (mode) conditions.push(eq(schema.orderIntents.mode, mode));
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(and(...conditions))
+    .all();
+}
+
+/** Unknown entry intents with no position yet: treat their notional as exposure. */
+export function unresolvedEntryIntents(db: Db, mode?: BookMode) {
+  const conditions = [
+    eq(schema.orderIntents.kind, 'entry'),
+    eq(schema.orderIntents.state, 'requires_reconciliation'),
+    isNull(schema.orderIntents.positionId),
+  ];
+  if (mode) conditions.push(eq(schema.orderIntents.mode, mode));
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(and(...conditions))
+    .all();
+}
+
+/**
+ * Intents whose transaction bytes exist and may have reached the chain:
+ * signed, submitted, or already routed to reconciliation with a signature.
+ * Everything with no signature is provably unsent and is not included.
+ */
+export function signedIntents(db: Db, mode?: BookMode) {
+  const conditions = [
+    inArray(schema.orderIntents.state, ['signed', 'submitted', 'requires_reconciliation']),
+    isNotNullSignature(),
+  ];
+  if (mode) conditions.push(eq(schema.orderIntents.mode, mode));
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(and(...conditions))
+    .all();
+}
+
+function isNotNullSignature() {
+  return sql`${schema.orderIntents.txSignature} IS NOT NULL`;
+}
+
+/**
+ * Pre-sign intents left by a crash. The new writer persists `signed` before
+ * the send, so a stale quoted/pending_sign row is provably unsent.
+ */
+export function stalePreSignIntents(db: Db, beforeIso: string, mode?: BookMode) {
+  const conditions = [
+    inArray(schema.orderIntents.state, ['pending_quote', 'quoted', 'pending_sign']),
+    lte(schema.orderIntents.updatedAt, beforeIso),
+  ];
+  if (mode) conditions.push(eq(schema.orderIntents.mode, mode));
+  return db
+    .select()
+    .from(schema.orderIntents)
+    .where(and(...conditions))
+    .all();
+}
+
+export function openCasesWithSignature(db: Db, mode?: BookMode) {
+  const conditions = [
+    eq(schema.reconciliationCases.status, 'open'),
+    sql`${schema.reconciliationCases.signature} IS NOT NULL`,
+  ];
+  if (mode) conditions.push(eq(schema.reconciliationCases.mode, mode));
+  return db
+    .select()
+    .from(schema.reconciliationCases)
+    .where(and(...conditions))
+    .all();
+}
+
+export function openReconciliationCaseForActivation(db: Db, activationId: string) {
+  for (const c of openReconciliationCases(db)) {
+    if (c.intentId) {
+      const intent = getIntent(db, c.intentId);
+      if (intent?.activationId === activationId) return c;
+    }
+    if (c.positionId) {
+      const position = getPosition(db, c.positionId);
+      if (position?.activationId === activationId) return c;
+    }
+  }
+  return undefined;
+}
+
+/** One fill per intent: reconciliation and normal execution share this guard. */
+export function insertFillIfAbsent(db: Db, input: FillInsert): boolean {
+  const existing = db
+    .select({ fillId: schema.fills.fillId })
+    .from(schema.fills)
+    .where(eq(schema.fills.intentId, input.intentId))
+    .get();
+  if (existing) return false;
+  db.insert(schema.fills).values(input).run();
+  return true;
 }
 
 /**
@@ -791,30 +980,35 @@ export function insertFill(db: Db, input: FillInsert): void {
   db.insert(schema.fills).values(input).run();
 }
 
-export function listFills(db: Db, limit = 200) {
-  return db.select().from(schema.fills).orderBy(desc(schema.fills.confirmedAt)).limit(limit).all();
+export function listFills(db: Db, limit = 200, mode?: BookMode) {
+  const q = db.select().from(schema.fills);
+  return (mode ? q.where(eq(schema.fills.mode, mode)) : q)
+    .orderBy(desc(schema.fills.confirmedAt))
+    .limit(limit)
+    .all();
 }
 
 export function insertPnlLot(db: Db, input: PnlLotInsert): void {
   db.insert(schema.realizedPnlLots).values(input).run();
 }
 
-export function listPnlLots(db: Db, limit = 500) {
-  return db
-    .select()
-    .from(schema.realizedPnlLots)
+export function listPnlLots(db: Db, limit = 500, mode?: BookMode) {
+  const q = db.select().from(schema.realizedPnlLots);
+  return (mode ? q.where(eq(schema.realizedPnlLots.mode, mode)) : q)
     .orderBy(desc(schema.realizedPnlLots.closedAt))
     .limit(limit)
     .all();
 }
 
-export function realizedPnlSince(db: Db, sinceIso: string): bigint {
+export function realizedPnlSince(db: Db, sinceIso: string, mode?: BookMode): bigint {
+  const conditions = [gte(schema.realizedPnlLots.closedAt, sinceIso)];
+  if (mode) conditions.push(eq(schema.realizedPnlLots.mode, mode));
   const rows = db
     .select({
       total: sql<string | null>`coalesce(sum(cast(${schema.realizedPnlLots.pnlUsdMicro} as integer)), 0)`,
     })
     .from(schema.realizedPnlLots)
-    .where(gte(schema.realizedPnlLots.closedAt, sinceIso))
+    .where(and(...conditions))
     .all();
   return BigInt(rows[0]?.total ?? '0');
 }
@@ -865,13 +1059,23 @@ export function latestFiringEventForActivation(db: Db, activationId: string) {
 }
 
 /** The newest firings (the dashboard's fired lane), newest first. */
-export function listRecentFirings(db: Db, limit = 5) {
-  return db.select().from(schema.firingEvents).orderBy(desc(schema.firingEvents.firedAt)).limit(limit).all();
+export function listRecentFirings(db: Db, limit = 5, mode?: BookMode) {
+  const q = db.select().from(schema.firingEvents);
+  return (mode ? q.where(eq(schema.firingEvents.mode, mode)) : q)
+    .orderBy(desc(schema.firingEvents.firedAt))
+    .limit(limit)
+    .all();
 }
 
 /** Firings inside the window (the dashboard pipeline's exits stage). */
-export function listFiringEventsSince(db: Db, sinceIso: string) {
-  return db.select().from(schema.firingEvents).where(gte(schema.firingEvents.firedAt, sinceIso)).all();
+export function listFiringEventsSince(db: Db, sinceIso: string, mode?: BookMode) {
+  const conditions = [gte(schema.firingEvents.firedAt, sinceIso)];
+  if (mode) conditions.push(eq(schema.firingEvents.mode, mode));
+  return db
+    .select()
+    .from(schema.firingEvents)
+    .where(and(...conditions))
+    .all();
 }
 
 /**
@@ -879,11 +1083,13 @@ export function listFiringEventsSince(db: Db, sinceIso: string) {
  * D4 re-entry clock: the block lifts on a later hire of another trader, or
  * after the cooldown while a roster chair is free.
  */
-export function lastFiredAt(db: Db, candidateId: string): string | null {
+export function lastFiredAt(db: Db, candidateId: string, mode?: BookMode): string | null {
+  const conditions = [eq(schema.firingEvents.candidateId, candidateId)];
+  if (mode) conditions.push(eq(schema.firingEvents.mode, mode));
   const row = db
     .select({ firedAt: schema.firingEvents.firedAt })
     .from(schema.firingEvents)
-    .where(eq(schema.firingEvents.candidateId, candidateId))
+    .where(and(...conditions))
     .orderBy(desc(schema.firingEvents.firedAt))
     .limit(1)
     .get();
@@ -897,12 +1103,19 @@ export function lastFiredAt(db: Db, candidateId: string): string | null {
  * replaced the firing itself (`replacesActivationId` = the fired activation)
  * does not lift that fired trader's block. A later independent hire still does.
  */
-export function hasHireSince(db: Db, firedAtIso: string, excludeCandidateId: string): boolean {
+export function hasHireSince(
+  db: Db,
+  firedAtIso: string,
+  excludeCandidateId: string,
+  mode?: BookMode,
+): boolean {
   // The firing this block belongs to: the newest firing event for the candidate.
+  const firingConditions = [eq(schema.firingEvents.candidateId, excludeCandidateId)];
+  if (mode) firingConditions.push(eq(schema.firingEvents.mode, mode));
   const lastFiring = db
     .select({ activationId: schema.firingEvents.activationId })
     .from(schema.firingEvents)
-    .where(eq(schema.firingEvents.candidateId, excludeCandidateId))
+    .where(and(...firingConditions))
     .orderBy(desc(schema.firingEvents.firedAt), desc(schema.firingEvents.id))
     .limit(1)
     .get();
@@ -910,6 +1123,7 @@ export function hasHireSince(db: Db, firedAtIso: string, excludeCandidateId: str
     gt(schema.traderActivations.startedAt, firedAtIso),
     ne(schema.traderActivations.candidateId, excludeCandidateId),
   ];
+  if (mode) conditions.push(eq(schema.traderActivations.mode, mode));
   if (lastFiring) {
     conditions.push(
       or(
@@ -1169,18 +1383,28 @@ export function setWatchCursor(
 // --- risk / reconciliation / health ------------------------------------------------
 
 export function insertRiskRejection(db: Db, input: RiskRejectionInsert): void {
-  db.insert(schema.riskRejections).values(input).run();
+  const mode =
+    input.mode ?? (input.activationId ? (getActivation(db, input.activationId)?.mode ?? 'paper') : 'paper');
+  db.insert(schema.riskRejections)
+    .values({ ...input, mode })
+    .run();
 }
 
-export function listRiskRejections(db: Db, limit = 200) {
-  return db.select().from(schema.riskRejections).orderBy(desc(schema.riskRejections.id)).limit(limit).all();
+export function listRiskRejections(db: Db, limit = 200, mode?: BookMode) {
+  const q = db.select().from(schema.riskRejections);
+  return (mode ? q.where(eq(schema.riskRejections.mode, mode)) : q)
+    .orderBy(desc(schema.riskRejections.id))
+    .limit(limit)
+    .all();
 }
 
-export function openReconciliationCases(db: Db) {
+export function openReconciliationCases(db: Db, mode?: BookMode) {
+  const conditions = [eq(schema.reconciliationCases.status, 'open')];
+  if (mode) conditions.push(eq(schema.reconciliationCases.mode, mode));
   return db
     .select()
     .from(schema.reconciliationCases)
-    .where(eq(schema.reconciliationCases.status, 'open'))
+    .where(and(...conditions))
     .all();
 }
 
@@ -1194,6 +1418,75 @@ export function resolveReconciliationCase(db: Db, id: number): void {
     .set({ status: 'resolved', resolvedAt: nowIso() })
     .where(eq(schema.reconciliationCases.id, id))
     .run();
+}
+
+// --- withdrawals ---------------------------------------------------------------
+
+type WithdrawalInsert = (typeof schema.withdrawals)['$inferInsert'];
+
+export function insertWithdrawal(db: Db, input: WithdrawalInsert): void {
+  db.insert(schema.withdrawals).values(input).run();
+}
+
+export function updateWithdrawal(db: Db, withdrawalId: string, patch: Partial<WithdrawalInsert>): void {
+  db.update(schema.withdrawals)
+    .set({ ...patch, updatedAt: nowIso() })
+    .where(eq(schema.withdrawals.withdrawalId, withdrawalId))
+    .run();
+}
+
+export function getWithdrawal(db: Db, withdrawalId: string) {
+  return db.select().from(schema.withdrawals).where(eq(schema.withdrawals.withdrawalId, withdrawalId)).get();
+}
+
+export function getWithdrawalByIdempotencyKey(db: Db, key: string) {
+  return db.select().from(schema.withdrawals).where(eq(schema.withdrawals.idempotencyKey, key)).get();
+}
+
+const OPEN_WITHDRAWAL_STATES = ['pending', 'signed', 'submitted', 'unknown'] as const;
+
+/** Anything that still needs chain reconciliation (and holds USDC cash). */
+export function openWithdrawals(db: Db, mode?: BookMode) {
+  const conditions = [inArray(schema.withdrawals.status, [...OPEN_WITHDRAWAL_STATES])];
+  if (mode) conditions.push(eq(schema.withdrawals.mode, mode));
+  return db
+    .select()
+    .from(schema.withdrawals)
+    .where(and(...conditions))
+    .all();
+}
+
+/**
+ * USDC leaving the book: `sent` reduces capital permanently; open states
+ * reserve cash until reconciled. SOL withdrawals do not touch the USDC ledger.
+ */
+export function withdrawalTotals(
+  db: Db,
+  mode?: BookMode,
+): { sentUsdMicro: bigint; reservedUsdMicro: bigint } {
+  const conditions = [eq(schema.withdrawals.asset, 'USDC')];
+  if (mode) conditions.push(eq(schema.withdrawals.mode, mode));
+  const rows = db
+    .select()
+    .from(schema.withdrawals)
+    .where(and(...conditions))
+    .all();
+  let sent = 0n;
+  let reserved = 0n;
+  for (const row of rows) {
+    const amount = BigInt(row.amountUsdMicro ?? '0');
+    if (row.status === 'sent') sent += amount;
+    else if ((OPEN_WITHDRAWAL_STATES as readonly string[]).includes(row.status)) reserved += amount;
+  }
+  return { sentUsdMicro: sent, reservedUsdMicro: reserved };
+}
+
+export function listWithdrawals(db: Db, limit = 100, mode?: BookMode) {
+  const q = db.select().from(schema.withdrawals);
+  return (mode ? q.where(eq(schema.withdrawals.mode, mode)) : q)
+    .orderBy(desc(schema.withdrawals.createdAt))
+    .limit(limit)
+    .all();
 }
 
 export function recordProviderHealth(db: Db, input: ProviderHealthInsert): void {

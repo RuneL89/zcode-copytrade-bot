@@ -95,8 +95,13 @@ export class ControlService {
     this.flags.emergencyStopped = true;
     this.flags.armed = false;
     this.persist();
-    forgetWalletPassphrase(this.dataDir);
-    repo.controlEvent(this.db, 'emergency_stop', 'new entries blocked; non-risk-reducing signing blocked');
+    // The live executor stays mounted so risk-reducing exits can still sign.
+    // An explicit `lock-wallet` (only when flat) forgets the passphrase.
+    repo.controlEvent(
+      this.db,
+      'emergency_stop',
+      'new entries blocked; exits remain signable until wallet is locked',
+    );
     repo.audit(this.db, 'control', 'EMERGENCY STOP engaged');
   }
 
@@ -117,11 +122,33 @@ export class ControlService {
   disarm(): void {
     this.flags.armed = false;
     this.persist();
-    // An explicit disarm outranks the sealed passphrase: a later restart must
-    // not bring live trading back on its own.
+    // Disarm stops NEW entries but keeps the executor mounted so open live
+    // positions can still be exited. `lockWallet` forgets the sealed
+    // passphrase once the book is flat.
+    repo.controlEvent(this.db, 'disarm', 'new entries stopped; exits remain signable');
+    repo.audit(this.db, 'control', 'live disarmed (entries stopped; exits remain signable)');
+  }
+
+  /**
+   * Explicitly forget the wallet secret and stop all signing. The caller must
+   * have already unmounted the executor and verified the book is flat.
+   */
+  lockWallet(): void {
+    this.flags.armed = false;
+    this.persist();
     forgetWalletPassphrase(this.dataDir);
-    repo.controlEvent(this.db, 'disarm');
-    repo.audit(this.db, 'control', 'live disarmed');
+    repo.controlEvent(this.db, 'lock_wallet');
+    repo.audit(this.db, 'control', 'wallet locked; no signing until re-armed');
+  }
+
+  /** Continuous-health pause: stop new entries but leave exits signable. */
+  autoPause(reason: string): void {
+    if (this.flags.newEntriesPaused && this.flags.pausedReason === reason) return;
+    this.flags.newEntriesPaused = true;
+    this.flags.pausedReason = reason;
+    this.persist();
+    repo.controlEvent(this.db, 'auto_pause', reason);
+    repo.audit(this.db, 'control', 'new entries auto-paused', { reason });
   }
 
   /** Entries allowed only when everything is healthy and unpaused. */

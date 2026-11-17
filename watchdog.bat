@@ -10,6 +10,8 @@ rem finished trade into an unknown outcome. The next checks will show whether it
 rem recovered.
 
 cd /d "%~dp0"
+rem An explicit OPS shutdown writes this file; never undo it.
+if exist "logs\copydesk.stop" exit /b 0
 set "LOG=data\watchdog.log"
 set "STATE=data\watchdog.state"
 rem Last known state: 1 = was healthy (default when no state file exists).

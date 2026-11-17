@@ -19,7 +19,16 @@ interface SettingsView {
     fomoApiBaseUrl: string;
   };
   wallet: { exists: boolean; publicKey: string | null };
-  readiness: { ready: boolean; items: Array<{ id: string; ok: boolean; label: string; detail: string }> };
+  readiness: {
+    ready: boolean;
+    items: Array<{
+      id: string;
+      ok: boolean;
+      label: string;
+      detail: string;
+      severity?: 'blocker' | 'warning';
+    }>;
+  };
   control: { newEntriesPaused: boolean; emergencyStopped: boolean };
   liveAckString: string;
 }
@@ -696,7 +705,9 @@ function LiveCard({
       <ul className="mt-2 text-[12px] space-y-1.5">
         {view.readiness.items.map((item) => (
           <li key={item.id} className="flex gap-2">
-            <span aria-label={item.ok ? 'ok' : 'blocked'}>{item.ok ? '✅' : '⛔'}</span>
+            <span aria-label={item.ok ? 'ok' : item.severity === 'warning' ? 'warning' : 'blocked'}>
+              {item.ok ? '✅' : item.severity === 'warning' ? '⚠️' : '⛔'}
+            </span>
             <span>
               <strong>{item.label}</strong>
               <br />
@@ -711,8 +722,8 @@ function LiveCard({
             <div className="panel border-posborder bg-posdim p-3" data-testid="armed-box">
               <p className="tag !text-pos font-bold">🟢 LIVE ARMED — REAL TRADES ARE SIGNING</p>
               <p className="text-[11.5px] text-muted mt-1">
-                Every copied trade signs with your wallet. Use DISARM to stop signing, or EMERGENCY STOP in
-                Controls to also block new entries.
+                Every copied trade signs with your wallet. DISARM stops new entries; open positions can still
+                be exited until the wallet is locked. EMERGENCY STOP also blocks new entries immediately.
               </p>
               <button
                 onClick={() =>
@@ -760,6 +771,21 @@ function LiveCard({
                 className="mt-2 rounded-[12px] bg-negdim border border-negborder text-neg mono text-[12px] font-bold px-4 py-2 disabled:opacity-40 cursor-pointer"
               >
                 ARM LIVE
+              </button>
+              <button
+                onClick={() =>
+                  void api
+                    .lockWallet()
+                    .then(() => {
+                      onMsg('wallet locked — no signing until re-armed');
+                      onReload();
+                    })
+                    .catch((e) => onMsg((e as Error).message))
+                }
+                className="mt-2 ml-2 chip border border-insetborder bg-panel text-muted text-[12px] font-semibold px-3 py-2 cursor-pointer"
+                title="Only allowed when no live positions or reconciliation cases remain"
+              >
+                LOCK WALLET
               </button>
             </>
           )}

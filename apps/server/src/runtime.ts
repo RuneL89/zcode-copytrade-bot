@@ -31,6 +31,7 @@ import {
 import { StateStore } from './services/state.js';
 import { ControlService } from './services/control.js';
 import { CopyEngine, EXIT_QUEUE_RETRY_MS, SOL_MINT, USDC_MINT } from './services/engine.js';
+import { createTradingLocks } from './services/locks.js';
 import { TraderLifecycle } from './services/lifecycle.js';
 import { LeaderMonitor, reconcileOpenIntents } from './services/monitor.js';
 import { selectDawnTargets } from './services/dawn-targets.js';
@@ -143,11 +144,16 @@ export class Runtime {
   private symbolTimer: ReturnType<typeof setTimeout> | null = null;
   private feeLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private exitRetryTimer: ReturnType<typeof setInterval> | null = null;
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  /** Last live readiness result (null until the first sweep). */
+  private liveReadinessOk: boolean | null = null;
   private lastFeeScanAt = 0;
   private solPriceUsdMicro: bigint | null = null;
   private weeklyReview: WeeklyReviewScheduler | null = null;
 
   private equityStartUsdMicro: bigint;
+  /** One lock set shared by the engine, lifecycle and withdrawals. */
+  private locks = createTradingLocks();
 
   constructor(
     public config: AppConfig,
@@ -205,7 +211,13 @@ export class Runtime {
         ? new StaticPriceProvider(new Map([['So11111111111111111111111111111111111111112', 180_000_000n]]))
         : new JupiterPriceProvider(this.jupiter, config.risk.PRICE_MAX_AGE_SECONDS * 1000);
     this.priceProvider = prices;
-    const taker = walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE);
+    // A corrupt wallet file must be a readiness blocker, not a constructor crash.
+    let taker: string | null = null;
+    try {
+      taker = walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE);
+    } catch {
+      taker = null;
+    }
     if (taker) {
       this.jupiter.setTaker(taker);
       if (this.priceProvider instanceof JupiterPriceProvider) this.priceProvider.setTaker(taker);
@@ -259,12 +271,18 @@ export class Runtime {
           }
         },
       },
-      walletPublicKey(config.env.DATA_DIR, config.env.WALLET_FILE),
+      taker,
       this.equityStartUsdMicro,
       config.mode === 'live',
+      this.locks,
     );
 
-    this.lifecycle = new TraderLifecycle(this.db.db, config.risk, this.engine);
+    this.lifecycle = new TraderLifecycle(
+      this.db.db,
+      config.risk,
+      this.engine,
+      config.mode === 'live' ? 'live' : 'paper',
+    );
     this.lifecycle.hireApproval = config.env.HIRE_APPROVAL;
     this.lifecycle.onSeatOpen = (event) => {
       this.rememberOpenSeat(event);
@@ -289,6 +307,7 @@ export class Runtime {
       this.helius,
       this.equityStartUsdMicro,
       createSolanaBroadcaster(() => heliusRpcUrl(this.config.env.HELIUS_API_KEY)),
+      this.locks,
     );
 
     if (config.mode === 'demo') {
@@ -433,6 +452,10 @@ export class Runtime {
    */
   rebuildState(): import('./services/state.js').DashboardState {
     if (this.demo?.running) return this.store.get()!; // demo owns the state while replaying
+    this.builder.setLiveState({
+      executorMounted: this.liveExecutorMounted(),
+      readinessOk: this.liveReadinessOk,
+    });
     // Chairs are filled by the promotion queue (fillRoster from the watch tick
     // and right after a fire), never by a board ordering.
     const state = this.builder.build();
@@ -449,32 +472,67 @@ export class Runtime {
     return this.rebuildState();
   }
 
-  readiness() {
-    return readinessReport(this.db.db, this.config, this.control, this.monitor, Boolean(this.lock));
+  readiness(opts: { monitorExpected?: boolean } = {}) {
+    return readinessReport(this.db.db, this.config, this.control, this.monitor, Boolean(this.lock), {
+      helius: this.helius,
+      jupiter: this.jupiter,
+      monitorExpected: opts.monitorExpected,
+      databaseIntegrityOk: () => this.db.sqlite.pragma('quick_check', { simple: true }) === 'ok',
+    });
   }
 
   private async restoreLiveArming(): Promise<void> {
     if (this.config.mode !== 'live' || !this.config.env.LIVE_TRADING) return;
-    if (!this.control.flags.armed) return; // explicit disarm — nothing to restore
+    const armed = this.control.flags.armed;
+    const liveMode = this.config.mode === 'live' ? 'live' : 'paper';
+    const needsExits =
+      repo.exposurePositions(this.db.db, liveMode).length > 0 ||
+      repo.openReconciliationCases(this.db.db, liveMode).length > 0 ||
+      repo.signedIntents(this.db.db, liveMode).length > 0;
+    if (!armed && !needsExits) return; // no key in memory without a reason
+
     try {
-      const passphrase = readRememberedPassphrase(this.config.env.DATA_DIR);
+      const sealed = readRememberedPassphrase(this.config.env.DATA_DIR);
+      const passphrase = this.config.env.COPYDESK_WALLET_PASSPHRASE || sealed;
       if (!passphrase) {
-        throw new Error('no sealed wallet passphrase on disk — arm once from the dashboard');
+        throw new Error('no wallet passphrase available — re-arm once from the dashboard');
       }
-      const secret = loadWalletSecret(
-        this.config.env.DATA_DIR,
-        this.config.env.COPYDESK_WALLET_PASSPHRASE || passphrase,
-        this.config.env.WALLET_FILE,
-      );
+      const secret = loadWalletSecret(this.config.env.DATA_DIR, passphrase, this.config.env.WALLET_FILE);
       const publicKey = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
       if (!publicKey) throw new Error('wallet public key missing');
       this.mountLiveExecutor(
         new LiveExecutor(this.jupiter, this.heliusRpcUrl(), secret, publicKey, undefined, this.liveSubmit()),
       );
-      repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
-      void this.notifier
-        .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
-        .catch(() => {});
+
+      const readiness = await this.readiness({ monitorExpected: true });
+      this.liveReadinessOk = readiness.ready;
+      const blockers = readiness.items
+        .filter((item) => item.severity === 'blocker' && !item.ok)
+        .map((item) => `${item.id}: ${item.detail}`);
+      if (!readiness.ready) {
+        const detail = blockers.join('; ');
+        repo.audit(this.db.db, 'control', 'boot readiness blockers; entries stay blocked', {
+          blockers,
+        });
+        if (armed) this.control.bootDisarm(`readiness failed: ${detail}`);
+        void this.notifier
+          .notify(
+            `⚠️ Copydesk live readiness is not green: ${detail}. Entries are blocked; exits still sign if positions are open.`,
+          )
+          .catch(() => {});
+        return;
+      }
+      if (armed) {
+        repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
+        void this.notifier
+          .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
+          .catch(() => {});
+      } else {
+        repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked for exits only (disarmed)', {});
+        void this.notifier
+          .notify('Copydesk restarted DISARMED; the wallet is unlocked only to exit open live positions.')
+          .catch(() => {});
+      }
     } catch (e) {
       const reason = (e as Error).message;
       this.control.bootDisarm(reason);
@@ -511,7 +569,7 @@ export class Runtime {
     this.lock = acquireWorkerLock(this.config.env.DATA_DIR);
     repo.audit(this.db.db, 'system', `runtime starting (mode=${this.config.mode})`);
 
-    const recon = reconcileOpenIntents(this.db.db);
+    const recon = reconcileOpenIntents(this.db.db, this.config.mode === 'live' ? 'live' : 'paper');
     if (recon.opened > 0) {
       repo.audit(
         this.db.db,
@@ -521,6 +579,9 @@ export class Runtime {
       );
     }
     await this.restoreLiveArming();
+    void this.reconcileNow().catch((e: Error) => {
+      repo.audit(this.db.db, 'reconciliation', `boot reconciliation pass failed: ${e.message}`, {});
+    });
     void this.resolveTokenSymbols().catch(() => undefined);
     void this.refreshFeeLedger().catch(() => undefined);
 
@@ -637,6 +698,10 @@ export class Runtime {
           repo.audit(this.db.db, 'trade', `exit queue retry pass failed: ${e.message}`, {});
         });
     }, EXIT_QUEUE_RETRY_MS);
+
+    // Signed/ambiguous transactions and withdrawals are reconciled against
+    // chain status every 30 seconds. Cheap when nothing is pending.
+    this.reconcileTimer = setInterval(() => void this.reconcileNow(), 30_000);
 
     // Candidate-pool activity refresh (housekeeping): keeps the funded-buy
     // readings and the stall watcher's evidence current. Never hires.
@@ -846,7 +911,8 @@ export class Runtime {
 
   private streamSeats(): string[] {
     const out: string[] = [];
-    for (const act of repo.listActiveActivations(this.db.db)) {
+    const mode = this.config.mode === 'live' ? 'live' : 'paper';
+    for (const act of repo.listActiveActivations(this.db.db, mode)) {
       if (act.state !== 'ACTIVE') continue;
       const address = repo
         .listCandidateAddresses(this.db.db, act.candidateId)
@@ -925,7 +991,8 @@ export class Runtime {
       summary = await this.helius.transactionSummary(address, signature, 'roster').catch(() => null);
     }
     if (!summary) return;
-    const act = repo.listActiveActivations(this.db.db).find((row) => {
+    const mode = this.config.mode === 'live' ? 'live' : 'paper';
+    const act = repo.listActiveActivations(this.db.db, mode).find((row) => {
       if (row.state !== 'ACTIVE') return false;
       return repo
         .listCandidateAddresses(this.db.db, row.candidateId)
@@ -1002,6 +1069,7 @@ export class Runtime {
     if (this.marksTimer) clearInterval(this.marksTimer);
     if (this.feeLedgerTimer) clearInterval(this.feeLedgerTimer);
     if (this.exitRetryTimer) clearInterval(this.exitRetryTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.symbolTimer) clearTimeout(this.symbolTimer);
     if (this.watchTimer) clearInterval(this.watchTimer);
     if (this.rosterTimer) clearInterval(this.rosterTimer);
@@ -1052,7 +1120,12 @@ export class Runtime {
         jupiter: j.ok ? 'OK' : 'DOWN',
       });
       // Fee wallet runway: SOL pays every network fee, so surface its balance.
-      const feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
+      let feeAddress: string | null = null;
+      try {
+        feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
+      } catch {
+        feeAddress = null;
+      }
       let solLamports = feeAddress
         ? await this.publicSolana.getBalanceLamports(feeAddress).catch(() => null)
         : null;
@@ -1084,6 +1157,19 @@ export class Runtime {
       // Symbols can appear later (a token gains metadata after launch), so keep
       // retrying the ones still missing on the health cadence.
       await this.resolveTokenSymbols().catch(() => undefined);
+      if (this.config.mode === 'live' && this.liveExecutorMounted() && !this.stopping) {
+        const readiness = await this.readiness();
+        this.liveReadinessOk = readiness.ready;
+        if (!readiness.ready) {
+          const blockers = readiness.items
+            .filter((item) => item.severity === 'blocker' && !item.ok)
+            .map((item) => `${item.id}: ${item.detail}`);
+          this.control.autoPause(`live readiness: ${blockers[0] ?? 'blocker'}`);
+          this.notifyUser(
+            `⚠️ Copydesk live readiness degraded (${blockers.join('; ')}). New entries paused; exits remain signable.`,
+          );
+        }
+      }
       this.rebuildState();
     } catch (e) {
       // A probe that loses the database to a shutdown is expected, not a bug.
@@ -1104,7 +1190,12 @@ export class Runtime {
   private async refreshFeeLedger(throttleMs = 0): Promise<void> {
     if (this.config.mode === 'demo') return;
     if (throttleMs > 0 && Date.now() - this.lastFeeScanAt < throttleMs) return;
-    const feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
+    let feeAddress: string | null = null;
+    try {
+      feeAddress = walletPublicKey(this.config.env.DATA_DIR, this.config.env.WALLET_FILE);
+    } catch {
+      feeAddress = null;
+    }
     if (!feeAddress) return;
     this.lastFeeScanAt = Date.now();
     await this.feeLedger.refresh(feeAddress).catch(() => undefined);
@@ -1155,7 +1246,8 @@ export class Runtime {
    */
   private async refreshMarks(): Promise<void> {
     if (this.config.mode === 'demo') return;
-    for (const p of repo.openPositions(this.db.db)) {
+    const mode = this.config.mode === 'live' ? 'live' : 'paper';
+    for (const p of repo.openPositions(this.db.db, mode)) {
       if (BigInt(p.remainingTokenBase) <= 0n) continue;
       try {
         const quote = await this.jupiter.quote({
@@ -1180,6 +1272,56 @@ export class Runtime {
     repo.kvSet(this.db.db, 'risk.overrides', JSON.stringify(this.config.risk));
   }
 
+  /**
+   * Consistent SQLite snapshot through the online backup API (no WAL side-file
+   * copy race). Used by the OPS backup action.
+   */
+  async backupDatabase(destination: string): Promise<void> {
+    await this.db.sqlite.backup(destination);
+  }
+
+  liveExecutorMounted(): boolean {
+    return this.liveExecutor !== null;
+  }
+
+  setLiveReadiness(ok: boolean | null): void {
+    this.liveReadinessOk = ok;
+  }
+
+  /**
+   * Reconcile signed/submitted intents and pending withdrawals against chain
+   * evidence. Never signs; only resolves outcomes the chain already decided.
+   */
+  async reconcileNow(): Promise<{
+    intents: {
+      reviewed: number;
+      confirmed: number;
+      failed: number;
+      pending: number;
+      lateFillsClosed: number;
+    };
+    withdrawals: { reviewed: number; sent: number; failed: number; pending: number };
+  }> {
+    const intents = await this.engine.reconcileSignedIntents(this.helius, Date.now());
+    const withdrawals = await this.withdraw.reconcileWithdrawals(this.helius);
+    if (
+      intents.confirmed + intents.failed + intents.lateFillsClosed + withdrawals.sent + withdrawals.failed >
+      0
+    ) {
+      repo.audit(this.db.db, 'reconciliation', 'chain reconciliation pass resolved outcomes', {
+        intents,
+        withdrawals,
+      });
+      this.rebuildState();
+    }
+    return { intents, withdrawals };
+  }
+
+  /** Fire-and-forget operator notification (Telegram when configured). */
+  notifyUser(text: string): void {
+    void this.notifier.notify(text).catch(() => undefined);
+  }
+
   mountLiveExecutor(executor: LiveExecutor): void {
     this.liveExecutor = executor;
     (this.engine as unknown as { executor: PaperExecutor | LiveExecutor }).executor = executor;
@@ -1187,20 +1329,35 @@ export class Runtime {
 
   unmountLiveExecutor(): void {
     this.liveExecutor = null;
+    this.liveReadinessOk = false;
     (this.engine as unknown as { executor: PaperExecutor | LiveExecutor }).executor = this.baseExecutor;
   }
 
-  async closeAllPositions(reason: string): Promise<{ closed: number; unknown: number }> {
-    const positions = repo.openPositions(this.db.db);
+  async closeAllPositions(reason: string): Promise<{ closed: number; unknown: number; failed: number }> {
+    // Stop new entries first: a monitor tick must not open a position while the
+    // operator is flattening the book.
+    this.control.pauseNewEntries('close-all in progress');
+    const mode = this.config.mode === 'live' ? 'live' : 'paper';
+    const positions = repo.openPositions(this.db.db, mode);
     let closed = 0;
     let unknown = 0;
+    let failed = 0;
     for (const p of positions) {
       const r = await this.engine.closePosition(p.positionId, reason);
       if (r === 'closed') closed++;
       else if (r === 'unknown') unknown++;
+      else failed++;
     }
-    repo.controlEvent(this.db.db, 'close_all', `${closed} closed, ${unknown} unknown`, 'dashboard');
-    return { closed, unknown };
+    repo.controlEvent(
+      this.db.db,
+      'close_all',
+      `${closed} closed, ${unknown} unknown, ${failed} failed`,
+      'dashboard',
+    );
+    this.notifyUser(
+      `Copydesk close-all: ${closed} closed, ${unknown} unknown, ${failed} failed. New entries are paused.`,
+    );
+    return { closed, unknown, failed };
   }
 
   startDemo(): void {
@@ -1316,9 +1473,15 @@ export class Runtime {
 
   /** Sender, then a governor-metered staked send, then the public RPC. */
   liveSubmit() {
-    return (args: { signedBase64: string; trySender: boolean; path: 'exit' | 'wallet' }) =>
+    return (args: {
+      signedBase64: string;
+      expectedSignature: string;
+      trySender: boolean;
+      path: 'exit' | 'wallet';
+    }) =>
       sendSignedTransaction({
         signedBase64: args.signedBase64,
+        expectedSignature: args.expectedSignature,
         trySender: args.trySender,
         heliusRpcUrl: this.heliusRpcUrl(),
         publicRpcUrl: this.config.env.PUBLIC_SOLANA_RPC_URL,

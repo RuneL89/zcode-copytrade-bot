@@ -733,16 +733,20 @@ export function RiskPage({
                 <b>
                   {settings.control.emergencyStopped
                     ? 'Emergency stopped'
-                    : settings.control.newEntriesPaused
-                      ? 'Entries paused'
-                      : 'Entries running'}
+                    : settings.mode === 'live' && !settings.armed
+                      ? 'Disarmed'
+                      : settings.control.newEntriesPaused
+                        ? 'Entries paused'
+                        : 'Entries running'}
                 </b>
                 <span>
                   {settings.control.emergencyStopped
-                    ? 'No entries. Existing positions are being closed.'
-                    : settings.control.newEntriesPaused
-                      ? 'Exits still run; no new copies'
-                      : 'New copies are allowed'}
+                    ? 'No entries. Exits remain signable; use Close all to flatten.'
+                    : settings.mode === 'live' && !settings.armed
+                      ? 'No new entries. Re-arm in Settings → Live; open exits remain signable.'
+                      : settings.control.newEntriesPaused
+                        ? 'Exits still run; no new copies'
+                        : 'New copies are allowed'}
                 </span>
               </div>
               <button
@@ -756,7 +760,7 @@ export function RiskPage({
             <div className="cbig">
               <div>
                 <b>Emergency stop</b>
-                <span>Halts entries and queues exits for all positions</span>
+                <span>Halts entries; risk-reducing exits remain signable (Close all flattens)</span>
               </div>
               {settings.control.emergencyStopped ? (
                 <button className="btn" onClick={() => void clearEmergency()}>
@@ -779,7 +783,8 @@ export function RiskPage({
               <div>
                 <b>Live trading</b>
                 <span>
-                  Not available from this screen. The badge reflects MODE; arming stays outside the redesign.
+                  Arm and disarm in Settings → Live (legacy settings). Disarm stops new entries; open exits
+                  remain signable until the wallet is locked.
                 </span>
               </div>
               <span className={`badge ${settings.mode === 'live' ? 'live' : 'paper'}`}>

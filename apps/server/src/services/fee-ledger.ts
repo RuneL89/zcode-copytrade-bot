@@ -22,12 +22,15 @@ const MAX_NEW_PER_TICK = 25;
 
 export interface TxSpend {
   feeLamports: number;
+  /** Sender/SWQOS tip transfers, separate from the network fee. */
+  tipLamports: number;
   rentLamports: number;
   blockTime: number | null;
 }
 
 export interface FeeLedgerTotals {
   feeLamports: number;
+  tipLamports: number;
   rentLamports: number;
   accountsOpened: number;
   accountsClosed: number;
@@ -41,13 +44,22 @@ interface LedgerState {
 
 function emptyState(): LedgerState {
   return {
-    totals: { feeLamports: 0, rentLamports: 0, accountsOpened: 0, accountsClosed: 0, txs: 0 },
+    totals: {
+      feeLamports: 0,
+      tipLamports: 0,
+      rentLamports: 0,
+      accountsOpened: 0,
+      accountsClosed: 0,
+      txs: 0,
+    },
     tx: {},
   };
 }
 
 export class FeeLedgerService {
   private state: LedgerState;
+  /** Two refreshes must never price the same unseen signatures twice. */
+  private refreshing = false;
 
   constructor(
     private db: AppDatabase,
@@ -71,28 +83,35 @@ export class FeeLedgerService {
   }
 
   async refresh(address: string | null): Promise<void> {
-    if (!address) return;
-    const signatures = await this.helius.recentSignatures(address, 100);
-    const unseen = signatures.filter((s) => !(s.signature in this.state.tx));
-    let changed = false;
-    for (const entry of unseen.slice(0, MAX_NEW_PER_TICK)) {
-      const spend = await this.helius.solSpend(entry.signature, address);
-      if (!spend) continue;
-      this.state.tx[entry.signature] = {
-        feeLamports: spend.feeLamports,
-        rentLamports: spend.rentLamports,
-        blockTime: spend.blockTime,
-      };
-      this.state.totals.feeLamports += spend.feeLamports;
-      this.state.totals.rentLamports += spend.rentLamports;
-      this.state.totals.accountsOpened += spend.accountsOpened;
-      this.state.totals.accountsClosed += spend.accountsClosed;
-      this.state.totals.txs += 1;
-      changed = true;
+    if (!address || this.refreshing) return;
+    this.refreshing = true;
+    try {
+      const signatures = await this.helius.recentSignatures(address, 250);
+      const unseen = signatures.filter((s) => !(s.signature in this.state.tx));
+      let changed = false;
+      for (const entry of unseen.slice(0, MAX_NEW_PER_TICK)) {
+        const spend = await this.helius.solSpend(entry.signature, address);
+        if (!spend) continue;
+        this.state.tx[entry.signature] = {
+          feeLamports: spend.feeLamports,
+          tipLamports: spend.tipLamports,
+          rentLamports: spend.rentLamports,
+          blockTime: spend.blockTime,
+        };
+        this.state.totals.feeLamports += spend.feeLamports;
+        this.state.totals.tipLamports += spend.tipLamports;
+        this.state.totals.rentLamports += spend.rentLamports;
+        this.state.totals.accountsOpened += spend.accountsOpened;
+        this.state.totals.accountsClosed += spend.accountsClosed;
+        this.state.totals.txs += 1;
+        changed = true;
+      }
+      if (!changed) return;
+      this.trim();
+      repo.kvSet(this.db, KV_KEY, JSON.stringify(this.state));
+    } finally {
+      this.refreshing = false;
     }
-    if (!changed) return;
-    this.trim();
-    repo.kvSet(this.db, KV_KEY, JSON.stringify(this.state));
   }
 
   private trim(): void {

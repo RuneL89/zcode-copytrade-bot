@@ -28,17 +28,17 @@ function promoteConfig(risk: RiskConfig) {
   };
 }
 
-function qualified(db: AppDatabase, risk: RiskConfig, candidateId: string): boolean {
+function qualified(db: AppDatabase, risk: RiskConfig, candidateId: string, mode: 'paper' | 'live'): boolean {
   const watch = repo.getWatchWallet(db, candidateId);
   if (!watch || (watch.status !== 'bench' && watch.status !== 'watching')) return false;
-  const lastFiredAt = repo.lastFiredAt(db, candidateId);
+  const lastFiredAt = repo.lastFiredAt(db, candidateId, mode);
   return canPromote({
     aggregates: repo.shadowAggregates(db, candidateId),
     lastFundedBuyAt: repo.lastFundedBuyAt(db, candidateId),
     lastFiredAt,
     nowMs: Date.now(),
-    anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(db, lastFiredAt, candidateId),
-    freeChair: repo.activeActivationCount(db) < risk.ROSTER_SIZE,
+    anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(db, lastFiredAt, candidateId, mode),
+    freeChair: repo.activeActivationCount(db, mode) < risk.ROSTER_SIZE,
     config: promoteConfig(risk),
   }).ok;
 }
@@ -48,6 +48,7 @@ export async function decideHire(
   risk: RiskConfig,
   lifecycle: TraderLifecycle,
   body: HireRequest,
+  mode: 'paper' | 'live' = 'paper',
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const decision = body.decision === 'hire' || body.decision === 'decline' ? body.decision : null;
   if (!decision) return { status: 400, body: { error: 'decision must be hire or decline' } };
@@ -63,13 +64,13 @@ export async function decideHire(
     hiresToday,
     maxHiresPerDay: risk.MAX_HIRES_PER_DAY,
     codeQualified:
-      decision === 'decline' ? true : candidate ? qualified(db, risk, candidate.candidateId) : false,
+      decision === 'decline' ? true : candidate ? qualified(db, risk, candidate.candidateId, mode) : false,
     blocked: repo.kvGet(db, `agent.blocked:${wallet ?? ''}`) === '1',
     markedAvoid: repo.kvGet(db, `agent.verdict:${wallet ?? ''}`) === 'avoid',
   });
   const codeOnly =
-    repo.listWatchWallets(db, 'bench').find((row) => qualified(db, risk, row.candidateId))?.candidateId ??
-    null;
+    repo.listWatchWallets(db, 'bench').find((row) => qualified(db, risk, row.candidateId, mode))
+      ?.candidateId ?? null;
   if (!result.ok) return { status: 409, body: { error: result.reason, codeOnlyPick: codeOnly } };
   if (result.decision === 'decline') {
     repo.audit(db, 'agent', 'hire declined', {

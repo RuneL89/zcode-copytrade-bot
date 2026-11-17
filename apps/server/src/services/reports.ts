@@ -328,6 +328,10 @@ export class ReportsService {
     private state: () => Promise<DashboardState>,
   ) {}
 
+  private get bookMode(): 'paper' | 'live' {
+    return this.mode === 'live' ? 'live' : 'paper';
+  }
+
   start(): void {
     this.anomalyTimer = setInterval(() => void this.sweepAnomalies().catch(() => undefined), 10 * 60_000);
     const first = msUntilNextLocalTime(9, 0);
@@ -429,12 +433,12 @@ export class ReportsService {
     // ordered by startedAt descending).
     const hires = (sinceIso: string): string[] =>
       repo
-        .listActivations(this.db.db, 500)
+        .listActivations(this.db.db, 500, this.bookMode)
         .filter((a) => a.startedAt >= sinceIso)
         .map((a) => repo.getCandidate(this.db.db, a.candidateId)?.handle ?? a.candidateId);
     const firings = (sinceIso: string): Array<{ handle: string; reason: string }> =>
       repo
-        .listFiringEventsSince(this.db.db, sinceIso)
+        .listFiringEventsSince(this.db.db, sinceIso, this.bookMode)
         .sort((a, b) => b.firedAt.localeCompare(a.firedAt))
         .map((f) => ({
           handle: repo.getCandidate(this.db.db, f.candidateId)?.handle ?? f.candidateId,
@@ -443,7 +447,7 @@ export class ReportsService {
 
     const closed24h = closedRecord(
       repo
-        .listPnlLots(this.db.db, 500)
+        .listPnlLots(this.db.db, 500, this.bookMode)
         .filter((l) => l.closedAt >= since24h)
         .map((l) => BigInt(l.pnlUsdMicro)),
     );
@@ -489,10 +493,10 @@ export class ReportsService {
       weekly:
         window === 'weekly'
           ? {
-              realizedUsdMicro: repo.realizedPnlSince(this.db.db, sinceWindow),
+              realizedUsdMicro: repo.realizedPnlSince(this.db.db, sinceWindow, this.bookMode),
               closed: closedRecord(
                 repo
-                  .listPnlLots(this.db.db, 500)
+                  .listPnlLots(this.db.db, 500, this.bookMode)
                   .filter((l) => l.closedAt >= sinceWindow)
                   .map((l) => BigInt(l.pnlUsdMicro)),
               ),
@@ -506,10 +510,10 @@ export class ReportsService {
   /** Per-chair record over the window: lots map back through their position. */
   private chairRecords(sinceIso: string, state: DashboardState): ChairRecord[] {
     const activationByPosition = new Map(
-      repo.listPositions(this.db.db, 200).map((p) => [p.positionId, p.activationId]),
+      repo.listPositions(this.db.db, 200, this.bookMode).map((p) => [p.positionId, p.activationId]),
     );
     const byActivation = new Map<string, { realized: bigint; wins: number; losses: number }>();
-    for (const lot of repo.listPnlLots(this.db.db, 500)) {
+    for (const lot of repo.listPnlLots(this.db.db, 500, this.bookMode)) {
       if (lot.closedAt < sinceIso) continue;
       const activationId = activationByPosition.get(lot.positionId);
       if (!activationId) continue;

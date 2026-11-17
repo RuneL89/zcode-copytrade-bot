@@ -130,16 +130,16 @@ export class TraderLifecycle {
       promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
       cooldownHours: this.risk.COOLDOWN_HOURS,
     };
-    const freeChair = repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE;
+    const freeChair = repo.activeActivationCount(this.db, this.mode) < this.risk.ROSTER_SIZE;
     for (const wallet of repo.listWatchWallets(this.db, 'watching')) {
-      const lastFiredAt = repo.lastFiredAt(this.db, wallet.candidateId);
+      const lastFiredAt = repo.lastFiredAt(this.db, wallet.candidateId, this.mode);
       const decision = canPromote({
         aggregates: repo.shadowAggregates(this.db, wallet.candidateId),
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, wallet.candidateId),
         lastFiredAt,
         nowMs: Date.now(),
         anotherHiredSinceFire:
-          lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, wallet.candidateId),
+          lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, wallet.candidateId, this.mode),
         freeChair,
         config: promotionConfig,
       });
@@ -157,11 +157,18 @@ export class TraderLifecycle {
     }
   }
 
+  /** The book this lifecycle hires/fires in. Paper and live chairs never mix. */
+  private mode: 'paper' | 'live';
+
   constructor(
     private db: AppDatabase,
     private risk: RiskConfig,
     private engine: CopyEngine | null,
-  ) {}
+    mode: 'paper' | 'live' | null = 'paper',
+  ) {
+    // Older test harnesses pass a fourth null argument; treat it as paper.
+    this.mode = mode === 'live' ? 'live' : 'paper';
+  }
 
   setHelius(helius: HeliusProvider): void {
     this.helius = helius;
@@ -192,13 +199,13 @@ export class TraderLifecycle {
     // One chair per leader. The watch record keeps a hired wallet on the bench
     // (its shadow record stays useful), so every hire path must refuse a
     // candidate that already owns a chair rather than activating it twice.
-    if (repo.listActiveActivations(this.db).some((a) => a.candidateId === candidateId)) {
+    if (repo.listActiveActivations(this.db, this.mode).some((a) => a.candidateId === candidateId)) {
       return { ok: false, reason: 'ALREADY_ACTIVE: the leader already holds a chair' };
     }
     // D4: a ROSTER of ROSTER_SIZE leaders sharing one budget pool. A hire needs
     // a free chair; a REQUIRES_RECONCILIATION activation keeps its own chair
     // (and only its own) occupied.
-    if (repo.activeActivationCount(this.db) >= this.risk.ROSTER_SIZE) {
+    if (repo.activeActivationCount(this.db, this.mode) >= this.risk.ROSTER_SIZE) {
       return { ok: false, reason: 'NO_SLOT: the roster is full' };
     }
     if (!repo.getCandidate(this.db, candidateId)) return { ok: false, reason: 'unknown candidateId' };
@@ -206,15 +213,15 @@ export class TraderLifecycle {
     // Re-entry block: a fired trader must not be rehired immediately. Another
     // trader's hire after the firing lifts it; otherwise the cooldown must
     // elapse while a roster chair is free. Applies to manual hires too.
-    const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
+    const lastFiredAt = repo.lastFiredAt(this.db, candidateId, this.mode);
     if (
       lastFiredAt !== null &&
       !canReenter({
         lastFiredAt,
         nowMs: Date.now(),
         cooldownHours: this.risk.COOLDOWN_HOURS,
-        anotherHiredSinceFire: repo.hasHireSince(this.db, lastFiredAt, candidateId),
-        freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
+        anotherHiredSinceFire: repo.hasHireSince(this.db, lastFiredAt, candidateId, this.mode),
+        freeChair: repo.activeActivationCount(this.db, this.mode) < this.risk.ROSTER_SIZE,
       })
     ) {
       return {
@@ -291,6 +298,7 @@ export class TraderLifecycle {
     repo.createActivation(this.db, {
       activationId,
       candidateId,
+      mode: this.mode,
       state: 'ACTIVE',
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -340,14 +348,15 @@ export class TraderLifecycle {
     };
     /** A bench row is only a candidate while its record still passes the gates. */
     const recordOk = (candidateId: string): boolean => {
-      const lastFiredAt = repo.lastFiredAt(this.db, candidateId);
+      const lastFiredAt = repo.lastFiredAt(this.db, candidateId, this.mode);
       return canPromote({
         aggregates: repo.shadowAggregates(this.db, candidateId),
         lastFundedBuyAt: repo.lastFundedBuyAt(this.db, candidateId),
         lastFiredAt,
         nowMs: Date.now(),
-        anotherHiredSinceFire: lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, candidateId),
-        freeChair: repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE,
+        anotherHiredSinceFire:
+          lastFiredAt !== null && repo.hasHireSince(this.db, lastFiredAt, candidateId, this.mode),
+        freeChair: repo.activeActivationCount(this.db, this.mode) < this.risk.ROSTER_SIZE,
         config: promotionConfig,
       }).ok;
     };
@@ -356,7 +365,7 @@ export class TraderLifecycle {
     // record still qualifies (a fired wallet is blocked until another hire or
     // the re-entry window, a stale record is not a hire).
     this.promoteQualifiedWatchers();
-    const seated = new Set(repo.listActiveActivations(this.db).map((a) => a.candidateId));
+    const seated = new Set(repo.listActiveActivations(this.db, this.mode).map((a) => a.candidateId));
     const ranked = repo
       .listWatchWallets(this.db, 'bench')
       .filter((wallet) => !seated.has(wallet.candidateId) && recordOk(wallet.candidateId))
@@ -366,7 +375,7 @@ export class TraderLifecycle {
           Number(b.aggregates.netPnlUsdMicro - a.aggregates.netPnlUsdMicro) ||
           a.wallet.admittedAt.localeCompare(b.wallet.admittedAt),
       );
-    while (repo.activeActivationCount(this.db) < this.risk.ROSTER_SIZE) {
+    while (repo.activeActivationCount(this.db, this.mode) < this.risk.ROSTER_SIZE) {
       const next = ranked.find((r) => !hired.includes(r.wallet.candidateId));
       if (!next) {
         return { hired, reason: hired.length > 0 ? 'roster filled' : 'no promotable wallet' };
@@ -399,11 +408,41 @@ export class TraderLifecycle {
     reason: string,
     opts: { requireFlat?: boolean; holdEmpty?: boolean } = {},
   ): Promise<HandoffOutcome> {
+    // Same lock as the entry path: a leader buy either finishes before the
+    // firing enumerates positions, or sees FIRING and never starts.
+    if (!this.engine || typeof this.engine.withActivationLock !== 'function') {
+      return this.fireLocked(activationId, reason, opts);
+    }
+    return this.engine.withActivationLock(activationId, () => this.fireLocked(activationId, reason, opts));
+  }
+
+  private async fireLocked(
+    activationId: string,
+    reason: string,
+    opts: { requireFlat?: boolean; holdEmpty?: boolean } = {},
+  ): Promise<HandoffOutcome> {
     const activation = repo.getActivation(this.db, activationId);
-    if (!activation || activation.state === 'FIRED') {
+    if (!activation || activation.state === 'FIRED' || activation.mode !== this.mode) {
       return { status: 'NO_REPLACEMENT', skipped: [] };
     }
     const nowIso = new Date().toISOString();
+
+    // A reconciling position or a signed/submitted order has no safe owner if
+    // the seat is marked FIRED; the monitor cannot manage a FIRED activation.
+    // Block the fire until reconciliation resolves it.
+    const frozenPosition = repo
+      .exposurePositions(this.db, this.mode)
+      .some((p) => p.activationId === activationId && p.status === 'requires_reconciliation');
+    const signedOrder = repo.signedIntents(this.db, this.mode).some((i) => i.activationId === activationId);
+    if (frozenPosition || signedOrder) {
+      repo.audit(this.db, 'firing', 'fire skipped: reconciling position or signed order remains', {
+        activationId,
+        reason,
+        frozenPosition,
+        signedOrder,
+      });
+      return { status: 'SKIPPED_NOT_FLAT', skipped: [] };
+    }
 
     // The flatness check runs INSIDE the mark-FIRING transaction: a leader buy
     // that lands between an outside check and this write would otherwise be
@@ -416,7 +455,9 @@ export class TraderLifecycle {
       }
       repo.updateActivation(this.db, activationId, { state: 'FIRING', firedReason: reason });
       for (const intent of repo.pendingUnsignedIntentsForActivation(this.db, activationId)) {
-        repo.updateIntent(this.db, intent.intentId, { state: 'cancelled', reason: 'cancelled by firing' });
+        repo.transitionIntent(this.db, intent.intentId, 'cancelled', {
+          reason: 'cancelled by firing',
+        });
       }
     });
     atomicMarkAndCancel();
@@ -441,6 +482,7 @@ export class TraderLifecycle {
         repo.updateActivation(this.db, activationId, { state: 'REQUIRES_RECONCILIATION' });
         repo.insertReconciliationCase(this.db, {
           kind: result.unknown > 0 ? 'unknown_execution' : 'close_failed',
+          mode: this.mode,
           intentId: null,
           positionId: null,
           signature: null,
@@ -476,6 +518,7 @@ export class TraderLifecycle {
     repo.insertFiringEvent(this.db, {
       activationId,
       candidateId: activation.candidateId,
+      mode: this.mode,
       reason,
       lossStreak: this.risk.FIRE_AFTER_CONSECUTIVE_LOSSES,
       positionPolicy: this.risk.FIRE_POSITION_POLICY,
@@ -561,7 +604,7 @@ export class TraderLifecycle {
     if (!this.engine) return out;
 
     const touched = new Set<string>();
-    for (const c of repo.openReconciliationCases(this.db)) {
+    for (const c of repo.openReconciliationCases(this.db, this.mode)) {
       if (!c.intentId || !c.positionId) {
         out.skipped++; // summary case: resolved below once nothing is held
         continue;
@@ -577,7 +620,9 @@ export class TraderLifecycle {
         continue;
       }
       out.retried++;
-      const result = await this.engine.closePosition(c.positionId, reason);
+      const result = await this.engine.closePosition(c.positionId, reason, {
+        allowFrozen: true,
+      });
       if (result === 'closed') {
         out.closed++;
         touched.add(position.activationId);
@@ -606,7 +651,7 @@ export class TraderLifecycle {
       .listPositions(this.db, 1000)
       .filter((p) => ['open', 'partially_closed', 'requires_reconciliation'].includes(p.status));
     if (stillHeld.length === 0) {
-      for (const c of repo.openReconciliationCases(this.db)) {
+      for (const c of repo.openReconciliationCases(this.db, this.mode)) {
         if (!c.intentId && !c.positionId) {
           repo.resolveReconciliationCase(this.db, c.id);
           repo.audit(this.db, 'reconciliation', `summary case ${c.id} resolved: no positions held`, {});
@@ -648,7 +693,7 @@ export class TraderLifecycle {
    */
   private resolveSummaryCasesForActivation(activationId: string, includeUnlinked = false): number {
     let resolved = 0;
-    for (const c of repo.openReconciliationCases(this.db)) {
+    for (const c of repo.openReconciliationCases(this.db, this.mode)) {
       if (c.intentId || c.positionId) continue;
       if (c.signature || c.kind === 'unknown_execution') continue;
       const linked = this.summaryActivationId(c.detail) === activationId;
@@ -671,9 +716,9 @@ export class TraderLifecycle {
    * left the summary open). Attribution is by the firing-event timestamp.
    */
   private resolveOrphanedFiredSummaries(): number {
-    const openCases = repo.openReconciliationCases(this.db);
-    const activations = repo.listActivations(this.db, 1000);
-    const positions = repo.listPositions(this.db, 1000);
+    const openCases = repo.openReconciliationCases(this.db, this.mode);
+    const activations = repo.listActivations(this.db, 1000, this.mode);
+    const positions = repo.listPositions(this.db, 1000, this.mode);
     let resolved = 0;
     for (const c of openCases) {
       if (c.intentId || c.positionId || c.signature || c.kind === 'unknown_execution') continue;
@@ -725,10 +770,10 @@ export class TraderLifecycle {
     completed: Array<{ activationId: string; status: string }>;
     skipped: number;
   }> {
-    const openCases = repo.openReconciliationCases(this.db);
+    const openCases = repo.openReconciliationCases(this.db, this.mode);
     const summaryCases = openCases.filter((c) => !c.intentId && !c.positionId);
     const activations = repo
-      .listActiveActivations(this.db)
+      .listActiveActivations(this.db, this.mode)
       .filter((a) => a.state === 'REQUIRES_RECONCILIATION');
     if (summaryCases.some((c) => c.signature !== null || c.kind === 'unknown_execution')) {
       return { completed: [], skipped: activations.length };
@@ -736,7 +781,7 @@ export class TraderLifecycle {
 
     const heldStatus = (status: string) =>
       status === 'open' || status === 'partially_closed' || status === 'requires_reconciliation';
-    const positions = repo.listPositions(this.db, 1000);
+    const positions = repo.listPositions(this.db, 1000, this.mode);
     const candidates = activations.filter((activation) => {
       if (positions.some((p) => p.activationId === activation.activationId && heldStatus(p.status))) {
         return false;
@@ -801,7 +846,7 @@ export class TraderLifecycle {
       });
       return { status: 'STILL_BLOCKED' };
     }
-    const openCases = repo.openReconciliationCases(this.db);
+    const openCases = repo.openReconciliationCases(this.db, this.mode);
     const ownedSummary = openCases.filter(
       (c) =>
         !c.intentId &&
@@ -897,14 +942,16 @@ export class TraderLifecycle {
    * look flat.
    */
   isFlatForActivation(activationId: string): boolean {
-    const open = repo.openPositions(this.db).filter((p) => p.activationId === activationId);
-    if (open.length > 0) return false;
-    const reconciling = repo
-      .listPositions(this.db, 500)
-      .filter((p) => p.activationId === activationId && p.status === 'requires_reconciliation');
-    if (reconciling.length > 0) return false;
+    const exposure = repo
+      .exposurePositions(this.db, this.mode)
+      .filter((p) => p.activationId === activationId);
+    if (exposure.length > 0) return false;
     const inFlight = repo
-      .intentsInStates(this.db, ['pending_quote', 'quoted', 'pending_sign', 'submitted', 'confirmed'])
+      .intentsInStates(
+        this.db,
+        ['pending_quote', 'quoted', 'pending_sign', 'signed', 'submitted', 'confirmed'],
+        this.mode,
+      )
       .filter((i) => i.activationId === activationId && i.kind === 'entry');
     return inFlight.length === 0;
   }

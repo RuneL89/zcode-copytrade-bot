@@ -19,7 +19,10 @@ export type OrderIntentState =
 
 const TRANSITIONS: Record<OrderIntentState, OrderIntentState[]> = {
   pending_quote: ['quoted', 'quote_rejected', 'failed', 'skipped', 'cancelled'],
-  quoted: ['pending_sign', 'quote_rejected', 'skipped', 'cancelled'],
+  // `confirmed` from `quoted` is the PAPER simulation path only. A live
+  // executor must walk pending_sign -> signed -> submitted, because the
+  // signed/submitted rows are what make an ambiguous send reconcilable.
+  quoted: ['pending_sign', 'quote_rejected', 'skipped', 'cancelled', 'confirmed', 'failed'],
   quote_rejected: [],
   pending_sign: ['signed', 'failed', 'cancelled', 'requires_reconciliation'],
   signed: ['submitted', 'requires_reconciliation', 'failed'],

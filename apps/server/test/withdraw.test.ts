@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -17,6 +17,7 @@ import {
   type TransferOutcome,
 } from '../src/services/withdraw.js';
 import { b58Encode, generateWalletFile, walletPublicKey } from '../src/wallet.js';
+import { createTradingLocks } from '../src/services/locks.js';
 
 const SECRET = 'test-secret-1234567890';
 const VALID_DESTINATION = b58Encode(nacl.sign.keyPair().publicKey);
@@ -45,6 +46,13 @@ const broadcaster: Broadcaster = async (request) => {
     amountBase: request.amountBase,
     secretLen: request.secretKey.length,
   });
+  if (nextOutcome.kind !== 'failed') {
+    request.onSigned?.({
+      signature: nextOutcome.signature,
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: 9,
+    });
+  }
   return nextOutcome;
 };
 
@@ -63,9 +71,32 @@ beforeAll(() => {
     ),
   });
   generateWalletFile(dir, SECRET);
-  config = loadConfig({ SESSION_SECRET: 'x'.repeat(40), DATA_DIR: dir, MODE: 'live' });
+  config = loadConfig({
+    SESSION_SECRET: 'x'.repeat(40),
+    DATA_DIR: dir,
+    MODE: 'live',
+    LIVE_TRADING: 'true',
+  });
   control = new ControlService(handle.db);
-  service = new WithdrawalService(handle.db, config, control, heliusFake, 120_003_000n, broadcaster);
+  service = new WithdrawalService(
+    handle.db,
+    config,
+    control,
+    heliusFake,
+    120_003_000n,
+    broadcaster,
+    createTradingLocks(),
+  );
+});
+
+beforeEach(() => {
+  handle.sqlite.exec(
+    'DELETE FROM withdrawals; DELETE FROM copied_positions; DELETE FROM reconciliation_cases;',
+  );
+  chain.solLamports = 50_000_000;
+  chain.usdcBase = 120_000_000n;
+  broadcasts.length = 0;
+  nextOutcome = { kind: 'filled', signature: 'sig_fake_1' };
 });
 
 afterAll(() => {
@@ -78,11 +109,14 @@ function seedOpenPosition(inputUsdMicro: string, feesUsdMicro: string): void {
     positionId: 'pos_test_' + Math.random().toString(36).slice(2),
     activationId: 'act_test',
     candidateId: 'cand_test',
+    mode: 'live',
     mint: 'TestMint111111111111111111111111111111111111',
     status: 'open',
     entryIntentId: null,
     inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     inputUsdMicro,
+    remainingCostBasisUsdMicro: inputUsdMicro,
+    remainingFeesUsdMicro: feesUsdMicro,
     copiedTokenBase: '1000000',
     remainingTokenBase: '1000000',
     leaderTokenBase: null,
@@ -190,7 +224,15 @@ describe('send() success path', () => {
       entriesAllowedDuringSend = control.entriesAllowed();
       return broadcaster(request);
     };
-    const svc = new WithdrawalService(handle.db, config, control, heliusFake, 120_003_000n, observing);
+    const svc = new WithdrawalService(
+      handle.db,
+      config,
+      control,
+      heliusFake,
+      120_003_000n,
+      observing,
+      createTradingLocks(),
+    );
 
     const r = await svc.send({
       asset: 'USDC',
@@ -245,6 +287,73 @@ describe('send() success path', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('TRANSFER_FAILED');
     nextOutcome = { kind: 'filled', signature: 'sig_fake_1' };
+  });
+
+  it('replays the same idempotency key without broadcasting twice', async () => {
+    const request = {
+      asset: 'USDC' as const,
+      destination: VALID_DESTINATION,
+      amount: '5',
+      walletSecret: SECRET,
+      confirm: 'SEND',
+      idempotencyKey: 'withdraw-key-123',
+    };
+    const first = await service.send(request);
+    expect(first.ok).toBe(true);
+    const second = await service.send(request);
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.signature).toBe('sig_fake_1');
+    expect(broadcasts).toHaveLength(1);
+  });
+
+  it('blocks a second withdrawal while one is unknown', async () => {
+    nextOutcome = { kind: 'unknown', signature: 'sig_fake_unknown', detail: 'timeout' };
+    const first = await service.send({
+      asset: 'USDC',
+      destination: VALID_DESTINATION,
+      amount: '5',
+      walletSecret: SECRET,
+      confirm: 'SEND',
+      idempotencyKey: 'withdraw-unknown-1',
+    });
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.unconfirmed).toBe(true);
+
+    const second = await service.send({
+      asset: 'USDC',
+      destination: VALID_DESTINATION,
+      amount: '5',
+      walletSecret: SECRET,
+      confirm: 'SEND',
+      idempotencyKey: 'withdraw-unknown-2',
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.code).toBe('WITHDRAWAL_PENDING');
+    expect(broadcasts).toHaveLength(1);
+    nextOutcome = { kind: 'filled', signature: 'sig_fake_1' };
+  });
+
+  it('refuses to sign in paper mode even with a funded wallet', async () => {
+    const paper = loadConfig({ SESSION_SECRET: 'x'.repeat(40), DATA_DIR: dir, MODE: 'paper' });
+    const paperService = new WithdrawalService(
+      handle.db,
+      paper,
+      control,
+      heliusFake,
+      120_003_000n,
+      broadcaster,
+      createTradingLocks(),
+    );
+    const r = await paperService.send({
+      asset: 'USDC',
+      destination: VALID_DESTINATION,
+      amount: '5',
+      walletSecret: SECRET,
+      confirm: 'SEND',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('MODE_UNSUPPORTED');
+    expect(broadcasts).toHaveLength(0);
   });
 });
 

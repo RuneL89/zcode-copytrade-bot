@@ -7,6 +7,7 @@ import { HeliusProvider } from '@zcode-bot/providers';
 import { formatBaseAmount, USDC_DECIMALS, SOL_DECIMALS } from '@zcode-bot/core';
 import { ControlService } from '../services/control.js';
 import { WithdrawalService, createSolanaBroadcaster, heliusRpcUrl } from '../services/withdraw.js';
+import { createTradingLocks } from '../services/locks.js';
 import { walletExists } from '../wallet.js';
 
 /**
@@ -89,6 +90,7 @@ async function main(): Promise<number> {
     helius,
     equityStartUsdMicro,
     createSolanaBroadcaster(() => heliusRpcUrl(config.env.HELIUS_API_KEY)),
+    createTradingLocks(),
   );
 
   try {
