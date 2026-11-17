@@ -61,7 +61,12 @@ no LLM in the loop (D6).
   chair; his shadow record is kept and the normal promotion gates apply.
   Manual activation obeys the same block. `HIRE_APPROVAL=agent` leaves the
   seat empty and posts the seat-open webhook instead of hiring. A crash must
-  not leave a half-fired trader.
+  not leave a half-fired trader. A fire blocked by failed closes writes a
+  `close_failed` summary case tagged with its activation. When the exit-queue
+  retry later fills a `fire_close`, the engine callback calls
+  `completeBlockedFire`; startup recovery does the same for an activation whose
+  positions are already closed. Signed, unknown, or attributable open cases
+  keep it blocked.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.

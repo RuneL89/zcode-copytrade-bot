@@ -246,6 +246,18 @@ export class Runtime {
           // every five minutes (history calls are billed).
           void this.refreshFeeLedger(5 * 60_000).catch(() => undefined);
         },
+        onFireCloseFilled: async (activationId) => {
+          const result = await this.lifecycle.completeBlockedFire(activationId);
+          if (result.status !== 'NOT_BLOCKED') {
+            repo.audit(
+              this.db.db,
+              'reconciliation',
+              `exit-queue fire close completed blocked fire: ${result.status}`,
+              { activationId },
+            );
+            this.rebuildState();
+          }
+        },
       },
       walletPublicKey(config.env.DATA_DIR),
       this.equityStartUsdMicro,
@@ -537,6 +549,30 @@ export class Runtime {
       this.startDemo();
       repo.audit(this.db.db, 'demo', 'fictional demo replay started (no live data, no live tables)');
       return;
+    }
+
+    // A blocked fire whose positions are already closed (for example, the
+    // exit-queue retry filled after the process died) must not stay frozen.
+    // Finish this before the boot catch-up can fill chairs, so the two paths
+    // cannot race on roster seats.
+    try {
+      const recovered = await this.lifecycle.recoverBlockedFires('startup');
+      if (recovered.completed.length > 0) {
+        repo.audit(
+          this.db.db,
+          'reconciliation',
+          `startup blocked-fire recovery completed ${recovered.completed.length} activation(s)`,
+          recovered,
+        );
+        this.rebuildState();
+      }
+    } catch (e) {
+      repo.audit(
+        this.db.db,
+        'reconciliation',
+        `startup blocked-fire recovery failed: ${(e as Error).message}`,
+        {},
+      );
     }
 
     this.monitor = new LeaderMonitor(

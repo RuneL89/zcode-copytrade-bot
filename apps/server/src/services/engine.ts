@@ -82,6 +82,8 @@ export interface EngineCallbacks {
   onFired: (activationId: string, candidateId: string, reason: string) => void;
   /** Called after every state-changing engine action (rebuild dashboard state). */
   onStateChanged: () => void;
+  /** A queued fire_close filled; let the lifecycle finish the blocked fire. */
+  onFireCloseFilled?: (activationId: string) => void | Promise<void>;
 }
 
 export class CopyEngine {
@@ -805,6 +807,18 @@ export class CopyEngine {
           },
         );
         out.filled++;
+        if (intent.kind === 'fire_close' || closeReason === 'fire_close_all') {
+          try {
+            await this.callbacks.onFireCloseFilled?.(position.activationId);
+          } catch (e) {
+            repo.audit(
+              this.db,
+              'reconciliation',
+              `exit-queue fire close filled but blocked-fire completion failed: ${(e as Error).message}`,
+              { positionId, activationId: position.activationId },
+            );
+          }
+        }
         this.callbacks.onStateChanged();
       } else if (result.kind === 'unknown') {
         this.clearExitQueue(positionId);
