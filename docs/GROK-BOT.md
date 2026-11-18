@@ -32,19 +32,19 @@ Last updated: 2026-11-15.
 6. **Build management.** Copytrader turns bugs and issues into briefs for ZCode, runs ZCode headless in `copydesk-dev` on a feature branch, checks the tests and diff, pushes the branch and opens a PR.
    - After **Rune** merges to `main`, Copytrader deploys: it backs up the DB, pulls, installs, builds, restarts, then re-measures credits for about 15 minutes and rolls back if they run over budget.
    - It never edits repo code by hand.
-7. **Reporting.** Copytrader keeps a running log and sends Rune a morning status.
+7. **Reporting.** Copytrader keeps a running log. The phone bot is reserved for a dashboard shutdown or a bug/issue that needs fixing — no PnL, no morning/daily status, no deploy notices.
 
 ---
 
 ## 3. When
 
-| When (Helsinki time)  | What                                                                                                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every 30 min, all day | Routine **"Copydesk watch (every 30 min)"** runs health, credit, desk and build checks, and writes one entry to `logs/pm-log.md`                                    |
-| 06:15–06:45           | **"Good morning"** message with one unified status of the night                                                                                                     |
-| 23:00–06:15           | Quiet hours: no messages unless the desk is down and can't be recovered, or the credit guard tripped                                                                |
-| Daytime               | Copytrader messages Rune only for something he'd want right away: the desk down, the budget guard tripped, a PR ready for review, or a hire he may want to overrule |
-| On demand             | Whenever Rune asks in the Grok Bot chat (phone or desktop)                                                                                                          |
+| When (Helsinki time)  | What                                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Every 30 min, all day | Routine **"Copydesk watch (every 30 min)"** runs health, credit, desk and build checks, and writes one entry to `logs/pm-log.md` |
+| Any time              | A phone alert only when the dashboard had to be shut down, or a bug/issue needs fixing                                           |
+| 23:00–06:15           | Quiet hours: the same two alert kinds only                                                                                       |
+| Daytime               | The same two alert kinds only: desk shutdown, or a bug/issue that needs a fix                                                    |
+| On demand             | Whenever Rune asks in the Grok Bot chat (phone or desktop)                                                                       |
 
 ---
 

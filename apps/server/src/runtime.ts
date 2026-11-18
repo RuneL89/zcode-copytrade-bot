@@ -107,7 +107,7 @@ export class Runtime {
   withdraw: WithdrawalService;
   demo: DemoEngine | null = null;
   ops: OpsRunner;
-  /** Telegram push reports: anomalies + daily/weekly summary (no-op until TELEGRAM_* is set). */
+  /** On-demand Telegram report facts for `/status` and `/weekly` (no push schedule). */
   reports: ReportsService;
   /** Read-only Telegram commands (/status, /weekly, /positions, /help); null when unconfigured. */
   telegramCommands: TelegramCommandService | null = null;
@@ -395,7 +395,7 @@ export class Runtime {
     this.ops = new OpsRunner(this, this.db.db, repoRoot);
     // The reports describe the built dashboard state; the marks are refreshed
     // first so unrealized PnL in a report is never silently stale.
-    this.reports = new ReportsService(this.db, this.notifier, config.mode, () => this.snapshotForReport());
+    this.reports = new ReportsService(this.db, config.mode);
     // Read-only Telegram commands. Same state snapshot as the reports, and only
     // the configured chat may ask: nothing typed in Telegram can change state.
     if (isTelegramNotifier(this.notifier)) {
@@ -524,14 +524,8 @@ export class Runtime {
       }
       if (armed) {
         repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked — live arming restored', {});
-        void this.notifier
-          .notify('Copydesk restarted — wallet auto-unlocked, LIVE still armed. No action needed.')
-          .catch(() => {});
       } else {
         repo.audit(this.db.db, 'control', 'boot: wallet auto-unlocked for exits only (disarmed)', {});
-        void this.notifier
-          .notify('Copydesk restarted DISARMED; the wallet is unlocked only to exit open live positions.')
-          .catch(() => {});
       }
     } catch (e) {
       const reason = (e as Error).message;
@@ -726,8 +720,6 @@ export class Runtime {
       {},
     );
 
-    // Operator push reports (Telegram): anomalies every 10 min, daily PnL 09:00.
-    this.reports.start();
     // Weekly performance review: Monday 08:00 Helsinki, with a catch-up on
     // boot if the last completed week's report is missing. Read-only queries.
     this.weeklyReview = new WeeklyReviewScheduler({
@@ -1082,7 +1074,6 @@ export class Runtime {
     void this.dawnLookup?.close();
     if (this.activityTimer) clearInterval(this.activityTimer);
     if (this.activityBootTimer) clearTimeout(this.activityBootTimer);
-    this.reports.stop();
     this.weeklyReview?.stop();
     this.telegramCommands?.stop();
     this.lock?.release();
@@ -1353,9 +1344,6 @@ export class Runtime {
       'close_all',
       `${closed} closed, ${unknown} unknown, ${failed} failed`,
       'dashboard',
-    );
-    this.notifyUser(
-      `Copydesk close-all: ${closed} closed, ${unknown} unknown, ${failed} failed. New entries are paused.`,
     );
     return { closed, unknown, failed };
   }

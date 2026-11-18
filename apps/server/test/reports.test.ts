@@ -3,38 +3,11 @@ import {
   formatDuration,
   formatMicroUsd,
   formatSignedMicroUsd,
-  isWeeklyDay,
-  msUntilNextLocalTime,
   positionsText,
   reportText,
-  selectAnomalies,
   shortReason,
-  type AuditLike,
   type ReportFacts,
 } from '../src/services/reports.js';
-
-const row = (id: number, category: string, message: string): AuditLike => ({
-  id,
-  category,
-  message,
-  created_at: '2026-10-27T00:00:00Z',
-});
-
-describe('anomaly selection', () => {
-  const rows: AuditLike[] = [
-    row(1, 'system', 'runtime starting (mode=paper)'), // not an anomaly category
-    row(2, 'recommendation', 'recommendation REJECTED'),
-    row(3, 'fomo-web', 'leaderboard fetch failed'),
-    row(4, 'watch', 'adapter drift detected'), // right pattern, wrong category
-    row(5, 'reconciliation', 'case opened, needs operator (failed close-out)'),
-  ];
-
-  it('selects only new rows from the anomaly categories that look like problems', () => {
-    expect(selectAnomalies(rows, 0).map((r) => r.id)).toEqual([2, 3, 5]);
-    expect(selectAnomalies(rows, 3).map((r) => r.id)).toEqual([5]);
-    expect(selectAnomalies(rows, 5)).toEqual([]);
-  });
-});
 
 describe('number formatting', () => {
   it('formats micro-USD with thousands separators', () => {
@@ -236,24 +209,6 @@ describe('weekly report text', () => {
 
   it('falls back to the daily shape when no weekly block was collected', () => {
     expect(reportText(facts(), 'weekly').split('\n')[0]).toBe('Copydesk · live · armed');
-  });
-});
-
-describe('daily schedule', () => {
-  it('targets today when the time is still ahead, otherwise tomorrow', () => {
-    const morning = new Date('2026-10-27T07:30:00');
-    const ms = msUntilNextLocalTime(9, 0, morning);
-    expect(ms).toBe(90 * 60 * 1000); // 07:30 -> 09:00 local = 90 minutes
-    const evening = new Date('2026-10-27T23:59:00');
-    const ms2 = msUntilNextLocalTime(9, 0, evening);
-    expect(ms2).toBeGreaterThan(0);
-    expect(ms2).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
-  });
-
-  it('sends the weekly summary on Mondays only', () => {
-    expect(isWeeklyDay(new Date('2026-11-02T09:00:00'))).toBe(true); // Monday
-    expect(isWeeklyDay(new Date('2026-11-03T09:00:00'))).toBe(false);
-    expect(isWeeklyDay(new Date('2026-11-08T09:00:00'))).toBe(false); // Sunday
   });
 });
 

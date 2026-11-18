@@ -26,7 +26,7 @@ the whole set is constructed and scheduled by `runtime.ts`.
 | `control.ts`           | Pause, emergency stop, auto-pause, arm/disarm/lock-wallet flags. Disarm/emergency block entries but keep exits signable.                                                                                                                                                                                                                                       |
 | `readiness.ts`         | Async live-readiness checklist: mode/ACK/LIVE_TRADING, wallet, provider health, SOL/USDC, cash reconciliation vs the book, pending orders/withdrawals, worker, clock, DB integrity. Blockers gate arming; warnings do not.                                                                                                                                     |
 | `demo.ts`              | The in-memory 28-second fictional replay.                                                                                                                                                                                                                                                                                                                      |
-| `reports.ts`           | Server-side Telegram notifications (anomalies + daily/weekly summary) and the pure message/positions formatting; no-op when unconfigured.                                                                                                                                                                                                                      |
+| `reports.ts`           | On-demand Telegram report facts for `/status` and `/weekly` plus the pure message/positions formatting. It owns no timers and pushes nothing (2026-11-18: shutdown and fix-worthy issue alerts only).                                                                                                                                                          |
 | `weeklyReview.ts`      | Read-only weekly "promised vs actual" report: DB queries, gap attribution, exit groups, hiring-rule/fired-trader checks, markdown/JSON, and the Monday 08:00 scheduler. Never writes trading state or calls providers.                                                                                                                                         |
 | `telegram-commands.ts` | Read-only Telegram commands (`/status`, `/weekly`, `/positions`, `/help`): long-polls `getUpdates`, answers only the operator chat, audits every command. Its loop is started and stopped by `runtime.ts`.                                                                                                                                                     |
 | `withdraw.ts`          | Live-only, serialized, idempotent wallet withdrawals: a `withdrawals` row written before signing, signed evidence, unknown → reconciliation case, sent USDC reduces capital, chain reconciler.                                                                                                                                                                 |
@@ -36,8 +36,8 @@ the whole set is constructed and scheduled by `runtime.ts`.
 Timers are owned by `runtime.ts`: exactly two monitoring clocks (the watch
 list every `WATCH_POLL_MS`, the roster every `ROSTER_POLL_MS`) plus housekeeping
 (health, dashboard marks, fee ledger, activity refresh, the 30-second
-pre-signature exit retry, Telegram reports, the weekly review Monday 08:00, the
-Telegram command poll). Dashboard marks refresh
+pre-signature exit retry, the weekly review Monday 08:00, the Telegram command
+poll). Dashboard marks refresh
 every minute so the builder's five-minute display freshness window does not
 expire between 15-minute health samples.
 Discovery is demand-driven, not scheduled. Dawn and the native board capture are

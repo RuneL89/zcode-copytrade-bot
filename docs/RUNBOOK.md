@@ -152,40 +152,41 @@ closes any open positions and the replacement takes the slot. This is what makes
 With the board-driven rank-fire rule retired (D6), the stall watcher is the
 silence exit.
 
-### Telegram reports
+### Telegram
 
-Two streams only (opt-in via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`):
+The bot sends no scheduled PnL or status messages (operator choice, 2026-11-18).
+The phone is reserved for:
 
-- **Anomalies** — audit rows from the problem categories every 10 min, at most
-  five per message.
-- **One desk summary a day at local 09:00** — compact by design: PnL and its
-  win/loss split, equity/cash/deployed, open positions with the next time exit,
-  chairs and bench depth, anything needing attention, the last 24h of hires and
-  firings, and the fee wallet. Mondays send the **weekly** instead (the same 24h
-  block plus the 7-day totals and each chair's record), so a day never produces
-  two messages.
+- **A dashboard shutdown** — the credit guard tripped, the service could not be
+  recovered, or the watch automation had to stop the desk. The watch automation
+  sends one plain-text alert with the reason; it does not restart a deliberate
+  stop.
+- **A bug or issue that needs fixing** — raised by the watch automation with
+  concrete evidence (`file:line`, DB rows, log lines) and a proposed fix.
+
+Healthy runs, morning/daily/weekly summaries, PnL, deployments, hires and
+restarts are silent. The server also pushes a live-safety issue when readiness
+blocks new entries or the fee wallet cannot pay for an exit; paper mode never
+hits those paths.
+
+**Commands (read-only).** Opt-in via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
+The bot answers four commands from the operator chat on demand:
+
+| Command      | Reply                                               |
+| ------------ | --------------------------------------------------- |
+| `/status`    | the 24h desk summary                                |
+| `/weekly`    | the 7-day summary with each chair's record          |
+| `/positions` | one line per open position, soonest time exit first |
+| `/help`      | the command list                                    |
 
 The summary never invents a figure: unpriced positions read `unrealized pending`
-and a balance the chain read could not supply is left out. A failed send is
-recorded in the audit trail (`reports report send failed`) and the day is still
-marked sent, so an outage cannot become a message storm.
-
-**Commands (read-only).** With the same two env vars set, the bot also answers
-four commands from the operator chat, using the same figures as the summary:
-
-| Command      | Reply                                                 |
-| ------------ | ----------------------------------------------------- |
-| `/status`    | the 24h desk summary (identical to the 09:00 message) |
-| `/weekly`    | the 7-day summary with each chair's record            |
-| `/positions` | one line per open position, soonest time exit first   |
-| `/help`      | the command list                                      |
+and a balance the chain read could not supply is left out.
 
 Nothing typed in Telegram can change trading state — no pause, arm, fire or
 close. Only `TELEGRAM_CHAT_ID` may command the bot; another chat is ignored and
 recorded once in the audit trail. The bot polls Telegram (`getUpdates`) instead
 of using a webhook, because the dashboard is LAN-only by policy. Clear
-`TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` to turn both the messages and the
-commands off.
+`TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` to turn the commands off.
 
 ### Wallet resolution (fallback only)
 

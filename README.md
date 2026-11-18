@@ -14,7 +14,7 @@ What you end up with:
 - a mobile-first dashboard at http://127.0.0.1:8787 with the pipeline, the seats, the watch list, and an audit line for every decision
 - paper fills by default; live signing only after a readiness check and a separate arming action
 - a Helius credit plan that spends a planned 5,796 credits a day under a 13,600 hard cap
-- Grok Bot as the on-call operator: a check every 30 minutes, a morning status, and build work routed to ZCode
+- Grok Bot as the on-call operator: a check every 30 minutes, phone alerts only for a desk shutdown or a bug/issue that needs fixing, and build work routed to ZCode
 
 ## Getting started
 
@@ -66,7 +66,7 @@ Two kinds of work happen at this desk. The worker trades; Copytrader manages eve
 | Role                        | Who                   | Does                                                                            |
 | --------------------------- | --------------------- | ------------------------------------------------------------------------------- |
 | Owner                       | You (Rune)            | Funds the wallet, approves live trading, merges pull requests, overrules a hire |
-| Project manager and on-call | Copytrader (Grok Bot) | Health, credits, desk oversight, hire review, build briefs, the morning report  |
+| Project manager and on-call | Copytrader (Grok Bot) | Health, credits, desk oversight, hire review, build briefs, shutdown/bug alerts |
 | Builder                     | ZCode on this PC      | Writes code on a feature branch in a separate dev checkout, runs the tests      |
 | Worker                      | The Copydesk server   | Watches, sizes, quotes, signs, sends, exits, reconciles                         |
 
@@ -78,7 +78,7 @@ Two kinds of work happen at this desk. The worker trades; Copytrader manages eve
 - **Hires.** The worker fills a free chair from the top of the bench when `HIRE_APPROVAL=auto`, which is the shipped default. Copytrader reviews the pick, reports it, and you can overrule. With `HIRE_APPROVAL=agent`, the seat stays empty until a hire decision arrives at the agent API; that is the mode where Copytrader chooses the trader.
 - **Exit tightening.** Copytrader may tighten an exit, for example by cutting a position early. It may never loosen one. The stop, the trailing stop, and the five-hour ceiling still apply.
 - **Build management.** Bugs and ideas become briefs for ZCode. ZCode builds on a branch in the dev checkout and runs `pnpm test`. Copytrader reviews the diff, pushes the branch, and opens a pull request. You merge. Copytrader then deploys: back up the database, pull, install, build, restart, and re-measure credits for about 15 minutes, rolling back if the projection runs over budget.
-- **Reporting.** It writes one entry per check to `logs/pm-log.md`. It sends a morning status between 06:15 and 06:45 Helsinki time, and messages you during the day only for a desk that is down, a budget guard trip, a pull request ready for review, or a hire you may want to overrule.
+- **Reporting.** It writes one entry per check to `logs/pm-log.md`. The phone stays quiet: it messages you only when the dashboard had to be shut down or a bug/issue needs fixing. No PnL, no morning status, no deploy notices.
 
 **What it never does.**
 
@@ -155,13 +155,13 @@ _One copied trade from the worker's side: the push or poll, the gates, the quote
 
 Copytrader runs on a 30-minute calendar, not on the trading clock. The worker keeps trading whether or not Copytrader checks in.
 
-| When (Helsinki time)      | What                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| Every 30 minutes, all day | Health, credit, desk, and build checks; one entry in `logs/pm-log.md`                            |
-| 06:15 to 06:45            | One morning status covering the night                                                            |
-| 23:00 to 06:15            | Quiet hours; only an unrecoverable outage or a credit-guard trip                                 |
-| Daytime                   | Only what you would want at once: desk down, budget trip, pull request ready, a hire to overrule |
-| On demand                 | Anything you ask in the Grok Bot chat                                                            |
+| When (Helsinki time)      | What                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| Every 30 minutes, all day | Health, credit, desk, and build checks; one entry in `logs/pm-log.md`            |
+| Any time                  | A phone alert only when the desk had to be shut down or a bug/issue needs fixing |
+| 23:00 to 06:15            | Quiet hours; the same two alert kinds only                                       |
+| Daytime                   | The same two alert kinds only: desk shutdown, or a bug/issue that needs a fix    |
+| On demand                 | Anything you ask in the Grok Bot chat                                            |
 
 ![A flowchart of Copytrader's 30-minute tick: health check, credit check, desk snapshot, mailbox check, then the ZCode build branch that ends at a pull request, a human merge, a deploy, and a 15-minute credit re-measure.](docs/images/grok-bot-loop.png)
 

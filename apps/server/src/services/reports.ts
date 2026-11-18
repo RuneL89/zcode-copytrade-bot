@@ -1,40 +1,17 @@
 import type { DbHandle } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
-import type { Notifier } from '@zcode-bot/providers';
 import type { DashboardState } from './state.js';
 
 /**
- * Push reports to the operator's Telegram (opt-in via TELEGRAM_BOT_TOKEN /
- * TELEGRAM_CHAT_ID; no-op when unset). Two streams only, per operator choice:
- *  - anomalies: audit rows that indicate something needs attention
- *    (rejected recommendations, adapter failures, reconciliation cases)
- *  - one compact desk summary (local 09:00; Mondays it is the weekly, which
- *    carries the same 24h figures plus the 7-day view, so a day never produces
- *    two messages).
- * The notifier lives server-side by design: the research subagent and the MCP
- * process never see notification credentials.
+ * On-demand Telegram report text (`/status` and `/weekly`) and the pure
+ * formatting helpers used by the read-only commands. The desk sends no
+ * scheduled pushes: per the operator (2026-11-18) the phone stays quiet except
+ * for a dashboard shutdown or a bug/issue raised by the watch automation. The
+ * same figures are assembled from the dashboard state when the operator asks.
  */
-
-export interface AuditLike {
-  id: number;
-  category: string;
-  message: string;
-  created_at?: string | null;
-}
-
-const ANOMALY_CATEGORIES = new Set(['recommendation', 'fomo-web', 'dawn-lookup', 'reconciliation', 'risk']);
-const ANOMALY_PATTERN =
-  /rejected|failed|unreadable|fail closed|needs-login|session missing|expired|PAUSED_NO_TRADER|LEADER_STALLED|LOW_ACTIVITY/i;
 
 /** An open loss below this is noise, not something the operator must look at. */
 const ATTENTION_LOSS_FLOOR_USD_MICRO = 1_000_000n; // $1.00
-
-/** Pure selection: audit rows newer than lastSeenId that look like anomalies. */
-export function selectAnomalies(rows: AuditLike[], lastSeenId: number): AuditLike[] {
-  return rows.filter(
-    (r) => r.id > lastSeenId && ANOMALY_CATEGORIES.has(r.category) && ANOMALY_PATTERN.test(r.message),
-  );
-}
 
 /** Micro-USD bigint to a compact USD string ("$93.60", "$1,234.50"). */
 export function formatMicroUsd(micro: bigint): string {
@@ -266,14 +243,6 @@ export function reportText(facts: ReportFacts, window: 'daily' | 'weekly' = 'dai
   return lines.join('\n');
 }
 
-/** Milliseconds until the next occurrence of a local wall-clock time. */
-export function msUntilNextLocalTime(hour: number, minute: number, now = new Date()): number {
-  const target = new Date(now);
-  target.setHours(hour, minute, 0, 0);
-  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-  return target.getTime() - now.getTime();
-}
-
 /**
  * One line per open position, soonest time exit first — the on-demand view the
  * compact report deliberately leaves out. Unpriced positions read "—" (their
@@ -310,81 +279,18 @@ export function positionsText(state: DashboardState, now = new Date()): string {
   return lines.join('\n');
 }
 
-/** Local weekday check, 0 = Sunday: Mondays send the weekly summary. */
-export function isWeeklyDay(now = new Date()): boolean {
-  return now.getDay() === 1;
-}
-
+/**
+ * Assembles report facts on demand. It owns no timers and sends nothing: the
+ * runtime calls `collectFacts` when the operator types `/status` or `/weekly`.
+ */
 export class ReportsService {
-  private anomalyTimer: ReturnType<typeof setInterval> | null = null;
-  private dailyTimer: ReturnType<typeof setTimeout> | null = null;
-  private dailyRepeat: ReturnType<typeof setInterval> | null = null;
-
   constructor(
     private db: DbHandle,
-    private notifier: Notifier,
     private mode: string,
-    /** The dashboard state to describe (the runtime refreshes marks first). */
-    private state: () => Promise<DashboardState>,
   ) {}
 
   private get bookMode(): 'paper' | 'live' {
     return this.mode === 'live' ? 'live' : 'paper';
-  }
-
-  start(): void {
-    this.anomalyTimer = setInterval(() => void this.sweepAnomalies().catch(() => undefined), 10 * 60_000);
-    const first = msUntilNextLocalTime(9, 0);
-    this.dailyTimer = setTimeout(() => {
-      void this.sendDailyReport();
-      this.dailyRepeat = setInterval(
-        () => void this.sendDailyReport().catch(() => undefined),
-        24 * 60 * 60_000,
-      );
-    }, first);
-  }
-
-  stop(): void {
-    if (this.anomalyTimer) clearInterval(this.anomalyTimer);
-    if (this.dailyTimer) clearTimeout(this.dailyTimer);
-    if (this.dailyRepeat) clearInterval(this.dailyRepeat);
-    this.anomalyTimer = this.dailyTimer = this.dailyRepeat = null;
-  }
-
-  /** Push unseen anomaly audit rows; the high-water mark persists in kv. */
-  async sweepAnomalies(): Promise<void> {
-    const lastSeenId = Number(repo.kvGet(this.db.db, 'reports.lastAnomalyId') ?? '0');
-    const rows = repo.listAudit(this.db.db, 200) as unknown as AuditLike[];
-    const anomalies = selectAnomalies(rows, lastSeenId);
-    if (anomalies.length === 0) return;
-    const maxId = Math.max(...anomalies.map((a) => a.id));
-    repo.kvSet(this.db.db, 'reports.lastAnomalyId', String(maxId));
-    const body = anomalies
-      .slice(0, 5)
-      .map((a) => `• [${a.category}] ${a.message.slice(0, 120)}`)
-      .join('\n');
-    await this.notifier.notify(`⚠️ Copydesk anomalies\n${body}`);
-  }
-
-  /**
-   * One summary per local day, pushed around 09:00. Mondays send the weekly
-   * instead (it carries the same 24h figures plus the 7-day view), so a day
-   * never produces two messages. A failed send is audited; the day is marked
-   * regardless, so a Telegram outage cannot turn into a message storm.
-   */
-  async sendDailyReport(now = new Date()): Promise<void> {
-    const today = now.toISOString().slice(0, 10);
-    if (repo.kvGet(this.db.db, 'reports.lastDailyDate') === today) return;
-    const window: 'daily' | 'weekly' = isWeeklyDay(now) ? 'weekly' : 'daily';
-    const facts = this.collectFacts(await this.state(), window, now);
-    const text = reportText(facts, window);
-    repo.kvSet(this.db.db, 'reports.lastDailyDate', today);
-    if (window === 'weekly') repo.kvSet(this.db.db, 'reports.lastWeeklyDate', today);
-    try {
-      await this.notifier.notify(text);
-    } catch (e) {
-      repo.audit(this.db.db, 'reports', `${window} report send failed: ${(e as Error).message}`, {});
-    }
   }
 
   /** Assemble the message's inputs from the built state + the window's records. */

@@ -18,15 +18,20 @@ notifications. This is the only package allowed to talk to the outside world.
   the candidate activity refresh). The trading monitor never uses it.
 - `src/solana/jupiter.ts` — quote/swap.
 - `src/price.ts` — price marks and freshness.
-- `src/notify.ts` — Telegram push reports, plus the read-only command poll
-  (`getUpdates`) and threaded replies. Normalizes Telegram payloads so no other
-  layer parses them; the loop that drives it lives in the server.
+- `src/notify.ts` — Telegram transport: one-shot sends for shutdown/fix-worthy
+  alerts, plus the read-only command poll (`getUpdates`) and threaded replies.
+  Normalizes Telegram payloads so no other layer parses them; the loop that
+  drives it lives in the server.
 
 ## Local Contracts
 
 - **Fail closed.** Adapter or markup drift aborts the operation and surfaces as
   provider health. Never invent an endpoint, fill, price, capability, or
   fallback value.
+- **Telegram is not a reporting stream (2026-11-18).** The transport carries a
+  dashboard-shutdown alert or a bug/issue that needs a fix; `/status`,
+  `/weekly`, `/positions` and `/help` are answered on demand. No scheduled PnL,
+  daily/weekly, morning or deploy messages.
 - **Helius timer paths are signature-first.** `getSignaturesForAddress`, then
   `getTransaction` for an unseen signature. `getTransactionsForAddress` is a
   vetting scan only and is rejected by the credit governor on every other
