@@ -1048,7 +1048,6 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     );
     rt.control.armLive();
     repo.audit(db, 'control', 'arm-live succeeded', { survivesRestart });
-    rt.notifyUser('Copydesk LIVE armed. New entries may sign real transactions.');
     rt.rebuildState();
     return c.json({
       ok: true,
@@ -1081,7 +1080,6 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
     }
     rt.unmountLiveExecutor();
     rt.control.lockWallet();
-    rt.notifyUser('Copydesk wallet locked. No signing until re-armed.');
     return { ok: true };
   });
 

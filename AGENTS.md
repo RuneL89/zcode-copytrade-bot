@@ -91,10 +91,10 @@ dashboard's OPS tab exposes a whitelist of these commands through
    network, wallet or funded transaction.
 3. **No external process touches trading state.** The retired ZCode/MCP bridge
    is gone (D6); the only network peers are the fomoapi leaderboard, the Solana
-   RPC providers, Jupiter and the operator's own Telegram bot (outbound reports
-   plus read-only `/status`-style commands — nothing typed in Telegram can pause,
-   arm, fire or close). Nothing outside the worker reads the database or
-   the wallet.
+   RPC providers, Jupiter and the operator's own Telegram bot (shutdown /
+   fix-worthy issue alerts plus read-only `/status`-style commands — nothing
+   typed in Telegram can pause, arm, fire or close). Nothing outside the worker
+   reads the database or the wallet.
 4. **Fail closed everywhere**: unknown outcomes → `REQUIRES_RECONCILIATION`
    (never blind retry); ambiguous swaps are skipped; a stale API answer, an
    unpriceable coin or a missing quote never invents a row; an empty chair stays

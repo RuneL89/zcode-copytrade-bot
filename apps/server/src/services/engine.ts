@@ -1737,10 +1737,6 @@ export class CopyEngine {
     });
     repo.updateActivation(this.db, ctx.activationId, { lossStreak: result.streak });
 
-    await this.notifier.notify(
-      `${result.unitResult.toUpperCase()} close ${exit.full ? '' : '(partial) '}${(Number(pnl) / 1e6).toFixed(2)} USD — streak ${result.streak}/${streakCfg.fireAfter}`,
-    );
-
     if (result.fired) {
       this.callbacks.onFired(ctx.activationId, ctx.candidateId, 'two consecutive losing units');
     }
