@@ -191,7 +191,10 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   hire does. He keeps his shadow record and passes the same promotion gates;
   manual activation obeys the block too. A stuck close freezes only its own
   chair, but its bag still gets risk-reducing code exits from the monitor; a
-  full code exit completes the blocked fire and frees the chair.
+  full code exit completes the blocked fire and frees the chair. A chair
+  already FIRING or reconciling refuses a second fire; completion goes
+  through `completeBlockedFire`, so a close-out's own losing unit cannot
+  re-fire the seat.
 - The watch/shadow gate is forward-only: admission-replayed trades are recorded
   with `backfilled` provenance and excluded from promotion/demotion; the
   funded-buy recency clock is the leader's on-chain block time (never the

@@ -1737,7 +1737,10 @@ export class CopyEngine {
     });
     repo.updateActivation(this.db, ctx.activationId, { lossStreak: result.streak });
 
-    if (result.fired) {
+    // Only an ACTIVE chair fires on a loss streak. A close-out of a firing or
+    // reconciliation-blocked seat produces losing units too; those must not
+    // schedule a second fire — completeBlockedFire is the only completion path.
+    if (result.fired && activation.state === 'ACTIVE') {
       this.callbacks.onFired(ctx.activationId, ctx.candidateId, 'two consecutive losing units');
     }
   }

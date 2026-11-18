@@ -101,7 +101,8 @@ export function isLeaderStalled(
 export type HandoffOutcome =
   | { status: 'ACTIVATED'; candidateId: string; source: string }
   | { status: 'NO_REPLACEMENT'; skipped: Array<{ candidateId: string; reason: string }> }
-  | { status: 'SKIPPED_NOT_FLAT'; skipped: [] };
+  | { status: 'SKIPPED_NOT_FLAT'; skipped: [] }
+  | { status: 'SKIPPED_NOT_ACTIVE'; skipped: [] };
 
 export class TraderLifecycle {
   private helius: HeliusProvider | null = null;
@@ -422,8 +423,21 @@ export class TraderLifecycle {
     opts: { requireFlat?: boolean; holdEmpty?: boolean } = {},
   ): Promise<HandoffOutcome> {
     const activation = repo.getActivation(this.db, activationId);
-    if (!activation || activation.state === 'FIRED' || activation.mode !== this.mode) {
+    if (!activation || activation.mode !== this.mode) {
       return { status: 'NO_REPLACEMENT', skipped: [] };
+    }
+    // Only an ACTIVE chair may be fired. A chair already FIRING or blocked on
+    // reconciliation is completed through completeBlockedFire (exit-queue
+    // retry, full code exit, or startup recovery); a second fire would re-run
+    // the close-out, write a duplicate firing event, and can orphan the
+    // summary case that blocked the first attempt.
+    if (activation.state !== 'ACTIVE') {
+      repo.audit(this.db, 'firing', 'fire skipped: activation is not ACTIVE', {
+        activationId,
+        reason,
+        state: activation.state,
+      });
+      return { status: 'SKIPPED_NOT_ACTIVE', skipped: [] };
     }
     const nowIso = new Date().toISOString();
 
@@ -500,6 +514,10 @@ export class TraderLifecycle {
         handoffBlocked = true;
       } else {
         closeCompletedAt = new Date().toISOString();
+        // A previous blocked attempt for this chair may have left its marked
+        // summary case open; this successful fire resolves it. Marked-only:
+        // never use the legacy time-match heuristic from this path.
+        this.resolveSummaryCasesForActivation(activationId, { markedOnly: true });
       }
     }
 
@@ -689,16 +707,25 @@ export class TraderLifecycle {
    * Resolve the close_failed summary case(s) owned by one activation. Signed
    * and unknown cases are never resolved here. Legacy summary rows without the
    * activation marker are adopted by firing-event time, or by the caller's
-   * sole-blocked-fire fallback.
+   * sole-blocked-fire fallback. `markedOnly` restricts the pass to rows that
+   * name this activation in their detail.
    */
-  private resolveSummaryCasesForActivation(activationId: string, includeUnlinked = false): number {
+  private resolveSummaryCasesForActivation(
+    activationId: string,
+    opts: { includeUnlinked?: boolean; markedOnly?: boolean } = {},
+  ): number {
+    const includeUnlinked = opts.includeUnlinked === true;
+    const markedOnly = opts.markedOnly === true;
     let resolved = 0;
     for (const c of repo.openReconciliationCases(this.db, this.mode)) {
       if (c.intentId || c.positionId) continue;
       if (c.signature || c.kind === 'unknown_execution') continue;
       const linked = this.summaryActivationId(c.detail) === activationId;
-      const legacy = this.legacySummaryMatchesActivation(c, activationId);
-      if (!linked && !legacy && !includeUnlinked) continue;
+      if (!linked) {
+        if (markedOnly) continue;
+        const legacy = this.legacySummaryMatchesActivation(c, activationId);
+        if (!legacy && !includeUnlinked) continue;
+      }
       repo.resolveReconciliationCase(this.db, c.id);
       repo.audit(this.db, 'reconciliation', `summary case ${c.id} resolved for ${activationId}`, {
         activationId,
@@ -711,9 +738,11 @@ export class TraderLifecycle {
   }
 
   /**
-   * Resolve a legacy close_failed summary whose activation already reached
-   * FIRED under the old code (its position is closed, but the desk-wide cleanup
-   * left the summary open). Attribution is by the firing-event timestamp.
+   * Resolve a close_failed summary whose activation already reached FIRED
+   * (its bag is closed, but an earlier blocked attempt or the old desk-wide
+   * cleanup left the summary open). Marked rows are attributed by the
+   * activation id in their detail; legacy unmarked rows by firing-event time.
+   * Only an activation that holds nothing and owns no pointer case qualifies.
    */
   private resolveOrphanedFiredSummaries(): number {
     const openCases = repo.openReconciliationCases(this.db, this.mode);
@@ -722,37 +751,50 @@ export class TraderLifecycle {
     let resolved = 0;
     for (const c of openCases) {
       if (c.intentId || c.positionId || c.signature || c.kind === 'unknown_execution') continue;
-      if (this.summaryActivationId(c.detail) !== null) continue;
-      const caseMs = Date.parse(c.createdAt);
-      if (!Number.isFinite(caseMs)) continue;
-      let best: string | null = null;
-      let bestDelta = Infinity;
-      for (const activation of activations) {
-        const firing = repo.latestFiringEventForActivation(this.db, activation.activationId);
-        if (!firing) continue;
-        const delta = Math.abs(Date.parse(firing.firedAt) - caseMs);
-        if (delta <= 5 * 60_000 && delta < bestDelta) {
-          best = activation.activationId;
-          bestDelta = delta;
+
+      const marker = this.summaryActivationId(c.detail);
+      let target: string | null = null;
+      if (marker !== null) {
+        // A marked summary names its activation. Only a FIRED chair is safe:
+        // REQUIRES_RECONCILIATION is completed by completeBlockedFire above,
+        // and an ACTIVE seat still owns its case.
+        const activation = repo.getActivation(this.db, marker);
+        if (!activation || activation.mode !== this.mode || activation.state !== 'FIRED') continue;
+        target = marker;
+      } else {
+        const caseMs = Date.parse(c.createdAt);
+        if (!Number.isFinite(caseMs)) continue;
+        let best: string | null = null;
+        let bestDelta = Infinity;
+        for (const activation of activations) {
+          const firing = repo.latestFiringEventForActivation(this.db, activation.activationId);
+          if (!firing) continue;
+          const delta = Math.abs(Date.parse(firing.firedAt) - caseMs);
+          if (delta <= 5 * 60_000 && delta < bestDelta) {
+            best = activation.activationId;
+            bestDelta = delta;
+          }
         }
+        if (!best) continue;
+        target = best;
       }
-      if (!best) continue;
+
       const held = positions.some(
         (p) =>
-          p.activationId === best &&
+          p.activationId === target &&
           ['open', 'partially_closed', 'requires_reconciliation'].includes(p.status),
       );
       if (held) continue;
       const attributable = openCases.some((other) => {
         if (other.id === c.id) return false;
-        if (other.positionId) return repo.getPosition(this.db, other.positionId)?.activationId === best;
-        if (other.intentId) return repo.getIntent(this.db, other.intentId)?.activationId === best;
+        if (other.positionId) return repo.getPosition(this.db, other.positionId)?.activationId === target;
+        if (other.intentId) return repo.getIntent(this.db, other.intentId)?.activationId === target;
         return false;
       });
       if (attributable) continue;
       repo.resolveReconciliationCase(this.db, c.id);
-      repo.audit(this.db, 'reconciliation', `orphaned summary case ${c.id} resolved for ${best}`, {
-        activationId: best,
+      repo.audit(this.db, 'reconciliation', `orphaned summary case ${c.id} resolved for ${target}`, {
+        activationId: target,
         caseId: c.id,
         detail: c.detail,
       });
@@ -892,7 +934,7 @@ export class TraderLifecycle {
     );
     const adoptLegacy =
       opts.adoptLegacySummary !== false && otherBlocked === 0 && unlinkedCloseFailed.length === 1;
-    this.resolveSummaryCasesForActivation(activationId, adoptLegacy);
+    this.resolveSummaryCasesForActivation(activationId, { includeUnlinked: adoptLegacy });
 
     repo.updateActivation(this.db, activationId, {
       state: 'FIRED',
