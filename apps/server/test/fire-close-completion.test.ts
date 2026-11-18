@@ -234,7 +234,10 @@ function seedSummary(
   });
 }
 
-function engineWith(executor: Executor) {
+function engineWith(
+  executor: Executor,
+  opts: { onFired?: (activationId: string, candidateId: string, reason: string) => void } = {},
+) {
   let lifecycle: TraderLifecycle;
   const engine = new CopyEngine(
     handle.db,
@@ -244,7 +247,7 @@ function engineWith(executor: Executor) {
     new ControlService(handle.db),
     notifier,
     {
-      onFired: () => {},
+      onFired: opts.onFired ?? (() => {}),
       onStateChanged: () => {},
       onFireCloseFilled: async (activationId) => {
         await lifecycle.completeBlockedFire(activationId);
@@ -555,5 +558,132 @@ describe('monitor code exits on a blocked fire', () => {
     expect(repo.getPosition(handle.db, target.positionId)!.status).toBe('requires_reconciliation');
     expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('REQUIRES_RECONCILIATION');
     expect(repo.openReconciliationCases(handle.db).length).toBeGreaterThan(0);
+  });
+});
+
+describe('duplicate-fire guard and orphaned summary repair', () => {
+  const failed: ExecOutcome = {
+    kind: 'failed',
+    error: 'paper simulation failed: jupiter: rate limited (429)',
+  };
+  const filled: ExecOutcome = {
+    kind: 'filled',
+    signature: 'sig-fire-close',
+    inputAmountBase: '1000',
+    outputAmountBase: '1000000',
+    feeUsdMicro: '0',
+    evidence: {},
+    commitment: 'paper',
+  };
+
+  it('a losing close unit during a blocked fire does not schedule a second firing', async () => {
+    const target = seedTarget('act_double_fire', 'cand_double_fire');
+    // Two open positions make the close-out partially fail: one closes (its
+    // losing unit crosses the streak threshold), one stays open and blocks the
+    // fire. This is the 2026-11-18 aurafarmer_ shape.
+    seedPosition(target.activationId, 'pos_double_second', target.candidateId);
+    repo.updateActivation(handle.db, target.activationId, { lossStreak: 1 });
+
+    const onFiredCalls: string[] = [];
+    const { engine, lifecycle } = engineWith(new ScriptedExecutor([failed, failed, failed, filled, filled]), {
+      onFired: (activationId) => onFiredCalls.push(activationId),
+    });
+
+    const outcome = await lifecycle.fire(target.activationId, 'stall: leader inactive 8.2h');
+
+    expect(outcome.status).toBe('NO_REPLACEMENT');
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('REQUIRES_RECONCILIATION');
+    // The blocked fire's own losing close-out must not enqueue another fire.
+    expect(onFiredCalls).toHaveLength(0);
+    expect(repo.listRecentFirings(handle.db, 10)).toHaveLength(1);
+    expect(repo.openReconciliationCases(handle.db)).toHaveLength(1);
+    expect(repo.openPositions(handle.db)).toHaveLength(1);
+
+    // The queued exit retry closes the remainder; completeBlockedFire finishes
+    // the same fire and resolves its summary.
+    const retry = await engine.retryQueuedExits(Date.now() + 10 * 60_000);
+    expect(retry.filled).toBe(1);
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db)).toHaveLength(0);
+    expect(repo.listRecentFirings(handle.db, 10)).toHaveLength(1);
+    expect(repo.getWatchWallet(handle.db, target.candidateId)?.status).toBe('cooling');
+  });
+
+  it('fire() refuses a chair that is already FIRING or blocked for reconciliation', async () => {
+    const target = seedTarget('act_not_active', 'cand_not_active');
+    const executor = new ScriptedExecutor([]);
+    const { lifecycle } = engineWith(executor);
+
+    repo.updateActivation(handle.db, target.activationId, { state: 'FIRING', firedReason: 'stall: test' });
+    const firing = await lifecycle.fire(target.activationId, 'two consecutive losing units');
+    expect(firing.status).toBe('SKIPPED_NOT_ACTIVE');
+
+    repo.updateActivation(handle.db, target.activationId, { state: 'REQUIRES_RECONCILIATION' });
+    const blocked = await lifecycle.fire(target.activationId, 'two consecutive losing units');
+    expect(blocked.status).toBe('SKIPPED_NOT_ACTIVE');
+
+    expect(repo.listRecentFirings(handle.db, 10)).toHaveLength(0);
+    expect(repo.openReconciliationCases(handle.db)).toHaveLength(0);
+    expect(executor.specs).toHaveLength(0);
+  });
+
+  it('startup recovery resolves a marked summary whose activation is FIRED and flat', async () => {
+    const target = seedTarget('act_marked_orphan', 'cand_marked_orphan');
+    const endedAt = new Date().toISOString();
+    repo.updateActivation(handle.db, target.activationId, {
+      state: 'FIRED',
+      endedAt,
+      endReason: 'fired',
+    });
+    repo.updatePosition(handle.db, target.positionId, {
+      status: 'closed',
+      remainingTokenBase: '0',
+      closedAt: endedAt,
+      closeReason: 'fire_close_all',
+    });
+    repo.insertFiringEvent(handle.db, {
+      activationId: target.activationId,
+      candidateId: target.candidateId,
+      reason: 'stall: test',
+      lossStreak: 0,
+      positionPolicy: 'close_all_before_switch',
+      firedAt: endedAt,
+      closeCompletedAt: null,
+      handoffStatus: 'none',
+    });
+    const caseId = seedSummary(target.activationId);
+    const { lifecycle } = engineWith(new ScriptedExecutor([]));
+
+    await lifecycle.recoverBlockedFires('test-startup');
+
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(false);
+  });
+
+  it('keeps a marked summary open while the fired activation still holds a position', async () => {
+    const target = seedTarget('act_marked_held', 'cand_marked_held');
+    repo.updateActivation(handle.db, target.activationId, {
+      state: 'FIRED',
+      endedAt: new Date().toISOString(),
+      endReason: 'fired',
+    });
+    const caseId = seedSummary(target.activationId);
+    const { lifecycle } = engineWith(new ScriptedExecutor([]));
+
+    await lifecycle.recoverBlockedFires('test-startup');
+
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(true);
+  });
+
+  it('a successful fire resolves a marked summary left by an earlier attempt', async () => {
+    const target = seedTarget('act_stale_summary', 'cand_stale_summary');
+    const caseId = seedSummary(target.activationId);
+    const { lifecycle } = engineWith(new ScriptedExecutor([filled]));
+
+    const outcome = await lifecycle.fire(target.activationId, 'stall: leader inactive 8.2h');
+
+    expect(outcome.status).toBe('NO_REPLACEMENT');
+    expect(repo.getActivation(handle.db, target.activationId)!.state).toBe('FIRED');
+    expect(repo.openReconciliationCases(handle.db).some((c) => c.id === caseId)).toBe(false);
   });
 });

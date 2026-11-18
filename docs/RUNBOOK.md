@@ -359,7 +359,12 @@ freed chair is filled from the bench without a restart. A partial, unknown or
 signed close leaves it blocked. The `close_failed` summary case is tagged with
 its activation and resolved only for that activation. On startup, an activation
 in `REQUIRES_RECONCILIATION` whose positions are already closed is repaired the
-same way. Signed, unknown, or still-held cases keep the fire blocked.
+same way. Signed, unknown, or still-held cases keep the fire blocked. A chair
+already `FIRING` or `REQUIRES_RECONCILIATION` refuses a second `fire()`
+(`SKIPPED_NOT_ACTIVE`); only the completion paths above can finish it, so a
+close-out's own losing unit cannot re-fire the seat. Startup recovery also
+resolves a marked `close_failed` summary whose activation is already `FIRED`
+and holds nothing.
 
 Exits also sell **what the wallet holds**, not the recorded amount: the copied
 size comes from quoted outputs at entry and can exceed the delivered balance

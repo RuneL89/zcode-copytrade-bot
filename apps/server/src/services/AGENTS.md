@@ -70,7 +70,12 @@ no LLM in the loop (D6).
   callback calls `completeBlockedFire`; a **full code exit on the reconciling
   seat** does the same from the monitor, and startup recovery covers a
   position that is already closed. Signed, unknown, or attributable open
-  cases keep it blocked.
+  cases keep it blocked. `fire()` applies only to an `ACTIVE` chair: a
+  `FIRING` or `REQUIRES_RECONCILIATION` chair refuses a second fire
+  (`SKIPPED_NOT_ACTIVE`) and finishes only through `completeBlockedFire`, so
+  a close-out's own losing unit cannot schedule another firing. Startup repair
+  also resolves a marked summary whose activation already reached `FIRED` and
+  holds nothing.
 - **Risk-reducing code exits also run on a frozen seat.** The monitor's
   position sweep runs for `ACTIVE` and `REQUIRES_RECONCILIATION` so a blocked
   fire cannot leave its bag unmanaged past the time/stop rules. The idle and
