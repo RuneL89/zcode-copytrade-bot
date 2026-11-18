@@ -176,6 +176,18 @@ export class Runtime {
     if (savedOverrides) {
       try {
         const raw = JSON.parse(savedOverrides) as Record<string, unknown>;
+        const retired = ['MAX_PER_BUY_USD', 'MAX_OPEN_PER_TRADER_USD'].filter((key) => key in raw);
+        if (retired.length > 0) {
+          // The ceilings became percentages of current capital; the old dollar
+          // keys are not migrated. Keep the blob (never destroy operator data)
+          // and surface the retirement once per boot.
+          repo.audit(
+            this.db.db,
+            'settings',
+            'saved risk overrides contain retired USD ceilings; ignored — percentage caps apply',
+            { retired },
+          );
+        }
         const patch: Record<string, unknown> = {};
         // Only keys the patch schema knows survive: the blob is a full config,
         // and a strict parse of unknown fields would discard every override.

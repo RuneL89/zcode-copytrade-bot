@@ -1445,8 +1445,8 @@ export function defaultSweepGrid(): SweepGrid {
       MAX_POSITION_AGE_HOURS: [3, 5, 8, 12, 8760],
       COPY_SCALE: [0.1, 0.25, 0.5, 0.75, 1],
       MIN_PER_BUY_USD: [1, 2, 5, 10],
-      MAX_PER_BUY_USD: [5, 10, 20, 40],
-      MAX_OPEN_PER_TRADER_USD: [10, 20, 40, 80],
+      MAX_PER_BUY_PCT: [5, 10, 20, 40],
+      MAX_OPEN_PER_TRADER_PCT: [10, 20, 40, 80],
       MAX_DEPLOYED_PCT: [25, 50, 80, 100],
       IDLE_FIRE_HOURS: [4, 8, 12, 24],
       COOLDOWN_HOURS: [1, 6, 12, 24],
@@ -1460,7 +1460,7 @@ export function defaultSweepGrid(): SweepGrid {
     combinations: [
       { STOP_LOSS_BPS: 2000, TRAIL_ARM_BPS: 1000, TRAIL_DISTANCE_BPS: 500 },
       { STOP_LOSS_BPS: 3000, TRAIL_ARM_BPS: 2000, TRAIL_DISTANCE_BPS: 1500 },
-      { MAX_PER_BUY_USD: 20, MAX_OPEN_PER_TRADER_USD: 80, MAX_DEPLOYED_PCT: 100 },
+      { MAX_PER_BUY_PCT: 20, MAX_OPEN_PER_TRADER_PCT: 80, MAX_DEPLOYED_PCT: 100 },
     ],
     maxRuns: 400,
   };

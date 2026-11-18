@@ -6,6 +6,7 @@ import type { PriceProvider } from '@zcode-bot/providers';
 import {
   applyCloseUnit,
   bankrollHeadroom,
+  capitalPctCapUsdMicro,
   classifyLeaderEvent,
   countsAsUnit,
   evaluateEntryRisk,
@@ -374,6 +375,7 @@ export class CopyEngine {
     // then see this reservation instead of both passing the same headroom.
     let sizing!: ReturnType<typeof sizeCopy>;
     let bank!: ReturnType<typeof bankrollHeadroom>;
+    let maxPerBuyUsdMicro = 0n;
     let skipReason: string | null = null;
     await this.locks.budget(async () => {
       const book = this.bank();
@@ -389,14 +391,24 @@ export class CopyEngine {
         exposure.unresolved
           .filter((i) => i.candidateId === candidateId)
           .reduce((acc, i) => acc + BigInt(i.inputUsdMicro ?? '0'), 0n);
+      // Exposure caps are percentages of CURRENT capital, so the profile holds
+      // as the bankroll grows. The $2 floor still wins when capital is tiny.
+      const minPerBuy = usdToMicro(this.risk.MIN_PER_BUY_USD);
+      const maxPerBuy = capitalPctCapUsdMicro(bank.capitalUsdMicro, this.risk.MAX_PER_BUY_PCT, minPerBuy);
+      const maxOpenPerTrader = capitalPctCapUsdMicro(
+        bank.capitalUsdMicro,
+        this.risk.MAX_OPEN_PER_TRADER_PCT,
+        maxPerBuy,
+      );
+      maxPerBuyUsdMicro = maxPerBuy;
       sizing = sizeCopy({
         leaderInputUsdMicro,
         scaleNumerator: BigInt(Math.round(this.risk.COPY_SCALE * 10000)),
         scaleDenominator: 10000n,
-        minPerBuyUsdMicro: usdToMicro(this.risk.MIN_PER_BUY_USD),
-        maxPerBuyUsdMicro: usdToMicro(this.risk.MAX_PER_BUY_USD),
+        minPerBuyUsdMicro: minPerBuy,
+        maxPerBuyUsdMicro: maxPerBuy,
         traderOpenUsdMicro: traderOpen,
-        maxOpenPerTraderUsdMicro: usdToMicro(this.risk.MAX_OPEN_PER_TRADER_USD),
+        maxOpenPerTraderUsdMicro: maxOpenPerTrader,
         bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
       });
       // A pending entry for the same mint is this burst's copy; the position
@@ -534,6 +546,7 @@ export class CopyEngine {
 
     const decision = evaluateEntryRisk(this.risk, {
       entryUsdMicro: notional,
+      maxEntryUsdMicro: maxPerBuyUsdMicro,
       eventAgeSeconds: Math.max(0, Math.round((Date.now() - event.blockTime * 1000) / 1000)),
       priceAgeSeconds: priceAgeSeconds,
       leaderboardAgeSeconds: this.leaderboardAgeSeconds(candidateId),

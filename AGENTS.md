@@ -17,8 +17,8 @@ A self-hosted Solana copy-trading application ("Copydesk"):
 - A Node.js worker watches the qualified wallets' funded buys, proves them on a
   shadow ledger (our own exits, D4 gates), promotes the best onto a roster of up
   to five leaders sharing one budget pool, and copies their swaps at 0.25x
-  measured input notional, clamped to a $2 floor, a $10 per-trade ceiling, $40
-  open per trader, and 80% of the $100 bankroll. Exits mirror the leader or hit
+  measured input notional, clamped to a $2 floor, a 10%-of-capital per-trade
+  ceiling, 35%-of-capital open per trader, and 80% of capital deployed. Exits mirror the leader or hit
   the code day-trade rules (stop, trail, sell-on-green, 5h); a chair may stay
   empty rather than hire something unproven.
 - An animated mobile-first React dashboard shows everything.

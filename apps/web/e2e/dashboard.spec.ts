@@ -143,7 +143,7 @@ test.describe('risk editor', () => {
     await page.getByRole('tab', { name: 'Risk' }).click();
 
     // Raising the per-trade cap is risk-increasing.
-    await page.getByTestId('risk-MAX_PER_BUY_USD').fill('20');
+    await page.getByTestId('risk-MAX_PER_BUY_PCT').fill('20');
     await page.getByTestId('save-risk').click();
     await expect(page.getByTestId('risk-confirm')).toBeVisible();
     const pin = page.getByLabel('Risk PIN');
@@ -160,10 +160,10 @@ test.describe('risk editor', () => {
 
     await page.reload();
     await page.getByRole('tab', { name: 'Risk' }).click();
-    await expect(page.getByTestId('risk-MAX_PER_BUY_USD')).toHaveValue('20');
+    await expect(page.getByTestId('risk-MAX_PER_BUY_PCT')).toHaveValue('20');
 
     // Restore the default cap (a decrease, so no PIN).
-    await page.getByTestId('risk-MAX_PER_BUY_USD').fill('10');
+    await page.getByTestId('risk-MAX_PER_BUY_PCT').fill('10');
     await page.getByTestId('save-risk').click();
     await page.getByTestId('risk-confirm-save').click();
     await expect(page.getByTestId('save-risk-status')).toContainText('Saved');

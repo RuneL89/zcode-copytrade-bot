@@ -58,6 +58,13 @@ the copy still places `MIN_PER_BUY_USD`. The floor is absolute; the 0.25× ceili
 yields to it in that case. No such buy exists in the recorded history, so this is
 a rule for completeness.
 
+**Amended 2026-11-18 (operator).** The two ceilings are now capital-relative:
+`MAX_PER_BUY_PCT` (10) and `MAX_OPEN_PER_TRADER_PCT` (35), evaluated against
+current capital at each entry. The $2 floor and the 0.25× copy scale are
+unchanged: a single bet is `min(leader_input × 0.25, 10% of capital)`, floored
+at $2, then capped by the 35% per-trader room and the 80% deployment cap. The
+retired `MAX_PER_BUY_USD` / `MAX_OPEN_PER_TRADER_USD` keys are not read.
+
 ---
 
 ## D2 — Discovery is a handle generator, not the hireable universe
@@ -404,8 +411,9 @@ the secret. Clearing an emergency does not re-arm. A continuous health sweep
 auto-pauses new entries on a live blocker.
 
 **No portfolio daily-loss breaker.** The operator's safety model is the
-per-position stop/trail/time exits plus the 80% deployment cap and the $10/$40
-trade/trader ceilings. There is no daily realized-loss or lifetime-drawdown
+per-position stop/trail/time exits plus the 80% deployment cap and the
+10%/35%-of-capital trade/trader ceilings (amended 2026-11-18; formerly $10/$40).
+There is no daily realized-loss or lifetime-drawdown
 gate; the stale `MAX_DAILY_REALIZED_LOSS_USD` env key and README claim are
 removed rather than re-enforced.
 

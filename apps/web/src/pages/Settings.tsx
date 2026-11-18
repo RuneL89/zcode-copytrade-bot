@@ -35,7 +35,7 @@ interface SettingsView {
 
 const EDITABLE_NUMBER_FIELDS = [
   'MIN_PER_BUY_USD',
-  'MAX_PER_BUY_USD',
+  'MAX_PER_BUY_PCT',
   'MAX_DEPLOYED_PCT',
   'MAX_POSITION_AGE_HOURS',
   'POSITION_GRACE_HOURS',
@@ -82,7 +82,7 @@ const inputCls =
 const RISK_FIELD_HELP: Partial<Record<RiskField, string>> = {
   MIN_PER_BUY_USD:
     'Hard floor: every copied buy is at least this. Leader buys that scale below it are copied at the floor — never skipped.',
-  MAX_PER_BUY_USD: 'Ceiling: no copied buy is ever larger than this.',
+  MAX_PER_BUY_PCT: 'Ceiling: no copied buy is ever larger than this percent of current capital.',
   PER_MINT_CAP_USD: '0 disables the per-mint cap.',
   SHADOW_BACKFILL_ON_ADMIT: 'Seed each new watch entry from the admission scan (observed trades only).',
 };

@@ -231,6 +231,7 @@ describe('activation + dashboard states', () => {
 describe('entry risk gate', () => {
   const baseInput = {
     entryUsdMicro: usdToMicro(10),
+    maxEntryUsdMicro: usdToMicro(10),
     eventAgeSeconds: 10,
     priceAgeSeconds: 5,
     leaderboardAgeSeconds: 100,
@@ -251,8 +252,16 @@ describe('entry risk gate', () => {
       true,
     );
     expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, entryUsdMicro: usdToMicro(11) }).rule).toBe(
-      'MAX_PER_BUY_USD',
+      'MAX_PER_BUY_PCT',
     );
+    // The ceiling is the caller's effective capital cap, not a config constant.
+    expect(
+      evaluateEntryRisk(DEFAULT_RISK, {
+        ...baseInput,
+        entryUsdMicro: usdToMicro(20),
+        maxEntryUsdMicro: usdToMicro(15),
+      }).rule,
+    ).toBe('MAX_PER_BUY_PCT');
     expect(evaluateEntryRisk(DEFAULT_RISK, { ...baseInput, eventAgeSeconds: 120 }).rule).toBe(
       'MAX_COPY_EVENT_AGE_SECONDS',
     );

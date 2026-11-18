@@ -455,7 +455,7 @@ We run on the Jupiter **free keyed plan** (`api.jup.ag`, 1 request/s and
 (provider health check + one mark per open position per minute), well under the
 limit at any position count the bankroll cap allows — the deployed-% ceiling
 times capital, divided by max bet, bounds the position count (e.g. 8 positions
-at $100 capital / $10 bets). Marks refresh every minute; the dashboard treats a
+at $100 capital / 10% bets = $10). Marks refresh every minute; the dashboard treats a
 mark older than five minutes as stale ("mark pending"). Rare 429s fail closed: a
 mark skips one cycle, a rejected quote is logged and never retried blind. Upgrade
 to the Developer tier **only if** request volume ever requires it (roughly 40+
@@ -548,7 +548,8 @@ pnpm sweep --risk-file my-risk.json         # baseline overrides (JSON object)
 - Baseline is the code's `DEFAULT_RISK` unless `--risk-file` supplies the
   operator's current values. The DB does not store the risk config that was
   active at each historic fill, so a historic paper fill can legitimately
-  differ from the current baseline (for example an old $20 cap vs today's $10).
+  differ from the current baseline (for example an old $20 cap vs today's 10%
+  of capital).
 - Data limits are stated in the report: no intra-trade marks (linear path), no
   pool-depth model, exit slippage stays the paper assumption, and alternate
   hires keep the real seat tenure. If the DB has no paper positions, the report

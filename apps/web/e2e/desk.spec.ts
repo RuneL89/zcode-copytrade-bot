@@ -34,7 +34,7 @@ test('mobile desk: no horizontal overflow, four tabs, one PIN-gated risk editor'
   await page.getByRole('tab', { name: 'Risk', exact: true }).click();
   await expect(page.getByTestId('desk-risk')).toBeVisible();
   // The PIN prompt lives in the one risk editor and appears only for an increase.
-  await page.getByTestId('risk-MAX_OPEN_PER_TRADER_USD').fill('50');
+  await page.getByTestId('risk-MAX_OPEN_PER_TRADER_PCT').fill('50');
   await page.getByTestId('save-risk').click();
   await expect(page.getByTestId('risk-confirm')).toBeVisible();
   await expect(page.getByLabel('Risk PIN')).toBeVisible();

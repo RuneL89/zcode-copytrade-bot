@@ -102,6 +102,25 @@ describe('settings PATCH', () => {
     expect(state.counters.maxPositionAgeHours).toBe(9);
   });
 
+  it('patches the capital-relative caps and refuses the retired USD keys', async () => {
+    const res = await app.request('/api/settings', {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
+      body: JSON.stringify({ MAX_PER_BUY_PCT: 12, MAX_OPEN_PER_TRADER_PCT: 40, pin: '2468' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { risk: Record<string, number> };
+    expect(body.risk.MAX_PER_BUY_PCT).toBe(12);
+    expect(body.risk.MAX_OPEN_PER_TRADER_PCT).toBe(40);
+
+    const retired = await app.request('/api/settings', {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': extractCsrf(cookie) },
+      body: JSON.stringify({ MAX_PER_BUY_USD: 10 }),
+    });
+    expect(retired.status).toBe(400);
+  });
+
   it('persists the D4 watch/promotion fields across a runtime reload', async () => {
     const res = await app.request('/api/settings', {
       method: 'PATCH',

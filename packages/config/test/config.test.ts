@@ -30,8 +30,8 @@ describe('loadConfig', () => {
     expect(cfg.env.JUPITER_BASE_URL).toBe('https://api.jup.ag');
     expect(cfg.risk.COPY_SCALE).toBe(0.25);
     expect(cfg.risk.MIN_PER_BUY_USD).toBe(2);
-    expect(cfg.risk.MAX_PER_BUY_USD).toBe(10);
-    expect(cfg.risk.MAX_OPEN_PER_TRADER_USD).toBe(40);
+    expect(cfg.risk.MAX_PER_BUY_PCT).toBe(10);
+    expect(cfg.risk.MAX_OPEN_PER_TRADER_PCT).toBe(35);
     expect(cfg.risk.MAX_DEPLOYED_PCT).toBe(80);
     expect(cfg.risk.MAX_POSITION_AGE_HOURS).toBe(5);
     expect(cfg.risk.POSITION_GRACE_HOURS).toBe(1.5);
@@ -56,11 +56,13 @@ describe('loadConfig', () => {
     const cfg = loadConfig({
       ...base,
       MIN_PER_BUY_USD: '20',
-      MAX_PER_BUY_USD: '40',
+      MAX_PER_BUY_PCT: '20',
+      MAX_OPEN_PER_TRADER_PCT: '40',
       MAX_SLIPPAGE_BPS: '150',
     });
     expect(cfg.risk.MIN_PER_BUY_USD).toBe(20);
-    expect(cfg.risk.MAX_PER_BUY_USD).toBe(40);
+    expect(cfg.risk.MAX_PER_BUY_PCT).toBe(20);
+    expect(cfg.risk.MAX_OPEN_PER_TRADER_PCT).toBe(40);
     expect(cfg.risk.MAX_SLIPPAGE_BPS).toBe(150);
   });
 
@@ -73,25 +75,39 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ SESSION_SECRET: 'short' })).toThrow(/SESSION_SECRET/);
   });
 
-  it('rejects MAX_PER_BUY_USD below MIN_PER_BUY_USD and accepts equality (AC7)', () => {
+  it('rejects MAX_PER_BUY_PCT above MAX_OPEN_PER_TRADER_PCT and accepts equality', () => {
     const inverted = riskConfigSchema.safeParse({
       ...DEFAULT_RISK,
-      MIN_PER_BUY_USD: 20,
-      MAX_PER_BUY_USD: 5,
+      MAX_PER_BUY_PCT: 40,
+      MAX_OPEN_PER_TRADER_PCT: 35,
     });
     expect(inverted.success).toBe(false);
     if (!inverted.success) {
-      const issue = inverted.error.issues.find((i) => i.path.join('.') === 'MAX_PER_BUY_USD');
-      expect(issue?.message).toMatch(/MAX_PER_BUY_USD \(5\) must be >= MIN_PER_BUY_USD \(20\)/);
+      const issue = inverted.error.issues.find((i) => i.path.join('.') === 'MAX_OPEN_PER_TRADER_PCT');
+      expect(issue?.message).toMatch(/MAX_OPEN_PER_TRADER_PCT \(35\) must be >= MAX_PER_BUY_PCT \(40\)/);
     }
 
-    const equal = riskConfigSchema.safeParse({ ...DEFAULT_RISK, MIN_PER_BUY_USD: 5, MAX_PER_BUY_USD: 5 });
+    const equal = riskConfigSchema.safeParse({
+      ...DEFAULT_RISK,
+      MAX_PER_BUY_PCT: 35,
+      MAX_OPEN_PER_TRADER_PCT: 35,
+    });
     expect(equal.success).toBe(true);
 
     // The same inverted pair is refused through the env loader end to end.
-    expect(() => loadConfig({ ...base, MIN_PER_BUY_USD: '20', MAX_PER_BUY_USD: '5' })).toThrow(
-      /must be >= MIN_PER_BUY_USD/,
+    expect(() => loadConfig({ ...base, MAX_PER_BUY_PCT: '40', MAX_OPEN_PER_TRADER_PCT: '35' })).toThrow(
+      /must be >= MAX_PER_BUY_PCT/,
     );
+  });
+
+  it('retires the USD ceiling keys and ignores them in the env', () => {
+    expect(SETTINGS_PATCH_KEYS).not.toContain('MAX_PER_BUY_USD');
+    expect(SETTINGS_PATCH_KEYS).not.toContain('MAX_OPEN_PER_TRADER_USD');
+    expect(() => settingsPatchSchema.parse({ MAX_PER_BUY_USD: 10 })).toThrow();
+    expect(() => settingsPatchSchema.parse({ MAX_OPEN_PER_TRADER_USD: 40 })).toThrow();
+    const cfg = loadConfig({ ...base, MAX_PER_BUY_USD: '50', MAX_OPEN_PER_TRADER_USD: '200' });
+    expect(cfg.risk.MAX_PER_BUY_PCT).toBe(10);
+    expect(cfg.risk.MAX_OPEN_PER_TRADER_PCT).toBe(35);
   });
 
   it('carries the D4 thresholds with exactly the decided defaults (AC8)', () => {
@@ -126,6 +142,9 @@ describe('loadConfig', () => {
     expect(settingsPatchSchema.parse(patch)).toEqual(patch);
     expect(settingsPatchSchema.safeParse({ PER_MINT_CAP_USD: 0 }).success).toBe(true);
     expect(settingsPatchSchema.safeParse({ PER_MINT_CAP_USD: 10 }).success).toBe(true);
+    expect(settingsPatchSchema.safeParse({ MAX_PER_BUY_PCT: 20, MAX_OPEN_PER_TRADER_PCT: 40 }).success).toBe(
+      true,
+    );
   });
 
   it('rejects the invalid values the plan names (AC9)', () => {
@@ -137,6 +156,10 @@ describe('loadConfig', () => {
     expect(settingsPatchSchema.safeParse({ ROSTER_POLL_MS: 10000 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ WATCH_DETAIL_PER_MINUTE: 0 }).success).toBe(false);
     expect(settingsPatchSchema.safeParse({ DISCOVERY_MIN_INTERVAL_MS: 60000 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ MAX_PER_BUY_PCT: 0 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ MAX_PER_BUY_PCT: 101 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ MAX_OPEN_PER_TRADER_PCT: 0 }).success).toBe(false);
+    expect(settingsPatchSchema.safeParse({ MAX_OPEN_PER_TRADER_PCT: 101 }).success).toBe(false);
     // Whole-config invariants hold through the full schema as well.
     expect(riskConfigSchema.safeParse({ ...DEFAULT_RISK, BENCH_TARGET: 21 }).success).toBe(false);
     expect(

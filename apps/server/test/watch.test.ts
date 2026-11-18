@@ -48,7 +48,6 @@ function riskConfig(over: Partial<RiskConfig> = {}): RiskConfig {
   return {
     ...risk,
     MIN_PER_BUY_USD: 5,
-    MAX_PER_BUY_USD: 10,
     PROMOTION_MIN_CLOSED: 3,
     PROMOTION_MIN_NET_USD: 1,
     PROMOTION_MAX_LAST_BUY_HOURS: 4,
