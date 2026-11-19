@@ -88,7 +88,7 @@ describe('0.25x sizing with an absolute floor (D1)', () => {
     expect(r.finalUsdMicro).toBe(250_000n); // floor(1000003/4)
   });
 
-  it('caps at MAX_PER_BUY_USD', () => {
+  it('caps at the per-buy maximum', () => {
     const r = computeCopyNotional({
       leaderInputUsdMicro: usdToMicro(2000),
       ...Q,
@@ -220,7 +220,7 @@ const PAPER = {
   bankrollHeadroomUsdMicro: usdToMicro(80),
 };
 
-describe('paper sizing bounds ($2 floor, $10/trade, $40/trader, $80 deployed)', () => {
+describe('paper sizing bounds (explicit caps: $2 floor, $10/trade, $40/trader, $80 deployed)', () => {
   it('caps one trade at $10 and floors a small scale at $2', () => {
     const capped = sizeCopy({ ...PAPER, leaderInputUsdMicro: usdToMicro(80) });
     expect(capped).toMatchObject({ action: 'copy', finalUsdMicro: usdToMicro(10), limitedBy: 'per_trade' });
@@ -252,7 +252,7 @@ describe('paper sizing bounds ($2 floor, $10/trade, $40/trader, $80 deployed)', 
       leaderInputUsdMicro: usdToMicro(80),
       traderOpenUsdMicro: usdToMicro(39),
     });
-    expect(skip).toMatchObject({ action: 'skip_headroom', rule: 'MAX_OPEN_PER_TRADER_USD' });
+    expect(skip).toMatchObject({ action: 'skip_headroom', rule: 'MAX_OPEN_PER_TRADER_PCT' });
     const full = sizeCopy({
       ...PAPER,
       leaderInputUsdMicro: usdToMicro(80),

@@ -1094,6 +1094,10 @@ function chipFromReason(reason: string | null | undefined): string {
       return 'PRICE IMPACT';
     case 'MIN_PER_BUY_USD':
       return 'BELOW MIN';
+    case 'MAX_PER_BUY_PCT':
+      return 'TRADE CAP';
+    case 'MAX_OPEN_PER_TRADER_PCT':
+      return 'TRADER CAP';
     case 'MAX_COPY_EVENT_AGE_SECONDS':
       return 'TOO OLD';
     case 'MAX_TRADES_PER_DAY':

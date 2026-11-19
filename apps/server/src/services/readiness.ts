@@ -199,8 +199,9 @@ export async function readinessReport(
   const risk = config.risk;
   const riskOk =
     risk.MIN_PER_BUY_USD > 0 &&
-    risk.MAX_PER_BUY_USD >= risk.MIN_PER_BUY_USD &&
-    risk.MAX_OPEN_PER_TRADER_USD >= risk.MAX_PER_BUY_USD &&
+    risk.MAX_PER_BUY_PCT >= 1 &&
+    risk.MAX_PER_BUY_PCT <= risk.MAX_OPEN_PER_TRADER_PCT &&
+    risk.MAX_OPEN_PER_TRADER_PCT <= 100 &&
     risk.MAX_DEPLOYED_PCT >= 1 &&
     risk.MAX_DEPLOYED_PCT <= 100;
   items.push({
@@ -208,7 +209,9 @@ export async function readinessReport(
     ok: riskOk,
     severity: 'blocker',
     label: 'Risk limits are internally consistent',
-    detail: riskOk ? 'ok' : 'MIN_PER_BUY <= MAX_PER_BUY <= MAX_OPEN_PER_TRADER, deployment 1-100%',
+    detail: riskOk
+      ? 'ok'
+      : 'MIN_PER_BUY > 0, 1% <= MAX_PER_BUY_PCT <= MAX_OPEN_PER_TRADER_PCT <= 100%, deployment 1-100%',
   });
 
   if (deps?.databaseIntegrityOk) {

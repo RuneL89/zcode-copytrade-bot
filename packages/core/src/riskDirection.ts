@@ -1,7 +1,7 @@
 /** Fields where a larger number takes more risk. */
 const HIGHER_IS_RISKIER = [
-  'MAX_PER_BUY_USD',
-  'MAX_OPEN_PER_TRADER_USD',
+  'MAX_PER_BUY_PCT',
+  'MAX_OPEN_PER_TRADER_PCT',
   'MAX_DEPLOYED_PCT',
   'STOP_LOSS_BPS',
   'TRAIL_DISTANCE_BPS',

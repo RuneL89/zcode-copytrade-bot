@@ -34,14 +34,26 @@ const boolish = z
 /**
  * Full risk configuration. Monetary limits are in whole USD (converted to
  * micro-USD integers by the core money module before any arithmetic).
+ * `MAX_PER_BUY_PCT` and `MAX_OPEN_PER_TRADER_PCT` are percentages of current
+ * capital, so the exposure profile holds as the bankroll grows or shrinks.
  */
 export const riskConfigSchema = z
   .object({
     COPY_SCALE: z.number().positive().max(1),
+    /** Hard floor for one copied buy, absolute USD (fees/router minimum). */
     MIN_PER_BUY_USD: positiveInt('MIN_PER_BUY_USD'),
-    MAX_PER_BUY_USD: positiveInt('MAX_PER_BUY_USD'),
-    /** Max open exposure (entries + entry fees) for one hired trader. */
-    MAX_OPEN_PER_TRADER_USD: positiveInt('MAX_OPEN_PER_TRADER_USD'),
+    /** Ceiling for one copied buy, percent of current capital. */
+    MAX_PER_BUY_PCT: z
+      .number({ invalid_type_error: 'MAX_PER_BUY_PCT must be a number' })
+      .int('MAX_PER_BUY_PCT must be an integer')
+      .min(1, 'MAX_PER_BUY_PCT must be at least 1')
+      .max(100, 'MAX_PER_BUY_PCT must be at most 100'),
+    /** Max open exposure (entries + entry fees) for one hired trader, percent of current capital. */
+    MAX_OPEN_PER_TRADER_PCT: z
+      .number({ invalid_type_error: 'MAX_OPEN_PER_TRADER_PCT must be a number' })
+      .int('MAX_OPEN_PER_TRADER_PCT must be an integer')
+      .min(1, 'MAX_OPEN_PER_TRADER_PCT must be at least 1')
+      .max(100, 'MAX_OPEN_PER_TRADER_PCT must be at most 100'),
     /** Max share of capital (equity start + realized PnL) allowed in open positions, percent. */
     MAX_DEPLOYED_PCT: z
       .number({ invalid_type_error: 'MAX_DEPLOYED_PCT must be a number' })
@@ -108,7 +120,7 @@ export const riskConfigSchema = z
     ADMISSION_MAX_LAST_BUY_HOURS: positiveInt('ADMISSION_MAX_LAST_BUY_HOURS'),
     /** Promotion: closed shadow trades required. */
     PROMOTION_MIN_CLOSED: positiveInt('PROMOTION_MIN_CLOSED'),
-    /** Promotion: net shadow PnL (USD) the closed trades must beat. */
+    /** Promotion: net shadow PnL (USD) the closed trades must beat. Measured on the fixed shadow ruler, not on capital. */
     PROMOTION_MIN_NET_USD: positiveInt('PROMOTION_MIN_NET_USD'),
     /** Promotion: the operator's tighter recency rule — the last funded buy must be this fresh. */
     PROMOTION_MAX_LAST_BUY_HOURS: positiveInt('PROMOTION_MAX_LAST_BUY_HOURS'),
@@ -145,23 +157,13 @@ export const riskConfigSchema = z
     ),
   })
   .superRefine((cfg, ctx) => {
-    // MIN_PER_BUY_USD is the floor, MAX_PER_BUY_USD the ceiling (D1): an
-    // inverted pair is refused here, at parse time, not discovered at order time.
-    if (cfg.MAX_PER_BUY_USD < cfg.MIN_PER_BUY_USD) {
+    // A single bet cannot be larger than the trader's open cap (D1).
+    if (cfg.MAX_OPEN_PER_TRADER_PCT < cfg.MAX_PER_BUY_PCT) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['MAX_PER_BUY_USD'],
+        path: ['MAX_OPEN_PER_TRADER_PCT'],
         message:
-          `MAX_PER_BUY_USD (${cfg.MAX_PER_BUY_USD}) must be >= MIN_PER_BUY_USD (${cfg.MIN_PER_BUY_USD}): ` +
-          'the per-buy maximum cannot sit below the per-buy floor',
-      });
-    }
-    if (cfg.MAX_OPEN_PER_TRADER_USD < cfg.MAX_PER_BUY_USD) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['MAX_OPEN_PER_TRADER_USD'],
-        message:
-          `MAX_OPEN_PER_TRADER_USD (${cfg.MAX_OPEN_PER_TRADER_USD}) must be >= MAX_PER_BUY_USD (${cfg.MAX_PER_BUY_USD}): ` +
+          `MAX_OPEN_PER_TRADER_PCT (${cfg.MAX_OPEN_PER_TRADER_PCT}) must be >= MAX_PER_BUY_PCT (${cfg.MAX_PER_BUY_PCT}): ` +
           'one trade cannot be larger than the trader open cap',
       });
     }
@@ -192,8 +194,8 @@ export type RiskConfig = z.infer<typeof riskConfigSchema>;
 export const DEFAULT_RISK: RiskConfig = {
   COPY_SCALE: 0.25,
   MIN_PER_BUY_USD: 2,
-  MAX_PER_BUY_USD: 10,
-  MAX_OPEN_PER_TRADER_USD: 40,
+  MAX_PER_BUY_PCT: 10,
+  MAX_OPEN_PER_TRADER_PCT: 35,
   MAX_DEPLOYED_PCT: 80,
   // D4's day-trader ceiling: force-close at 8h, +3h grace when the mark is not
   // positive. (D4's 8h+3h working assumption is the shipped default; a saved
@@ -261,8 +263,8 @@ export const DEFAULT_RISK: RiskConfig = {
 const settingsPatchObjectSchema = z
   .object({
     MIN_PER_BUY_USD: z.number().int().positive().optional(),
-    MAX_PER_BUY_USD: z.number().int().positive().optional(),
-    MAX_OPEN_PER_TRADER_USD: z.number().int().positive().optional(),
+    MAX_PER_BUY_PCT: z.number().int().min(1).max(100).optional(),
+    MAX_OPEN_PER_TRADER_PCT: z.number().int().min(1).max(100).optional(),
     MAX_DEPLOYED_PCT: z.number().int().min(1).max(100).optional(),
     MAX_POSITION_AGE_HOURS: z.number().int().positive().optional(),
     POSITION_GRACE_HOURS: z.number().positive().optional(),

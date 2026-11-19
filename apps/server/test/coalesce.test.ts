@@ -131,7 +131,7 @@ afterAll(() => {
 describe('same-mint burst coalescing (AC6)', () => {
   it('six buys inside the window are one position and five skip records', async () => {
     seedActivation('act_coalesce');
-    const engine = engineFor({ MAX_PER_BUY_USD: 10, MIN_PER_BUY_USD: 5, MAX_DEPLOYED_PCT: 80 });
+    const engine = engineFor({ MAX_PER_BUY_PCT: 1, MIN_PER_BUY_USD: 5, MAX_DEPLOYED_PCT: 80 });
     for (let i = 0; i < 6; i++) {
       await engine.handleLeaderTx('act_coalesce', 'cand_roster', leaderBuy(40_000_000n));
     }
@@ -147,7 +147,7 @@ describe('same-mint burst coalescing (AC6)', () => {
 
   it('a buy after the window is copied (the position pyramids)', async () => {
     seedActivation('act_after');
-    const engine = engineFor({ MAX_PER_BUY_USD: 10, MIN_PER_BUY_USD: 5, MAX_DEPLOYED_PCT: 80 });
+    const engine = engineFor({ MAX_PER_BUY_PCT: 1, MIN_PER_BUY_USD: 5, MAX_DEPLOYED_PCT: 80 });
     await engine.handleLeaderTx('act_after', 'cand_roster', leaderBuy(40_000_000n, MEOW_AFTER));
     const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_after')!;
     // Age the position past the coalescing window.
@@ -164,7 +164,7 @@ describe('same-mint burst coalescing (AC6)', () => {
 describe('per-mint cap (AC7)', () => {
   it('PER_MINT_CAP_USD = 0 disables the cap', async () => {
     seedActivation('act_cap_off');
-    const engine = engineFor({ MAX_PER_BUY_USD: 10, MIN_PER_BUY_USD: 5, PER_MINT_CAP_USD: 0 });
+    const engine = engineFor({ MAX_PER_BUY_PCT: 1, MIN_PER_BUY_USD: 5, PER_MINT_CAP_USD: 0 });
     await engine.handleLeaderTx('act_cap_off', 'cand_roster', leaderBuy(40_000_000n, MEOW_CAP_OFF));
     expect(repo.listRiskRejections(handle.db, 50).filter((r) => r.rule === 'PER_MINT_CAP')).toHaveLength(0);
     expect(repo.openPositions(handle.db).filter((p) => p.activationId === 'act_cap_off')).toHaveLength(1);
@@ -175,10 +175,10 @@ describe('per-mint cap (AC7)', () => {
     // $10 copy with a $10 cap: the first entry fills the mint, the second is
     // refused with PER_MINT_CAP (aged past the coalescing window first).
     const engine = engineFor({
-      MAX_PER_BUY_USD: 10,
+      MAX_PER_BUY_PCT: 1,
       MIN_PER_BUY_USD: 5,
       PER_MINT_CAP_USD: 10,
-      MAX_OPEN_PER_TRADER_USD: 1_000,
+      MAX_OPEN_PER_TRADER_PCT: 100,
     });
     await engine.handleLeaderTx('act_cap_on', 'cand_roster', leaderBuy(40_000_000n, MEOW_CAP_ON));
     const pos = repo.openPositions(handle.db).find((p) => p.activationId === 'act_cap_on')!;

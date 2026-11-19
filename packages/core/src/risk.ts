@@ -4,7 +4,7 @@ import { usdToMicro } from './money.js';
 
 export type RiskRule =
   | 'MIN_PER_BUY_USD'
-  | 'MAX_PER_BUY_USD'
+  | 'MAX_PER_BUY_PCT'
   | 'MAX_DEPLOYED_PCT'
   | 'MAX_SLIPPAGE_BPS'
   | 'MAX_PRICE_IMPACT_BPS'
@@ -15,6 +15,8 @@ export type RiskRule =
 export interface RiskCheckInput {
   /** Notional this entry would add, micro-USD (already sized and headroom-capped). */
   entryUsdMicro: MicroUsd;
+  /** Effective per-buy cap for this entry: MAX_PER_BUY_PCT of current capital, floored. */
+  maxEntryUsdMicro: MicroUsd;
   /** Age of the leader event, seconds. */
   eventAgeSeconds: number;
   /** Age of the price quote used for notional, seconds. */
@@ -38,13 +40,13 @@ export type RiskDecision =
  */
 export function evaluateEntryRisk(config: RiskConfig, input: RiskCheckInput): RiskDecision {
   const min = usdToMicro(config.MIN_PER_BUY_USD);
-  const max = usdToMicro(config.MAX_PER_BUY_USD);
+  const max = input.maxEntryUsdMicro;
 
   if (input.entryUsdMicro < min) {
     return reject('MIN_PER_BUY_USD', min, input.entryUsdMicro, input, 'sized notional below minimum');
   }
   if (input.entryUsdMicro > max) {
-    return reject('MAX_PER_BUY_USD', max, input.entryUsdMicro, input, 'sized notional above maximum');
+    return reject('MAX_PER_BUY_PCT', max, input.entryUsdMicro, input, 'sized notional above the capital cap');
   }
   if (input.eventAgeSeconds > config.MAX_COPY_EVENT_AGE_SECONDS) {
     return reject(
@@ -105,6 +107,22 @@ function reject(
   detail: string,
 ): RiskDecision {
   return { allowed: false, rule, limit: limit.toString(), value: value.toString(), detail };
+}
+
+/**
+ * Capital-relative exposure cap in micro-USD: `pct`% of current capital, but
+ * never below the absolute floor (the per-buy minimum in production). Integer
+ * math; a negative or tiny capital falls back to the floor, which the sizing
+ * path then treats as the hard minimum.
+ */
+export function capitalPctCapUsdMicro(
+  capitalUsdMicro: MicroUsd,
+  pct: number,
+  floorUsdMicro: MicroUsd,
+): MicroUsd {
+  const pctInt = BigInt(Math.max(0, Math.round(pct)));
+  const cap = (capitalUsdMicro * pctInt) / 100n;
+  return cap > floorUsdMicro ? cap : floorUsdMicro;
 }
 
 export interface BankrollInput {

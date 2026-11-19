@@ -16,7 +16,7 @@
 
 import type { RiskConfig } from '@zcode-bot/config';
 import { dayTradeExitDecision, type DayTradeExit } from './positionAge.js';
-import { bankrollHeadroom, evaluateEntryRisk } from './risk.js';
+import { bankrollHeadroom, capitalPctCapUsdMicro, evaluateEntryRisk } from './risk.js';
 import { sizeCopy } from './sizing.js';
 import { usdToMicro } from './money.js';
 
@@ -592,14 +592,21 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
     const traderOpen = open
       .filter((position) => position.signal.candidateId === signal.candidateId)
       .reduce((acc, p) => acc + p.trade.notionalUsdMicro + p.trade.entryFeeUsdMicro, 0n);
+    const minPerBuy = usdToMicro(risk.MIN_PER_BUY_USD);
+    const maxPerBuy = capitalPctCapUsdMicro(bank.capitalUsdMicro, risk.MAX_PER_BUY_PCT, minPerBuy);
+    const maxOpenPerTrader = capitalPctCapUsdMicro(
+      bank.capitalUsdMicro,
+      risk.MAX_OPEN_PER_TRADER_PCT,
+      maxPerBuy,
+    );
     const sized = sizeCopy({
       leaderInputUsdMicro: signal.leaderInputUsdMicro,
       scaleNumerator: BigInt(Math.round(risk.COPY_SCALE * 10_000)),
       scaleDenominator: 10_000n,
-      minPerBuyUsdMicro: usdToMicro(risk.MIN_PER_BUY_USD),
-      maxPerBuyUsdMicro: usdToMicro(risk.MAX_PER_BUY_USD),
+      minPerBuyUsdMicro: minPerBuy,
+      maxPerBuyUsdMicro: maxPerBuy,
       traderOpenUsdMicro: traderOpen,
-      maxOpenPerTraderUsdMicro: usdToMicro(risk.MAX_OPEN_PER_TRADER_USD),
+      maxOpenPerTraderUsdMicro: maxOpenPerTrader,
       bankrollHeadroomUsdMicro: bank.headroomUsdMicro,
     });
     if (sized.action !== 'copy' || sized.finalUsdMicro === null) {
@@ -611,6 +618,7 @@ export function simulateSweep(input: SimulationInput): SimulationResult {
     const notional = sized.finalUsdMicro;
     const riskDecision = evaluateEntryRisk(risk, {
       entryUsdMicro: notional,
+      maxEntryUsdMicro: maxPerBuy,
       eventAgeSeconds: sim.delaySeconds,
       priceAgeSeconds: 0,
       leaderboardAgeSeconds: 0,
@@ -759,8 +767,8 @@ export type SweepRiskLabel = 'TIGHTENS' | 'LOOSENS' | 'MIXED' | 'UNCHANGED';
 
 const HIGHER_IS_RISKIER = [
   'COPY_SCALE',
-  'MAX_PER_BUY_USD',
-  'MAX_OPEN_PER_TRADER_USD',
+  'MAX_PER_BUY_PCT',
+  'MAX_OPEN_PER_TRADER_PCT',
   'MAX_DEPLOYED_PCT',
   'STOP_LOSS_BPS',
   'TRAIL_ARM_BPS',

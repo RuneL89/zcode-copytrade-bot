@@ -37,14 +37,25 @@ import type { TraderLifecycle } from './lifecycle.js';
  * a missing quote never invents a fill, a price, a notional or a bench seat.
  */
 
-/** Sizing helper: the D1 clamp on the leader's input notional (shared with the copier). */
+/**
+ * Fixed ruler for the shadow ledger. The real copier's per-trade cap is a
+ * percentage of current capital, but the shadow record must stay comparable
+ * across bankroll growth: PROMOTION_MIN_NET_USD is a dollar threshold measured
+ * on this $10 ceiling, so the ruler does not follow capital.
+ */
+export const SHADOW_REFERENCE_MAX_USD_MICRO = 10_000_000n;
+
+/** Sizing helper: the D1 clamp on the leader's input notional (fixed shadow ruler). */
 export function shadowNotionalUsdMicro(leaderInputUsdMicro: bigint, risk: RiskConfig): bigint | null {
+  const minPerBuyUsdMicro = usdToMicro(risk.MIN_PER_BUY_USD);
+  const maxPerBuyUsdMicro =
+    minPerBuyUsdMicro > SHADOW_REFERENCE_MAX_USD_MICRO ? minPerBuyUsdMicro : SHADOW_REFERENCE_MAX_USD_MICRO;
   const sizing = computeCopyNotional({
     leaderInputUsdMicro,
     scaleNumerator: BigInt(Math.round(risk.COPY_SCALE * 10000)),
     scaleDenominator: 10000n,
-    minPerBuyUsdMicro: usdToMicro(risk.MIN_PER_BUY_USD),
-    maxPerBuyUsdMicro: usdToMicro(risk.MAX_PER_BUY_USD),
+    minPerBuyUsdMicro,
+    maxPerBuyUsdMicro,
   });
   return sizing.action === 'copy' ? sizing.finalUsdMicro : null;
 }

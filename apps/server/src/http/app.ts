@@ -380,7 +380,7 @@ export function buildApp(rt: Runtime): Hono<AppEnv> {
       );
     }
     // The patch may be individually valid yet leave the merged config
-    // inconsistent (e.g. MIN_PER_BUY_USD raised above MAX_PER_BUY_USD):
+    // inconsistent (e.g. MAX_PER_BUY_PCT raised above MAX_OPEN_PER_TRADER_PCT):
     // validate the merged result so an inverted pair is refused here, not
     // discovered at order time.
     const mergedRisk = riskConfigSchema.safeParse({ ...rt.config.risk, ...parsed.data });

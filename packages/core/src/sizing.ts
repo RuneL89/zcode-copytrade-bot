@@ -109,7 +109,7 @@ export type SizeCopyResult =
   | { action: 'skip_invalid' }
   | {
       action: 'skip_headroom';
-      rule: 'MAX_OPEN_PER_TRADER_USD' | 'MAX_DEPLOYED_PCT';
+      rule: 'MAX_OPEN_PER_TRADER_PCT' | 'MAX_DEPLOYED_PCT';
       headroomUsdMicro: MicroUsd;
     };
 
@@ -144,7 +144,7 @@ export function sizeCopy(input: SizeCopyInput): SizeCopyResult {
   if (trader.action === 'skip_headroom') {
     return {
       action: 'skip_headroom',
-      rule: 'MAX_OPEN_PER_TRADER_USD',
+      rule: 'MAX_OPEN_PER_TRADER_PCT',
       headroomUsdMicro: trader.headroomUsdMicro,
     };
   }

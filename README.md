@@ -8,8 +8,8 @@ Copydesk is a self-hosted Solana copy-trading desk for one operator. It runs on 
 
 What you end up with:
 
-- a five-chair roster of proven leaders sharing one $100 budget pool
-- copies at 0.25x the leader's measured input, with a $2 floor, a $10 ceiling per buy, and $40 open per leader
+- a five-chair roster of proven leaders sharing one budget pool
+- copies at 0.25x the leader's measured input, with a $2 floor, a 10%-of-capital ceiling per buy, and 35% of capital open per leader
 - mirrored leader sells, plus code exits: a 25% stop, a trailing stop, a half-position take-profit, and a five-hour age ceiling with a 90-minute grace window
 - a mobile-first dashboard at http://127.0.0.1:8787 with the pipeline, the seats, the watch list, and an audit line for every decision
 - paper fills by default; live signing only after a readiness check and a separate arming action
@@ -137,9 +137,9 @@ For a phone on the same Wi-Fi, run `enable-phone-access.bat`. It asks for one UA
 
 **Classification.** A leader event is accepted only when it is a swap the classifier can read. Duplicate events are dropped by `(chain, leader, signature, leg)`. Buys older than 90 seconds are rejected. Two buys of the same mint by the same leader inside 60 seconds are coalesced into the existing position. An ambiguous swap is skipped.
 
-**Sizing.** The copy notional is `clamp(0.25 x leader input, $2, $10)`, then capped by the leader's remaining $40 open room and the shared deployed cap (80% of capital, so $80 on a $100 bankroll). The $2 minimum is a floor. A buy that would scale below it is placed at $2; it is not skipped.
+**Sizing.** The copy notional is `clamp(0.25 x leader input, $2, 10% of current capital)`, then capped by the leader's remaining 35%-of-capital open room and the shared deployed cap (80% of capital, so $80 on a $100 bankroll, $8,000 on $10,000). The percentages follow capital as it grows or shrinks, so the risk profile stays the same at any bankroll. The $2 minimum is a floor. A buy that would scale below it is placed at $2; it is not skipped.
 
-**Risk gates.** Before a quote is requested, the engine checks the deployed share of capital, the age of the quote price (45 seconds), the per-buy/per-trader and per-mint caps, and maximum price impact (300 bps). Jupiter's slippage tolerance (300 bps) is sent with the quote, and a fresh pre-sign quote must not fall below the first quote's minimum output. There is no portfolio daily-loss gate: the per-position stop/trail/time exits and the deployment cap are the safety model (D7). The engine writes a rejection to the audit trail with the rule name and the numbers that failed.
+**Risk gates.** Before a quote is requested, the engine checks the deployed share of capital, the age of the quote price (45 seconds), the capital-relative per-buy/per-trader caps and the per-mint cap, and maximum price impact (300 bps). Jupiter's slippage tolerance (300 bps) is sent with the quote, and a fresh pre-sign quote must not fall below the first quote's minimum output. There is no portfolio daily-loss gate: the per-position stop/trail/time exits and the deployment cap are the safety model (D7). The engine writes a rejection to the audit trail with the rule name and the numbers that failed.
 
 **Execution.** Jupiter Swap API v2 `GET /swap/v2/build` on `api.jup.ag` supplies the route. Paper mode simulates the fill at the quote, or at the cached price with 30 bps of adverse slippage and 5 bps of fees when there is no quote. Live mode becomes reachable only after the readiness checklist and a separate arming action. A live build is validated (known Jupiter program, wallet as sole signer/payer, compute-unit limit, fresh blockhash, v0/lookup-table support, 1,232-byte limit), simulated before signing, and its signed/submitted evidence is persisted before the send. Automated tests exercise the signer with stubs and ephemeral keys; no test or demo submits a real transaction.
 
@@ -189,8 +189,8 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 | ---------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Starting bankroll                  | $100                                                                    | `EQUITY_START_USD`                                                                |
 | Copy scale                         | 0.25x                                                                   | `COPY_SCALE`                                                                      |
-| Per-buy floor / ceiling            | $2 / $10                                                                | `MIN_PER_BUY_USD` / `MAX_PER_BUY_USD`                                             |
-| Open exposure per leader           | $40                                                                     | `MAX_OPEN_PER_TRADER_USD`                                                         |
+| Per-buy floor / ceiling            | $2 / 10% of capital                                                     | `MIN_PER_BUY_USD` / `MAX_PER_BUY_PCT`                                             |
+| Open exposure per leader           | 35% of capital                                                          | `MAX_OPEN_PER_TRADER_PCT`                                                         |
 | Deployed cap                       | 80% of capital                                                          | `MAX_DEPLOYED_PCT`                                                                |
 | Max hold / grace                   | 5 hours / 1.5 hours                                                     | `MAX_POSITION_AGE_HOURS` / `POSITION_GRACE_HOURS`                                 |
 | Stop loss                          | -25% from entry                                                         | `STOP_LOSS_BPS`                                                                   |
@@ -218,7 +218,7 @@ All values are defaults, editable in `.env` and most of them in the Settings ris
 
 Admission scans one candidate per watch tick and sizes its read to the wallet: a 24h window of at most 12 signatures is detailed in full and stored as `ok`; a busier wallet is read through its newest 12 signatures and, when that prefix proves the three-buy gate, admitted with a `partial` reading (a lower bound, never a full census). Each admission pass has a 12-detail budget (lower when `WATCH_DETAIL_PER_MINUTE` is set lower); a spent budget or an unprovable prefix defers the scan so one busy wallet cannot hold the admission queue.
 
-The risk form refuses an inverted pair (a maximum below the minimum), a per-leader open cap below the per-buy maximum, a decreasing exit slippage ladder, and a bench target above the watch-list size. Raising a limit from the dashboard needs `RISK_PIN`; an empty PIN rejects every increase.
+The risk form refuses a per-leader open cap below the per-trade cap, a decreasing exit slippage ladder, and a bench target above the watch-list size. Raising a limit from the dashboard needs `RISK_PIN`; an empty PIN rejects every increase.
 
 ## Helius credits
 

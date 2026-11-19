@@ -107,8 +107,8 @@ beforeAll(() => {
 
   const config = loadConfig({ SESSION_SECRET: 'x'.repeat(40) });
   config.risk.MIN_PER_BUY_USD = 5; // small numbers for the test
-  config.risk.MAX_PER_BUY_USD = 250; // flow tests predate the $10 trade cap
-  config.risk.MAX_OPEN_PER_TRADER_USD = 1_000;
+  config.risk.MAX_PER_BUY_PCT = 25; // 25% of the $1,000 bankroll = $250
+  config.risk.MAX_OPEN_PER_TRADER_PCT = 100;
   config.risk.MAX_DEPLOYED_PCT = 100; // flow tests use a huge bankroll instead
   config.risk.MAX_POSITION_AGE_HOURS = 8;
   config.risk.POSITION_GRACE_HOURS = 3;
@@ -469,7 +469,7 @@ describe('bankroll cap: downsize to fit, then BANKROLL CAP skip', () => {
     const equityStart = 250_000_000n - realizedNow; // capital == $250.00
     const bankEngine = new CopyEngine(
       handle.db,
-      { ...risk, MAX_DEPLOYED_PCT: 80 },
+      { ...risk, MAX_PER_BUY_PCT: 40, MAX_OPEN_PER_TRADER_PCT: 100, MAX_DEPLOYED_PCT: 80 },
       prices,
       new PaperExecutor(null, async (mint, decimals) => (await prices.priceOf(mint, decimals)).priceUsdMicro),
       control,

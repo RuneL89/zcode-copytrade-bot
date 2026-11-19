@@ -35,8 +35,10 @@ Everything is re-exported from `src/index.ts`.
 - **Sender constants live here** (`sender.ts`): the published SWQOS tip
   accounts and 5,000-lamport minimum, shared by the executor and the fee ledger.
 - **Copy sizing is 0.25x measured input notional**, then the per-trade ceiling
-  ($10), the per-trader open cap ($40), and the shared deployed cap (80% of
-  the $100 bankroll, so $80). A remainder under the $2 floor is skipped.
+  (10% of current capital), the per-trader open cap (35% of current capital),
+  and the shared deployed cap (80% of capital). Capital grows with realized
+  PnL and deposits/withdrawals, so the profile holds at any bankroll; the $2
+  per-buy floor is absolute and the remainder under it is skipped.
   Exit quantities are proportional to the copied share. Code exits (stop,
   trail, sell-on-green, 5h plus 1.5h grace) live in `dayTradeExitDecision`.
   The hard stop and trail run before the clock; the unconditional grace
