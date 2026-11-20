@@ -69,7 +69,6 @@ const facts = (over: Partial<ReportFacts> = {}): ReportFacts => ({
   feeSolBalance: '0.0913',
   feesPaidUsdMicro: 162_015n,
   pendingReconciliations: 0,
-  weekly: null,
   ...over,
 });
 
@@ -175,40 +174,6 @@ describe('daily report text', () => {
       facts({ closed: { total: 3, wins: 1, losses: 1, flat: 1, sumUsdMicro: 1_000_000n } }),
     );
     expect(text).toContain('3 closes (1W/1L/1 flat)');
-  });
-});
-
-describe('weekly report text', () => {
-  const weekly = facts({
-    weekly: {
-      realizedUsdMicro: 21_400_000n,
-      closed: { total: 11, wins: 6, losses: 5, flat: 0, sumUsdMicro: 21_400_000n },
-      orders: 71,
-      chairs: [
-        { handle: 'bystevevr', realizedUsdMicro: 4_200_000n, wins: 3, losses: 1, openPositions: 1 },
-        { handle: 'trencHog8', realizedUsdMicro: -12_900_000n, wins: 1, losses: 3, openPositions: 2 },
-      ],
-    },
-  });
-
-  it('leads with the 7-day view and still carries the 24h figures', () => {
-    const lines = reportText(weekly, 'weekly').split('\n');
-    expect(lines[0]).toBe('Copydesk weekly · live · armed');
-    expect(lines[1]).toBe('7d realized: +$21.40 · 11 closes (6W/5L) · 71 orders');
-    expect(lines[2]).toBe('Realized 24h: +$14.81 · 6 closes (3W/3L) · 22 orders');
-    expect(lines.join('\n')).toContain('7d: hired eyezenhour, wipViper · fired GrandSafeAnt (loss streak)');
-  });
-
-  it('lists each chair with its record, best first', () => {
-    const text = reportText(weekly, 'weekly');
-    expect(text).toContain('Chairs (7d realized · record · open):');
-    expect(text).toContain('• bystevevr  +$4.20 · 3W/1L · 1 open');
-    expect(text).toContain('• trencHog8  -$12.90 · 1W/3L · 2 open');
-    expect(text.indexOf('• bystevevr')).toBeLessThan(text.indexOf('• trencHog8'));
-  });
-
-  it('falls back to the daily shape when no weekly block was collected', () => {
-    expect(reportText(facts(), 'weekly').split('\n')[0]).toBe('Copydesk · live · armed');
   });
 });
 

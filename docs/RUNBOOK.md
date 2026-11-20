@@ -184,12 +184,12 @@ blocks new entries or the fee wallet cannot pay for an exit; paper mode never
 hits those paths.
 
 **Commands (read-only).** Opt-in via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
-The bot answers four commands from the operator chat on demand:
+The bot answers three commands from the operator chat on demand (the 7-day
+review is dashboard-only: **Audit → weekly review** / `#/weekly`):
 
 | Command      | Reply                                               |
 | ------------ | --------------------------------------------------- |
 | `/status`    | the 24h desk summary                                |
-| `/weekly`    | the 7-day summary with each chair's record          |
 | `/positions` | one line per open position, soonest time exit first |
 | `/help`      | the command list                                    |
 

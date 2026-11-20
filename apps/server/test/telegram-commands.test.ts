@@ -72,7 +72,7 @@ const message = (over: Partial<TelegramUpdate> = {}): TelegramUpdate => ({
 
 function serviceFor(
   pages: Array<TelegramUpdate[] | Error>,
-  texts: Partial<{ status: string; weekly: string; positions: string }> = {},
+  texts: Partial<{ status: string; positions: string }> = {},
 ) {
   const stub = botStub(pages);
   const svc = new TelegramCommandService(
@@ -81,7 +81,6 @@ function serviceFor(
     OPERATOR,
     {
       status: async () => texts.status ?? 'STATUS TEXT\nline 2',
-      weekly: async () => texts.weekly ?? 'WEEKLY TEXT',
       positions: async () => texts.positions ?? 'POSITIONS TEXT',
     },
     yieldToTimers, // no real waiting between poll attempts
@@ -107,7 +106,9 @@ describe('parseCommand', () => {
     expect(parseCommand('/status')).toBe('status');
     expect(parseCommand('  /STATUS ')).toBe('status');
     expect(parseCommand('/status@CopydeskBot')).toBe('status');
-    expect(parseCommand('/weekly')).toBe('weekly');
+    // /weekly was retired (2026-11-20): Telegram delivers issue alerts and the
+    // pull answers below; the 7-day view lives on the dashboard only.
+    expect(parseCommand('/weekly')).toBe('unknown');
     expect(parseCommand('/positions extra argument')).toBe('positions');
     expect(parseCommand('/help')).toBe('help');
     expect(parseCommand('/start')).toBe('help'); // Telegram's own entry command
@@ -132,10 +133,10 @@ describe('TelegramCommandService', () => {
     ).toBe(true);
   });
 
-  it('serves /weekly and /positions from the injected builders', async () => {
-    const weekly = serviceFor([[message({ updateId: 20, text: '/weekly' })], []]);
-    await drain(weekly.svc);
-    expect(weekly.sent[0]!.text).toBe('WEEKLY TEXT');
+  it('serves /positions from the injected builder and refuses /weekly', async () => {
+    const retired = serviceFor([[message({ updateId: 20, text: '/weekly' })], []]);
+    await drain(retired.svc);
+    expect(retired.sent[0]!.text).toBe(HELP_TEXT); // no state, just the usage list
 
     const positions = serviceFor([[message({ updateId: 30, text: '/positions' })], []]);
     await drain(positions.svc);
@@ -188,7 +189,7 @@ describe('TelegramCommandService', () => {
         },
       } as unknown as TelegramNotifier,
       OPERATOR,
-      { status: async () => '', weekly: async () => '', positions: async () => '' },
+      { status: async () => '', positions: async () => '' },
       yieldToTimers,
     );
     await drain(svc);
@@ -213,7 +214,7 @@ describe('TelegramCommandService', () => {
         status: async () => {
           throw new Error('state unavailable');
         },
-        weekly: async () => '',
+
         positions: async () => '',
       },
       yieldToTimers,
@@ -241,15 +242,15 @@ describe('command menu registration', () => {
       handle,
       bot,
       OPERATOR,
-      { status: async () => '', weekly: async () => '', positions: async () => '' },
+      { status: async () => '', positions: async () => '' },
       yieldToTimers,
     );
     svc.start();
     await new Promise((r) => setTimeout(r, 20));
     svc.stop();
-    expect(menus[0]!.map((c) => c.command)).toEqual(['status', 'weekly', 'positions', 'help']);
+    expect(menus[0]!.map((c) => c.command)).toEqual(['status', 'positions', 'help']);
     expect(
-      repo.listAudit(handle.db, 10).some((a) => /command menu registered \(4 commands\)/.test(a.message)),
+      repo.listAudit(handle.db, 10).some((a) => /command menu registered \(3 commands\)/.test(a.message)),
     ).toBe(true);
   });
 
@@ -266,7 +267,7 @@ describe('command menu registration', () => {
       handle,
       bot,
       OPERATOR,
-      { status: async () => '', weekly: async () => '', positions: async () => '' },
+      { status: async () => '', positions: async () => '' },
       yieldToTimers,
     );
     svc.start();

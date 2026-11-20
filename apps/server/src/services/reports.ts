@@ -46,15 +46,6 @@ export interface ClosedRecord {
   sumUsdMicro: bigint;
 }
 
-/** One chair's record for the weekly message. */
-export interface ChairRecord {
-  handle: string;
-  realizedUsdMicro: bigint;
-  wins: number;
-  losses: number;
-  openPositions: number;
-}
-
 /** Everything the message needs; assembled by the service, formatted purely. */
 export interface ReportFacts {
   mode: string;
@@ -92,13 +83,6 @@ export interface ReportFacts {
   feeSolBalance: string | null;
   feesPaidUsdMicro: bigint | null;
   pendingReconciliations: number;
-  /** Weekly only: the 7-day view. */
-  weekly: {
-    realizedUsdMicro: bigint;
-    closed: ClosedRecord;
-    orders: number;
-    chairs: ChairRecord[];
-  } | null;
 }
 
 /** Handles list capped so a busy day cannot flood the message. */
@@ -130,23 +114,15 @@ export function shortReason(reason: string): string {
 /**
  * The desk summary. Compact by operator choice: aggregates only, one line per
  * concern. A missing figure is never rendered as a zero — pending marks are
- * stated, and a line with nothing to say is omitted.
+ * stated, and a line with nothing to say is omitted. The 7-day view lives on
+ * the dashboard (Weekly Review); Telegram answers only the 24h shape.
  */
-export function reportText(facts: ReportFacts, window: 'daily' | 'weekly' = 'daily'): string {
-  const weekly = window === 'weekly' && facts.weekly !== null;
+export function reportText(facts: ReportFacts): string {
   const lines: string[] = [];
 
   const state = [facts.mode, facts.armed ? 'armed' : 'disarmed'];
   if (facts.appState !== 'RUNNING') state.push(facts.appState);
-  lines.push(`Copydesk${weekly ? ' weekly' : ''} · ${state.join(' · ')}`);
-
-  if (weekly && facts.weekly) {
-    lines.push(
-      `7d realized: ${formatSignedMicroUsd(facts.weekly.realizedUsdMicro)} · ${closedLabel(
-        facts.weekly.closed,
-      )} · ${facts.weekly.orders} orders`,
-    );
-  }
+  lines.push(`Copydesk · ${state.join(' · ')}`);
   lines.push(
     `Realized 24h: ${formatSignedMicroUsd(facts.realizedUsdMicro)} · ${closedLabel(facts.closed)} · ${
       facts.orders
@@ -215,7 +191,7 @@ export function reportText(facts: ReportFacts, window: 'daily' | 'weekly' = 'dai
       ),
     );
   }
-  const windowLabel = weekly ? '7d' : '24h';
+  const windowLabel = '24h';
   if (digest.length > 0) lines.push(`${windowLabel}: ${digest.join(' · ')}`);
 
   // Health line: only what is actually known. The chain-side reads (wallet
@@ -230,15 +206,6 @@ export function reportText(facts: ReportFacts, window: 'daily' | 'weekly' = 'dai
     walletParts.push(`fees paid ${formatMicroUsd(facts.feesPaidUsdMicro)}`);
   }
   if (walletParts.length > 0) lines.push(walletParts.join(' · '));
-
-  if (weekly && facts.weekly && facts.weekly.chairs.length > 0) {
-    lines.push('Chairs (7d realized · record · open):');
-    for (const c of facts.weekly.chairs) {
-      lines.push(
-        `• ${c.handle}  ${formatSignedMicroUsd(c.realizedUsdMicro)} · ${c.wins}W/${c.losses}L · ${c.openPositions} open`,
-      );
-    }
-  }
 
   return lines.join('\n');
 }
@@ -281,7 +248,7 @@ export function positionsText(state: DashboardState, now = new Date()): string {
 
 /**
  * Assembles report facts on demand. It owns no timers and sends nothing: the
- * runtime calls `collectFacts` when the operator types `/status` or `/weekly`.
+ * runtime calls `collectFacts` when the operator types `/status`.
  */
 export class ReportsService {
   constructor(
@@ -293,12 +260,9 @@ export class ReportsService {
     return this.mode === 'live' ? 'live' : 'paper';
   }
 
-  /** Assemble the message's inputs from the built state + the window's records. */
-  collectFacts(state: DashboardState, window: 'daily' | 'weekly', now = new Date()): ReportFacts {
+  /** Assemble the message's inputs from the built state (the last 24h). */
+  collectFacts(state: DashboardState, now = new Date()): ReportFacts {
     const since24h = new Date(now.getTime() - 24 * 3_600_000).toISOString();
-    const sinceWindow = new Date(
-      now.getTime() - (window === 'weekly' ? 7 : 1) * 24 * 3_600_000,
-    ).toISOString();
 
     const positions = state.positions;
     const marksPending = positions.filter((p) => p.markUsdMicro === null).length;
@@ -388,60 +352,15 @@ export class ReportsService {
       idleSoon: idleSoonSeat
         ? { handle: idleSoonSeat.handle, hoursLeft: idleSoonSeat.idleFireHoursLeft ?? 0 }
         : null,
-      hired: hires(sinceWindow),
-      fired: firings(sinceWindow),
+      hired: hires(since24h),
+      fired: firings(since24h),
       walletUsdcUsdMicro:
         state.health.walletUsdcUsdMicro === null ? null : BigInt(state.health.walletUsdcUsdMicro),
       feeSolBalance: state.health.feeSolBalance,
       feesPaidUsdMicro:
         state.counters.feesPaidUsdMicro === null ? null : BigInt(state.counters.feesPaidUsdMicro),
       pendingReconciliations: state.health.pendingReconciliations,
-      weekly:
-        window === 'weekly'
-          ? {
-              realizedUsdMicro: repo.realizedPnlSince(this.db.db, sinceWindow, this.bookMode),
-              closed: closedRecord(
-                repo
-                  .listPnlLots(this.db.db, 500, this.bookMode)
-                  .filter((l) => l.closedAt >= sinceWindow)
-                  .map((l) => BigInt(l.pnlUsdMicro)),
-              ),
-              orders: repo.tradesSince(this.db.db, sinceWindow),
-              chairs: this.chairRecords(sinceWindow, state),
-            }
-          : null,
     };
-  }
-
-  /** Per-chair record over the window: lots map back through their position. */
-  private chairRecords(sinceIso: string, state: DashboardState): ChairRecord[] {
-    const activationByPosition = new Map(
-      repo.listPositions(this.db.db, 200, this.bookMode).map((p) => [p.positionId, p.activationId]),
-    );
-    const byActivation = new Map<string, { realized: bigint; wins: number; losses: number }>();
-    for (const lot of repo.listPnlLots(this.db.db, 500, this.bookMode)) {
-      if (lot.closedAt < sinceIso) continue;
-      const activationId = activationByPosition.get(lot.positionId);
-      if (!activationId) continue;
-      const cur = byActivation.get(activationId) ?? { realized: 0n, wins: 0, losses: 0 };
-      cur.realized += BigInt(lot.pnlUsdMicro);
-      if (BigInt(lot.pnlUsdMicro) > 0n) cur.wins++;
-      else if (BigInt(lot.pnlUsdMicro) < 0n) cur.losses++;
-      byActivation.set(activationId, cur);
-    }
-    return state.pipeline.roster
-      .filter((s) => s.handle !== null)
-      .map((s) => {
-        const rec = byActivation.get(s.activationId) ?? { realized: 0n, wins: 0, losses: 0 };
-        return {
-          handle: s.handle,
-          realizedUsdMicro: rec.realized,
-          wins: rec.wins,
-          losses: rec.losses,
-          openPositions: s.openPositions,
-        };
-      })
-      .sort((a, b) => Number(b.realizedUsdMicro - a.realizedUsdMicro));
   }
 }
 

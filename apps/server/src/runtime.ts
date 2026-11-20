@@ -410,13 +410,14 @@ export class Runtime {
     this.reports = new ReportsService(this.db, config.mode);
     // Read-only Telegram commands. Same state snapshot as the reports, and only
     // the configured chat may ask: nothing typed in Telegram can change state.
+    // The weekly report is dashboard-only (operator choice, 2026-11-20):
+    // Telegram delivers issue alerts and pull answers, nothing else.
     if (isTelegramNotifier(this.notifier)) {
       const bot = this.notifier;
-      const factsText = async (window: 'daily' | 'weekly'): Promise<string> =>
-        reportText(this.reports.collectFacts(await this.snapshotForReport(), window), window);
+      const factsText = async (): Promise<string> =>
+        reportText(this.reports.collectFacts(await this.snapshotForReport()));
       this.telegramCommands = new TelegramCommandService(this.db, bot, config.env.TELEGRAM_CHAT_ID, {
-        status: () => factsText('daily'),
-        weekly: () => factsText('weekly'),
+        status: () => factsText(),
         positions: async () => positionsText(await this.snapshotForReport()),
       });
     }
@@ -746,7 +747,7 @@ export class Runtime {
     if (process.env.NODE_ENV !== 'test') this.weeklyReview.start();
     if (this.telegramCommands) {
       this.telegramCommands.start();
-      repo.audit(this.db.db, 'telegram', 'commands enabled (/status, /weekly, /positions, /help)', {});
+      repo.audit(this.db.db, 'telegram', 'commands enabled (/status, /positions, /help)', {});
     }
 
     // BOOT CATCH-UP (D5) — strictly before the two clocks below:

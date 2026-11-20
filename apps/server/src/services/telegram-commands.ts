@@ -14,7 +14,7 @@ import type { TelegramNotifier, TelegramUpdate } from '@zcode-bot/providers';
  * starts itself).
  */
 
-export type TelegramCommand = 'status' | 'weekly' | 'positions' | 'help' | 'unknown';
+export type TelegramCommand = 'status' | 'positions' | 'help' | 'unknown';
 
 /** Long-poll hold time; Telegram allows up to 50s. */
 const POLL_TIMEOUT_SECONDS = 25;
@@ -32,11 +32,6 @@ const FAILURE_AUDIT_INTERVAL_MS = 300_000;
  */
 export const BOT_COMMANDS = [
   { command: 'status', description: '24h desk summary', help: '/status — 24h desk summary' },
-  {
-    command: 'weekly',
-    description: '7-day summary with each chair',
-    help: '/weekly — 7-day summary with each chair',
-  },
   {
     command: 'positions',
     description: 'Open positions and their time exits',
@@ -60,8 +55,6 @@ export function parseCommand(text: string | null): TelegramCommand | null {
   switch (word) {
     case 'status':
       return 'status';
-    case 'weekly':
-      return 'weekly';
     case 'positions':
       return 'positions';
     case 'help':
@@ -76,7 +69,6 @@ export function parseCommand(text: string | null): TelegramCommand | null {
 
 export interface TelegramCommandTexts {
   status: () => Promise<string>;
-  weekly: () => Promise<string>;
   positions: () => Promise<string>;
 }
 
@@ -234,7 +226,6 @@ export class TelegramCommandService {
 
   private textFor(command: Exclude<TelegramCommand, 'help' | 'unknown'>): Promise<string> {
     if (command === 'status') return this.texts.status();
-    if (command === 'weekly') return this.texts.weekly();
     return this.texts.positions();
   }
 
