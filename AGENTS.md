@@ -37,7 +37,10 @@ promotion needs the D4 sample, net and recency gates. There are exactly two
 monitoring clocks — the watch list (`WATCH_POLL_MS`) and the roster
 (`ROSTER_POLL_MS`); discovery runs only when the bench is thin or a chair is
 free with nothing promotable behind it, and a full roster plus a full bench
-spends nothing external. The LLM research pipeline (snapshot, MCP server, pinned
+spends nothing external. The fomo credit governor paces discovery to spend
+`FOMO_PLAN_CREDITS` no faster than the remaining balance allows before the
+calendar-month reset (the configured interval is the floor, 24h the ceiling).
+The LLM research pipeline (snapshot, MCP server, pinned
 agent, orderings, rotation) is RETIRED (D6) — do not recreate it.
 
 ## Repository layout

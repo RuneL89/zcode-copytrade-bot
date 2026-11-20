@@ -173,6 +173,8 @@ export interface DashboardState {
       newHandles24h: number;
       creditsRemaining: number | null;
       sources: string[];
+      /** Minutes the fomo credit governor paces between discovery runs. */
+      pacedIntervalMinutes?: number;
     };
     pool: { total: number; withWallet: number; fundedBuyers24h: number };
     watch: { watching: number; cooling: number; promotable: number; benchTarget: number };

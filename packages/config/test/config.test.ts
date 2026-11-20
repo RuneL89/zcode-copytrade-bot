@@ -33,6 +33,7 @@ describe('loadConfig', () => {
     expect(cfg.risk.MAX_PER_BUY_PCT).toBe(10);
     expect(cfg.risk.MAX_OPEN_PER_TRADER_PCT).toBe(35);
     expect(cfg.risk.MAX_DEPLOYED_PCT).toBe(80);
+    expect(cfg.risk.FOMO_PLAN_CREDITS).toBe(250000);
     expect(cfg.risk.MAX_POSITION_AGE_HOURS).toBe(5);
     expect(cfg.risk.POSITION_GRACE_HOURS).toBe(1.5);
     expect(cfg.risk.STOP_LOSS_BPS).toBe(2500);

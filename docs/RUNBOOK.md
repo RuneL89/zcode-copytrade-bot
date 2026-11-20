@@ -125,6 +125,20 @@ promotion gates. A manual activation obeys the same block. The bench is empty �
 the chair stays empty and the demand trigger asks discovery for a fresh bench. A
 close-out that needs reconciliation freezes **only** that chair.
 
+### The fomo credit governor
+
+Discovery spends fomoapi credits (875 per run: 3 × leaderboard @ 250 + alerts
+@ 125). The governor paces demand-triggered runs so the monthly plan
+(`FOMO_PLAN_CREDITS`, default 250,000, reset on the 1st) is never exhausted
+early: the interval between runs is `time left in the calendar month ÷ (95% of
+the remaining credits ÷ the measured cost per run)`, clamped to
+[`DISCOVERY_MIN_INTERVAL_MS`, 24h]. The configured interval is the floor (the
+fastest the desk will ever run), 24h keeps a drained plan probing once a day so
+it notices a reset or a top-up, and a manual **Sync discovery now** bypasses
+the pacing but never the key. The dashboard's watch-list panel and the
+pipeline's discovery stage show the paced interval; every `discovery run` audit
+line ends with `paced N min/run (measured|plan-default)`.
+
 ### (retired) Actively-trading tier
 
 The board-tier hire priority is gone with the ordering pipeline (D2/D3). A

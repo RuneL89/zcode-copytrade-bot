@@ -351,17 +351,26 @@ describe('discovery status reads only its own run record (AC3)', () => {
       },
       risk,
     );
-    expect(service.status()).toEqual({ lastRunAt: null, creditsRemaining: null, sources: [] });
+    const status = service.status();
+    expect(status.lastRunAt).toBeNull();
+    expect(status.creditsRemaining).toBeNull();
+    expect(status.sources).toEqual([]);
+    // The governor's pacing is always present, even with no run record.
+    expect(status.costPerRun).toBe(875);
+    expect(status.pacing.effectiveIntervalMs).toBeGreaterThanOrEqual(risk.DISCOVERY_MIN_INTERVAL_MS);
 
     const stored = iso(HOUR);
     repo.kvSet(handle.db, 'discovery.last_run_at', stored);
     repo.kvSet(handle.db, 'discovery.credits_remaining', '777');
     repo.kvSet(handle.db, 'discovery.last_sources', JSON.stringify(['24h', 'alerts']));
-    expect(service.status()).toEqual({
-      lastRunAt: stored,
-      creditsRemaining: 777,
-      sources: ['24h', 'alerts'],
-    });
+    const filled = service.status();
+    expect(filled.lastRunAt).toBe(stored);
+    expect(filled.creditsRemaining).toBe(777);
+    expect(filled.sources).toEqual(['24h', 'alerts']);
+    // 777 credits × 95% spread over the rest of the month: well under one
+    // run/day, so the pacer sits at its 24h daily-probe ceiling.
+    expect(filled.pacing.basis).toBe('measured');
+    expect(filled.pacing.effectiveIntervalMs).toBeLessThanOrEqual(24 * 3_600_000);
 
     repo.kvSet(handle.db, 'discovery.last_sources', '{not json');
     expect(service.status().sources).toEqual([]);

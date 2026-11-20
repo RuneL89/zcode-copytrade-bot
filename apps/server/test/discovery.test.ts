@@ -7,6 +7,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { openDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig } from '@zcode-bot/config';
+import { computeDiscoveryPacing } from '@zcode-bot/core';
 import type { FomoApiAlertsResult, FomoApiLeaderboardResult, FomoApiWindow } from '@zcode-bot/providers';
 import {
   DiscoveryService,
@@ -285,5 +286,64 @@ describe('DiscoveryService.syncDiscovery', () => {
     const forced = await svc.syncDiscovery(true);
     expect(forced.skipped).toBe(false);
     expect(calls).toContain('alerts');
+  });
+});
+
+describe('fomo credit governor', () => {
+  it('records the measured run cost after a real run', async () => {
+    const { api } = stubApi({ boards: { '24h': emptyLeaderboard([]) } });
+    await service(api).syncDiscovery(true);
+    expect(Number(repo.kvGet(handle.db, 'discovery.last_cost'))).toBe(875);
+  });
+
+  it('paces the rate limit from the credit budget, not just the configured floor', async () => {
+    // A drained balance before the reset must pace near 8h, not 30 min.
+    repo.kvSet(handle.db, 'discovery.credits_remaining', '30375');
+    const nowMs = Date.now();
+    const svc = service(stubApi({}).api);
+    const paced = svc.demand(nowMs).minIntervalMs;
+    const expected = computeDiscoveryPacing({
+      creditsRemaining: 30375,
+      planCredits: risk.FOMO_PLAN_CREDITS,
+      costPerRun: 875,
+      configuredMinIntervalMs: risk.DISCOVERY_MIN_INTERVAL_MS,
+      nowMs,
+    }).effectiveIntervalMs;
+    expect(paced).toBe(expected);
+    expect(paced).toBeGreaterThan(risk.DISCOVERY_MIN_INTERVAL_MS);
+    expect(paced).toBeLessThanOrEqual(24 * 3_600_000);
+  });
+
+  it('keeps the configured interval when the budget allows faster running', async () => {
+    repo.kvSet(handle.db, 'discovery.credits_remaining', '249000');
+    const nowMs = Date.now();
+    const svc = service(stubApi({}).api);
+    // The interval never drops below the configured floor, and matches the
+    // governor's math for the same instant.
+    expect(svc.demand(nowMs).minIntervalMs).toBeGreaterThanOrEqual(risk.DISCOVERY_MIN_INTERVAL_MS);
+    expect(svc.demand(nowMs).minIntervalMs).toBe(
+      computeDiscoveryPacing({
+        creditsRemaining: 249000,
+        planCredits: risk.FOMO_PLAN_CREDITS,
+        costPerRun: 875,
+        configuredMinIntervalMs: risk.DISCOVERY_MIN_INTERVAL_MS,
+        nowMs,
+      }).effectiveIntervalMs,
+    );
+  });
+
+  it('status() exposes the pacing and the measured cost', async () => {
+    const status = service(stubApi({}).api).status();
+    expect(status.pacing.effectiveIntervalMs).toBeGreaterThan(0);
+    expect(status.costPerRun).toBe(875);
+    expect(['measured', 'plan-default']).toContain(status.pacing.basis);
+  });
+
+  it('a forced run still spends when the balance is low (manual path)', async () => {
+    repo.kvSet(handle.db, 'discovery.credits_remaining', '1000');
+    const { api } = stubApi({ boards: { '24h': emptyLeaderboard([]) } });
+    const result = await service(api).syncDiscovery(true);
+    expect(result.skipped).toBe(false);
+    expect(result.creditsSpent).toBeGreaterThan(0);
   });
 });
