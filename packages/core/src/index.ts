@@ -9,6 +9,7 @@ export * from './swap.js';
 export * from './events.js';
 export * from './activity.js';
 export * from './watch.js';
+export * from './discoveryBudget.js';
 export * from './eventOrder.js';
 export * from './orderState.js';
 export * from './sender.js';

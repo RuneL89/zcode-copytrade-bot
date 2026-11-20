@@ -1,6 +1,7 @@
 import type { AppDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import type { RiskConfig } from '@zcode-bot/config';
+import { computeDiscoveryPacing, type DiscoveryPacing } from '@zcode-bot/core';
 import type { FomoApiAlertsResult, FomoApiLeaderboardResult, FomoApiWindow } from '@zcode-bot/providers';
 
 /**
@@ -13,18 +14,24 @@ import type { FomoApiAlertsResult, FomoApiLeaderboardResult, FomoApiWindow } fro
  * desktop-Chrome capture and Dawn stay manual fallbacks; nothing here calls
  * them.
  *
- * Fail-closed: no key → no network call at all; a failing window never aborts
- * the others; `trades`/`volumeUsd` are never read (they are lifetime figures —
- * activity comes from the funded-swap scan, D4).
+ * Credit governor: the rate-limit window between runs is paced by the fomo
+ * credit budget (`computeDiscoveryPacing`) — as fast as the configured
+ * interval allows, but never exhausting the monthly plan early. Fail-closed:
+ * no key → no network call at all; a failing window never aborts the others;
+ * `trades`/`volumeUsd` are never read (they are lifetime figures — activity
+ * comes from the funded-swap scan, D4).
  */
 
 const WINDOWS: FomoApiWindow[] = ['24h', '7d', '30d'];
 const LAST_RUN_KEY = 'discovery.last_run_at';
 const CREDITS_KEY = 'discovery.credits_remaining';
 const SOURCES_KEY = 'discovery.last_sources';
+const COST_KEY = 'discovery.last_cost';
 const etagKey = (window: FomoApiWindow) => `discovery.etag.${window}`;
 /** Cap on the audit payload when wallets merge identities. */
 const MERGE_DETAIL_LIMIT = 20;
+/** 3 × leaderboard(150) @ 250 + alerts(50) @ 125 on the current plan. */
+export const DEFAULT_RUN_COST = 875;
 
 export interface DiscoveryWindowResult {
   window: FomoApiWindow;
@@ -123,10 +130,16 @@ export class DiscoveryService {
 
   /**
    * Last-run facts for the dashboard pipeline (plan 07): when it ran, what the
-   * API said was left, and which channels the run used. All three are written
-   * by a real run — nothing here is inferred.
+   * API said was left, which channels the run used, and how the credit
+   * governor is pacing runs. Written by a real run — nothing here is inferred.
    */
-  status(): { lastRunAt: string | null; creditsRemaining: number | null; sources: string[] } {
+  status(): {
+    lastRunAt: string | null;
+    creditsRemaining: number | null;
+    sources: string[];
+    pacing: DiscoveryPacing;
+    costPerRun: number;
+  } {
     const credits = repo.kvGet(this.db, CREDITS_KEY);
     const creditsNum = credits === undefined ? Number.NaN : Number(credits);
     const raw = repo.kvGet(this.db, SOURCES_KEY);
@@ -143,10 +156,12 @@ export class DiscoveryService {
       lastRunAt: repo.kvGet(this.db, LAST_RUN_KEY) ?? null,
       creditsRemaining: Number.isFinite(creditsNum) ? creditsNum : null,
       sources,
+      pacing: discoveryPacing(this.db, this.risk),
+      costPerRun: lastCostPerRun(this.db),
     };
   }
 
-  /** Current demand inputs: watch/bench counts, roster occupancy, rate limit. */
+  /** Current demand inputs: watch/bench counts, roster occupancy, paced rate limit. */
   demand(nowMs = Date.now()): DiscoveryDemandInput {
     return {
       promotableWatchWallets: repo.listWatchWallets(this.db, 'bench').length,
@@ -156,7 +171,7 @@ export class DiscoveryService {
       benchTarget: this.risk.BENCH_TARGET,
       lastRunAt: repo.kvGet(this.db, LAST_RUN_KEY) ?? null,
       nowMs,
-      minIntervalMs: this.risk.DISCOVERY_MIN_INTERVAL_MS,
+      minIntervalMs: discoveryPacing(this.db, this.risk, nowMs).effectiveIntervalMs,
     };
   }
 
@@ -349,6 +364,10 @@ export class DiscoveryService {
     // Persist the pipeline-stage facts (plan 07): the channels this run used
     // and the credits the API reported left. Only a real run writes them.
     if (creditsRemaining !== null) repo.kvSet(this.db, CREDITS_KEY, String(creditsRemaining));
+    // The measured run cost feeds the credit governor's pacing; a fully failed
+    // run (0 spent) keeps the last known cost instead of teaching the pacer
+    // that discovery is free.
+    if (creditsSpent > 0) repo.kvSet(this.db, COST_KEY, String(creditsSpent));
     repo.kvSet(
       this.db,
       SOURCES_KEY,
@@ -357,13 +376,15 @@ export class DiscoveryService {
         ...(alertsError === null ? ['alerts'] : []),
       ]),
     );
+    const pacing = discoveryPacing(this.db, this.risk);
     repo.audit(
       this.db,
       'discovery',
       `discovery run${force ? ' (manual)' : ''}: ${boardsLine} · ${union.size} trader(s) · ` +
         `${tradersNew} new, ${tradersUpdated} updated, ${merged} merged · alerts +${alertsAdded}` +
         `${alertsError ? ` (failed: ${alertsError})` : ''} · ${creditsSpent} credit(s) spent` +
-        `${creditsRemaining === null ? '' : `, ${creditsRemaining} left`}`,
+        `${creditsRemaining === null ? '' : `, ${creditsRemaining} left`}` +
+        ` · paced ${Math.round(pacing.effectiveIntervalMs / 60_000)} min/run (${pacing.basis})`,
       {
         windows,
         traders: union.size,
@@ -379,6 +400,10 @@ export class DiscoveryService {
         forced: force,
         startedAt,
         everyBoardFailed: failedEveryBoard,
+        pacedIntervalMs: pacing.effectiveIntervalMs,
+        allowedRunsPerDay: pacing.allowedRunsPerDay,
+        pacingBasis: pacing.basis,
+        daysLeftInCycle: pacing.daysLeftInCycle,
       },
     );
 
@@ -401,4 +426,29 @@ export class DiscoveryService {
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Credits the last real run spent (kv), or the plan's known cost. */
+export function lastCostPerRun(db: AppDatabase): number {
+  const raw = repo.kvGet(db, COST_KEY);
+  const n = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RUN_COST;
+}
+
+/**
+ * The credit governor: how far apart demand-triggered runs must sit so the
+ * monthly plan is never exhausted early (as fast as possible within budget).
+ * Module-level so the dashboard builder paces its "next discovery" preview
+ * with the exact same math the service enforces.
+ */
+export function discoveryPacing(db: AppDatabase, risk: RiskConfig, nowMs = Date.now()): DiscoveryPacing {
+  const creditsRaw = repo.kvGet(db, CREDITS_KEY);
+  const credits = creditsRaw === undefined ? Number.NaN : Number(creditsRaw);
+  return computeDiscoveryPacing({
+    creditsRemaining: Number.isFinite(credits) ? credits : null,
+    planCredits: risk.FOMO_PLAN_CREDITS,
+    costPerRun: lastCostPerRun(db),
+    configuredMinIntervalMs: risk.DISCOVERY_MIN_INTERVAL_MS,
+    nowMs,
+  });
 }

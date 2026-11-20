@@ -150,11 +150,17 @@ export const riskConfigSchema = z
     WATCH_EVICTION_DAYS: positiveInt('WATCH_EVICTION_DAYS'),
     /** Seed the shadow record from the admission scan (observed trades only). */
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().default(true),
-    /** Demand-driven discovery rate limit (D5: at most one run per 30–60 min). */
+    /** Demand-driven discovery rate limit (D5: at most one run per 30–60 min). The fomo credit budget can only slow this down. */
     DISCOVERY_MIN_INTERVAL_MS: positiveInt('DISCOVERY_MIN_INTERVAL_MS').min(
       600_000,
       'DISCOVERY_MIN_INTERVAL_MS must be at least 600000',
     ),
+    /**
+     * The fomoapi plan's monthly credit allowance. The discovery governor paces
+     * runs to spend `credits remaining × 95%` evenly across the rest of the
+     * calendar month, so the plan is never exhausted before its reset.
+     */
+    FOMO_PLAN_CREDITS: positiveInt('FOMO_PLAN_CREDITS'),
   })
   .superRefine((cfg, ctx) => {
     // A single bet cannot be larger than the trader's open cap (D1).
@@ -257,6 +263,7 @@ export const DEFAULT_RISK: RiskConfig = {
   WATCH_EVICTION_DAYS: 14,
   SHADOW_BACKFILL_ON_ADMIT: true,
   DISCOVERY_MIN_INTERVAL_MS: 1800000,
+  FOMO_PLAN_CREDITS: 250000,
 };
 
 /** Fields a settings-change request may modify at runtime. */
@@ -308,6 +315,7 @@ const settingsPatchObjectSchema = z
     WATCH_EVICTION_DAYS: z.number().int().positive().optional(),
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().optional(),
     DISCOVERY_MIN_INTERVAL_MS: z.number().int().min(600_000).optional(),
+    FOMO_PLAN_CREDITS: z.number().int().positive().optional(),
   })
   .strict();
 

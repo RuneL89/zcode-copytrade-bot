@@ -365,6 +365,7 @@ export class DemoEngine {
           newHandles24h: tl.traders.length,
           creditsRemaining: null,
           sources: ['demo replay'],
+          pacedIntervalMinutes: 0,
         },
         pool: {
           total: tl.traders.length,
@@ -426,6 +427,8 @@ export class DemoEngine {
         bench: 0,
         benchTarget: DEFAULT_RISK.BENCH_TARGET,
         nextDiscoveryReason: 'demo replay: discovery is disabled (no API spend)',
+        discoveryPacedMinutes: 0,
+        discoveryCreditsRemaining: null,
         rows: [],
       },
       fictional: true,

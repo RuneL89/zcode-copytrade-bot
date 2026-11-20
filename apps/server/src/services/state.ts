@@ -254,6 +254,10 @@ export interface DashboardState {
     benchTarget: number;
     /** Why the next discovery run will (or will not) happen. */
     nextDiscoveryReason: string;
+    /** Minutes the fomo credit governor paces between discovery runs. */
+    discoveryPacedMinutes: number;
+    /** Credits the fomo API reported left after the last real run. */
+    discoveryCreditsRemaining: number | null;
     /**
      * Ordered by how soon each wallet would take a free chair: the bench first
      * (best shadow net first, the order fillRoster hires in), then watching
@@ -274,6 +278,8 @@ export interface DashboardState {
       newHandles24h: number;
       creditsRemaining: number | null;
       sources: string[];
+      /** Minutes the fomo credit governor paces between discovery runs. */
+      pacedIntervalMinutes: number;
     };
     pool: { total: number; withWallet: number; fundedBuyers24h: number };
     watch: { watching: number; cooling: number; promotable: number; benchTarget: number };

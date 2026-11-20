@@ -3,7 +3,7 @@ import * as repo from '@zcode-bot/db/repo.js';
 import type { AppConfig, RiskConfig } from '@zcode-bot/config';
 import { bankrollHeadroom, canPromote, dashboardBadges, usdToMicro } from '@zcode-bot/core';
 import type { DashboardState } from './state.js';
-import { discoveryDecision } from './discovery.js';
+import { discoveryDecision, discoveryPacing } from './discovery.js';
 import type { ControlService } from './control.js';
 import type { LeaderMonitor } from './monitor.js';
 import type { TraderLifecycle } from './lifecycle.js';
@@ -660,6 +660,9 @@ export class StateBuilder {
     // Next hire first: the panel renders this order verbatim.
     rows.sort(compareWatchRows);
 
+    // The dashboard's "next discovery" preview must pace with the credit
+    // governor exactly like the service does.
+    const pacing = discoveryPacing(this.db, risk, now);
     const decision = discoveryDecision({
       promotableWatchWallets: rows.filter((r) => r.status === 'bench').length,
       watchListWallets: rows.filter((r) => r.status === 'watching').length,
@@ -668,15 +671,19 @@ export class StateBuilder {
       benchTarget: risk.BENCH_TARGET,
       lastRunAt: repo.kvGet(this.db, 'discovery.last_run_at') ?? null,
       nowMs: now,
-      minIntervalMs: risk.DISCOVERY_MIN_INTERVAL_MS,
+      minIntervalMs: pacing.effectiveIntervalMs,
     });
 
+    const creditsRaw = repo.kvGet(this.db, 'discovery.credits_remaining');
+    const creditsNum = creditsRaw === undefined ? Number.NaN : Number(creditsRaw);
     return {
       size: rows.filter((r) => r.status === 'watching').length,
       cap: risk.WATCH_LIST_SIZE,
       bench: rows.filter((r) => r.status === 'bench').length,
       benchTarget: risk.BENCH_TARGET,
       nextDiscoveryReason: decision.reason,
+      discoveryPacedMinutes: Math.round(pacing.effectiveIntervalMs / 60_000),
+      discoveryCreditsRemaining: Number.isFinite(creditsNum) ? creditsNum : null,
       rows,
     };
   }
@@ -891,6 +898,7 @@ export class StateBuilder {
         newHandles24h,
         creditsRemaining: discovery.creditsRemaining,
         sources: discovery.sources,
+        pacedIntervalMinutes: Math.round(discoveryPacing(this.db, risk, now).effectiveIntervalMs / 60_000),
       },
       pool: {
         total: enabled.length,
