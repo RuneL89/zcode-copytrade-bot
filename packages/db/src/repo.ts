@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { transitionOrder, type OrderIntentState } from '@zcode-bot/core';
 import type { AppDatabase } from './connection.js';
 import { schema } from './connection.js';
@@ -980,8 +980,20 @@ export function insertFill(db: Db, input: FillInsert): void {
   db.insert(schema.fills).values(input).run();
 }
 
+/**
+ * Fills newest first. `position_id` is attributed through the intent when the
+ * fill row itself predates the position — entry fills are recorded before the
+ * position exists (engine inserts the fill, then opens the position and
+ * backfills the intent), so without the join every entry fill would read as
+ * unattributed and the dashboard's real entry cost and the weekly copy-delay/
+ * entry-price stats would never match a position.
+ */
 export function listFills(db: Db, limit = 200, mode?: BookMode) {
-  const q = db.select().from(schema.fills);
+  const attributed = sql<string>`COALESCE(${schema.fills.positionId}, ${schema.orderIntents.positionId})`;
+  const q = db
+    .select({ ...getTableColumns(schema.fills), positionId: attributed.as('position_id') })
+    .from(schema.fills)
+    .leftJoin(schema.orderIntents, eq(schema.orderIntents.intentId, schema.fills.intentId));
   return (mode ? q.where(eq(schema.fills.mode, mode)) : q)
     .orderBy(desc(schema.fills.confirmedAt))
     .limit(limit)

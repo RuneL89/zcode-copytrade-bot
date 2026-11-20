@@ -848,15 +848,18 @@ function observedFor(sqlite: Sqlite, activationIds: string[]): ObservedRow[] {
 function fillsFor(sqlite: Sqlite, positionIds: string[]): FillRow[] {
   if (positionIds.length === 0) return [];
   const placeholders = positionIds.map(() => '?').join(',');
+  // Entry fills are recorded before the position exists, so their own
+  // position_id is NULL and the intent carries the attribution (the engine
+  // backfills the intent at the same moment it opens the position).
   return all<FillRow>(
     sqlite,
-    `SELECT f.position_id AS positionId, f.intent_id AS intentId, f.confirmed_at AS confirmedAt,
-            f.output_amount_base AS outputAmountBase, i.input_mint AS inputMint,
-            i.input_usd_micro AS inputUsdMicro, i.input_amount_base AS inputAmountBase,
-            i.idempotency_key AS idempotencyKey
+    `SELECT COALESCE(f.position_id, i.position_id) AS positionId, f.intent_id AS intentId,
+            f.confirmed_at AS confirmedAt, f.output_amount_base AS outputAmountBase,
+            i.input_mint AS inputMint, i.input_usd_micro AS inputUsdMicro,
+            i.input_amount_base AS inputAmountBase, i.idempotency_key AS idempotencyKey
        FROM fills f
        JOIN order_intents i ON i.intent_id = f.intent_id
-      WHERE f.position_id IN (${placeholders}) AND i.kind = 'entry'
+      WHERE COALESCE(f.position_id, i.position_id) IN (${placeholders}) AND i.kind = 'entry'
       ORDER BY f.confirmed_at`,
     ...positionIds,
   );

@@ -111,7 +111,10 @@ beforeAll(() => {
   repo.insertFill(handle.db, {
     fillId: 'fill_weekly_fixture',
     intentId: 'intent_weekly_fixture',
-    positionId,
+    // The real engine shape: entry fills are recorded before the position
+    // exists, so the fill's own position_id is NULL and the attribution lives
+    // on the intent (the query must COALESCE).
+    positionId: null,
     mode: 'paper',
     txSignature: null,
     inputAmountBase: '5000000',
