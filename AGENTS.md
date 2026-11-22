@@ -152,20 +152,20 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   vetting-only. Enhanced Transactions is deprecated — do not reintroduce it.
 - Admission is a bounded scan. A complete 24h window that fits the detail
   budget is a census and is stored as `ok`; a busier wallet (or one beyond
-  three signature pages) gets a newest-prefix reading — the newest 12
-  signatures, deepened in 12-detail batches up to
-  `ADMISSION_MAX_DETAILS_PER_SCAN` (default 60) and stopping the moment the
-  gate is proven — and may be admitted as `partial`, a lower bound that is
-  never stored as an `ok` census. A prefix that cannot prove
-  `ADMISSION_MIN_BUYS_24H` funded buys defers on an escalating ladder
-  (30 min → 2h → 8h → 24h, reset when a real reading is recorded) so an
-  unprovable wallet cannot hold the one admission slot forever. Every detail
-  read reports WHY it failed (`transactionParty`): the wallet signed the tx,
-  only owns the balances that moved (third-party/bot execution — real trade
-  evidence since 2026-11-22), or is no party at all; two full batches of
-  no-party reads stop the scan early (platform-style account). A spent
-  `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the candidate briefly so
-  it cannot starve the admission queue.
+  three signature pages) gets a newest-prefix reading — the newest 24
+  signatures, deepened in 12-detail batches beyond that only while attributed
+  funded buys keep appearing, up to `ADMISSION_MAX_DETAILS_PER_SCAN`
+  (default 60), stopping the moment the gate is proven — and may be admitted
+  as `partial`, a lower bound that is never stored as an `ok` census. A prefix
+  that cannot prove `ADMISSION_MIN_BUYS_24H` funded buys defers on an
+  escalating ladder (30 min → 2h → 8h → 24h, reset when a real reading is
+  recorded) so an unprovable wallet cannot hold the one admission slot
+  forever. Every detail read reports WHY it failed (`transactionParty`): the
+  wallet signed the tx, only owns the balances that moved (third-party/bot
+  execution — real trade evidence since 2026-11-22), or is no party at all;
+  two full batches of no-party reads stop the scan early (platform-style
+  account). A spent `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the
+  candidate briefly so it cannot starve the admission queue.
 - Jupiter uses Swap API v2 `GET /swap/v2/build` on `api.jup.ag` (free key).
   Paper quotes fall back to a cached price. Live assembly is enabled only
   through the validated path: a known Jupiter program, the wallet as sole
