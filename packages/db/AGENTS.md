@@ -72,10 +72,13 @@ and every repository function the server calls.
 - **Incomplete admission scans defer via `kv`.** `deferCandidateActivity`
   records the failed status plus an `admission.defer:<candidateId>` eligibility
   key; `listAdmissionScanCandidates` excludes an unexpired key, and a later
-  successful `updateCandidateActivity` deletes it. The key is not a freshness
-  stamp and never changes the activity columns. The query's optional
-  `checkedBefore` cutoff filters recently measured rows before the SQL limit,
-  so a one-candidate admission tick cannot be consumed by a fresh head row.
+  successful `updateCandidateActivity` deletes it. The consecutive-failure
+  count behind the admission defer ladder lives in a sibling
+  `admission.attempts:<candidateId>` key, which the same
+  `updateCandidateActivity` clears. Neither key is a freshness stamp and
+  neither changes the activity columns. The query's optional `checkedBefore`
+  cutoff filters recently measured rows before the SQL limit, so a
+  one-candidate admission tick cannot be consumed by a fresh head row.
 - **Exit-queue lookups are bounded helpers.** `listKvByPrefix` reads
   `exit.queue:*` rows for the runtime retry consumer. `latestFailedExitIntent`
   resolves a legacy queue row by position and returns only a `failed` exit

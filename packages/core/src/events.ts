@@ -28,7 +28,27 @@ export const KNOWN_SWAP_PROGRAMS = new Set<string>([
   'FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X', // Fluxbeam
 ]);
 
-export type LeaderClassifiedEvent = SwapBuyEvent | SwapSellEvent | SkippedEvent;
+export type LeaderClassifiedEvent = SwapBuyEvent | SwapSellEvent | SwapRotateEvent | SkippedEvent;
+
+export interface SwapRotateEvent {
+  kind: 'swap_rotate';
+  signature: string;
+  slot: number;
+  transactionIndex: number;
+  blockTime: number;
+  legIndex: number;
+  /** The coin the leader exited (bought before, now swapped away). */
+  outMint: string;
+  outMintDecimals: number;
+  /** Base-unit outflow of the exited coin (negative). */
+  outTokenDeltaBase: bigint;
+  /** The coin the leader entered (the copy enters this, sized in USD). */
+  mint: string;
+  mintDecimals: number;
+  /** Base-unit inflow of the entered coin (positive). */
+  tokenDeltaBase: bigint;
+  parserVersion: string;
+}
 
 export interface SwapBuyEvent {
   kind: 'swap_buy';
@@ -115,7 +135,7 @@ export function scanForRecentBuy(summaries: LeaderTxSummary[], cutoffMs: number)
     if (t < cutoffMs) {
       return { lastBuyAt: null, boundaryReached: true };
     }
-    if (classifyLeaderEvent(tx).kind === 'swap_buy') {
+    if (classifyLeaderEvent(tx).kind === 'swap_buy' || classifyLeaderEvent(tx).kind === 'swap_rotate') {
       return { lastBuyAt: new Date(t).toISOString(), boundaryReached: false };
     }
   }
@@ -207,7 +227,23 @@ export function classifyLeaderEvent(tx: LeaderTxSummary): LeaderClassifiedEvent 
       fundingDecimals: funded.fundingDecimals,
       fundingDeltaBase: funded.fundingDeltaBase,
     };
-    return funded.side === 'buy' ? { ...leg, kind: 'swap_buy' } : { ...leg, kind: 'swap_sell' };
+    if (funded.side === 'buy') return { ...leg, kind: 'swap_buy' };
+    if (funded.side === 'sell') return { ...leg, kind: 'swap_sell' };
+    // Coin-for-coin rotation: the leader exited one coin and entered another
+    // in the same transaction. The engine records it; copying the entered
+    // coin is the operator decision of 2026-11-22 (USD-sized entry).
+    return {
+      ...base,
+      kind: 'swap_rotate',
+      blockTime: funded.blockTime ?? 0,
+      legIndex: 0,
+      outMint: funded.outMint!,
+      outMintDecimals: funded.outDecimals!,
+      outTokenDeltaBase: funded.outTokenDeltaBase!,
+      mint: funded.mint,
+      mintDecimals: funded.decimals,
+      tokenDeltaBase: funded.tokenDeltaBase,
+    };
   }
 
   return {

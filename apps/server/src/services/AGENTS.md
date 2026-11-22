@@ -88,7 +88,11 @@ no LLM in the loop (D6).
   lots** ("full sample" means the forward record is complete). The funded-buy
   stamps and `lastFundedBuyAt` use the leader's on-chain block time, never the
   ingestion time; a missing block time fails closed rather than reading an old
-  buy as fresh.
+  buy as fresh. A coin-for-coin rotation (side `swap`, operator decision
+  2026-11-22) mirrors both legs at one price: the incoming coin's USD value
+  closes the outgoing lots FIFO and opens the incoming lot; an unpriceable
+  incoming coin leaves the ledger untouched. The engine records
+  `swap_rotate` events; copying the entered coin is the staged next step.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
@@ -117,19 +121,31 @@ no LLM in the loop (D6).
   `activity_checked_at` stay intact, no watch row is created, and a transient
   failure stays first in line for the next tick. Admission uses the strict
   page and pages backwards to the 24h cutoff, and scans one candidate per watch
-  tick. A window of at most 12 in-window signatures is detailed in full and
-  written as `ok`; a busier wallet (or one that does not fit in three pages)
-  gets a bounded newest 12-signature prefix instead, sharing the 12-detail
-  per-pass budget. If that prefix proves `ADMISSION_MIN_BUYS_24H` funded buys
-  and a recent buy, the wallet is admitted and the reading is written as
-  `partial` — a lower bound, never an `ok` census. If the prefix cannot prove
-  the gate, the last good columns are kept and the candidate is deferred for
-  30 minutes via a scan-eligibility key in `kv`. A spent Helius detail budget
-  (`WATCH_DETAIL_PER_MINUTE`, capped at 12 per pass) defers for 10 minutes so
-  one candidate cannot hold the only admission slot. Freshness is filtered in
-  SQL before the one-candidate limit, so a recently checked head row cannot
-  consume the tick. A genuinely empty read still records `ok` zeros and
-  advances the queue.
+  tick. A window that fits the detail budget is detailed in full and written
+  as `ok`; a busier wallet (or one that does not fit in three pages) gets a
+  bounded newest-prefix reading instead: the newest 12 in-window signatures,
+  deepened in 12-detail batches up to `ADMISSION_MAX_DETAILS_PER_SCAN`
+  (default 60) and stopping the moment `ADMISSION_MIN_BUYS_24H` funded buys
+  are proven — a hyperactive wallet whose newest signatures mix buys and
+  sells can otherwise never prove the gate. A proven prefix admits the wallet
+  and is written as `partial` — a lower bound, never an `ok` census. A prefix
+  that still cannot prove the gate keeps the last good columns and defers on
+  an escalating ladder (30 min, 2h, 8h, 24h) tracked by an
+  `admission.attempts:<candidateId>` key in `kv`; `updateCandidateActivity`
+  clears the counter when a real reading is recorded. Every detail read goes
+  through `helius.transactionParty`, so the scan knows WHY it could not prove
+  the gate and says so in the defer audit: the wallet signed the transaction,
+  only owns the balances that moved (third-party/bot execution — real trade
+  evidence since 2026-11-22), or is no party at all. When two full batches are
+  readable and none of them is the wallet's own, the pattern is established:
+  the scan stops early (platform-style trading account whose trades live on
+  executor hot wallets — unprovable from this address) and the ladder backs
+  off. A spent Helius detail
+  budget (`WATCH_DETAIL_PER_MINUTE` is the per-pass hard stop) defers for
+  10 minutes so one candidate cannot hold the only admission slot. Freshness
+  is filtered in SQL before the one-candidate limit, so a recently checked
+  head row cannot consume the tick. A genuinely empty (complete) read still
+  records `ok` zeros and advances the queue.
 - **Watch-list detail reads are public-only by default.** Helius is a bounded
   15-read/minute safety valve only for watched wallets with an open shadow
   position or a funded buy inside the last hour; idle watchers retry on the

@@ -126,7 +126,9 @@ export function measureCopyableActivity(
         const usd = usdValueMicro(swap.tokenDeltaBase, swap.decimals, price);
         if (usd >= opts.minTradeUsdMicro) {
           priced.add(swap.mint);
-          if (swap.side === 'buy') {
+          // A coin-for-coin rotation is an entry into the incoming coin
+          // (operator decision 2026-11-22): it is a buy signal.
+          if (swap.side === 'buy' || swap.side === 'swap') {
             sample.entries24h++;
             if (sample.lastEntryAt === null) sample.lastEntryAt = isoTs;
           } else {

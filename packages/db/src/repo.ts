@@ -53,9 +53,15 @@ export function listKvByPrefix(db: Db, prefix: string) {
 
 /** Per-candidate admission-scan deferral (an eligibility signal, not freshness). */
 export const ADMISSION_DEFER_KEY_PREFIX = 'admission.defer:';
+export const ADMISSION_ATTEMPTS_KEY_PREFIX = 'admission.attempts:';
 
 export function admissionDeferKey(candidateId: string): string {
   return `${ADMISSION_DEFER_KEY_PREFIX}${candidateId}`;
+}
+
+/** Consecutive "prefix did not prove the gate" scans (drives the defer ladder). */
+export function admissionAttemptsKey(candidateId: string): string {
+  return `${ADMISSION_ATTEMPTS_KEY_PREFIX}${candidateId}`;
 }
 
 // --- audit / control ---------------------------------------------------------
@@ -307,6 +313,9 @@ export function updateCandidateActivity(
     .where(eq(schema.traderCandidates.candidateId, candidateId))
     .run();
   kvDelete(db, admissionDeferKey(candidateId));
+  // A recorded reading (ok census or a proven partial) also clears the
+  // consecutive-failure count behind the admission defer ladder.
+  kvDelete(db, admissionAttemptsKey(candidateId));
 }
 
 /**

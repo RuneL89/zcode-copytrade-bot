@@ -185,6 +185,13 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
         if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
         return perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null;
       },
+      transactionParty: async (address: string, signature: string) => {
+        heliusDetailCalls.set(address, (heliusDetailCalls.get(address) ?? 0) + 1);
+        if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
+        const summary = perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature);
+        if (!summary) return { kind: 'no-party' as const };
+        return { kind: 'party' as const, summary, how: 'self-signed' as const };
+      },
     } as unknown as WatchServiceDeps['helius'],
     prices: {
       priceOf: async (mint: string) => {
@@ -1102,6 +1109,77 @@ describe('WatchService — forward-only shadow gates', () => {
     };
   };
 
+  it('mirrors a coin-for-coin rotation: closes the outgoing lots, opens the incoming coin', async () => {
+    seedWatching('cand_rotate', 'rotate', 'WalletRotate');
+    const h = harness(riskConfig());
+    // The leader holds TOKEN (we mirror it), then rotates TOKEN -> a new coin.
+    await h.svc.applyFundedSwap(
+      'cand_rotate',
+      'WalletRotate',
+      fundedSwap({ signature: 'rot-open', side: 'buy', minutesAgo: 30, usd: 6_000_000n }),
+    );
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_rotate')).toHaveLength(1);
+
+    const mintB = 'IncomingMint1111111111111111111111111111111111';
+    h.prices.set(mintB, 2_000_000n); // $2.00 per whole coin
+    await h.svc.applyFundedSwap('cand_rotate', 'WalletRotate', {
+      side: 'swap',
+      signature: 'rot-swap',
+      slot: 1,
+      transactionIndex: 0,
+      blockTime: NOW_SEC - 5 * 60,
+      mint: mintB,
+      decimals: 6,
+      tokenDeltaBase: 3_000_000n, // received 3 @ $2 = $6 of value
+      fundingMint: mintB,
+      fundingDecimals: 6,
+      fundingDeltaBase: 3_000_000n,
+      outMint: TOKEN,
+      outDecimals: 6,
+      outTokenDeltaBase: -6_000_000n, // paid 6 TOKEN @ $1 = $6 of value
+    });
+
+    // The TOKEN lot closed at the rotation's implied $1 (the small negative
+    // PnL is the desk's own exit-slippage ruler, not a price error); the
+    // incoming coin is open at the leader's $2 entry. One real trade, both
+    // legs on the ruler.
+    const open = repo.listOpenShadowTrades(handle.db, 'cand_rotate');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.mint).toBe(mintB);
+    expect(open[0]!.entryPriceUsdMicro).toBe('2000000');
+    const aggregates = repo.shadowAggregates(handle.db, 'cand_rotate');
+    expect(aggregates.closedCount).toBe(1);
+    expect(aggregates.netPnlUsdMicro).toBeLessThan(0n);
+    expect(aggregates.netPnlUsdMicro).toBeGreaterThan(-300_000n);
+    // The event row records the rotation as the buy it economically is, so
+    // the funded-buy recency clock sees it.
+    const events = repo.listWatchEvents(handle.db, 'cand_rotate');
+    expect(events[0]!.side).toBe('buy');
+    expect(events[0]!.mint).toBe(mintB);
+
+    // An unpriceable incoming coin leaves the ledger untouched (fail closed).
+    const mintC = 'UnpriceableMint1111111111111111111111111111111';
+    h.priceErrors.set(mintC, new Error('no quote'));
+    await h.svc.applyFundedSwap('cand_rotate', 'WalletRotate', {
+      side: 'swap',
+      signature: 'rot-swap-2',
+      slot: 1,
+      transactionIndex: 0,
+      blockTime: NOW_SEC - 3 * 60,
+      mint: mintC,
+      decimals: 6,
+      tokenDeltaBase: 1_000_000n,
+      fundingMint: mintC,
+      fundingDecimals: 6,
+      fundingDeltaBase: 1_000_000n,
+      outMint: mintB,
+      outDecimals: 6,
+      outTokenDeltaBase: -1_000_000n,
+    });
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_rotate')).toHaveLength(1);
+    expect(repo.listOpenShadowTrades(handle.db, 'cand_rotate')[0]!.mint).toBe(mintB);
+  });
+
   it('does not bench or archive a wallet on its admission backfill alone', async () => {
     seedCandidate('cand_backfill_only', 'backfillonly', 'WalletBackfillOnly');
     const h = harness(riskConfig({ SHADOW_BACKFILL_ON_ADMIT: true }));
@@ -1749,7 +1827,7 @@ describe('admission scan fail-closed', () => {
     expect(h.heliusDetailCalls.get('WalletTruncOk')).toBe(12);
   });
 
-  it('defers a truncated complete window whose buys fall outside the newest 12', async () => {
+  it('deepens past the newest 12 and admits when the window proves the gate', async () => {
     seedCandidate('cand_trunc_defer', 'trunc_defer', 'WalletTruncDefer');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
@@ -1764,7 +1842,10 @@ describe('admission scan fail-closed', () => {
       checkedAt: oldAt,
     });
 
-    // The buys are at 20/25/30; the newest-12 prefix cannot see them.
+    // The three buys sit at 20/25/30 minutes back — outside the newest-12
+    // prefix but inside the deepened one. The scan details indexes 0..30
+    // (31 reads), proves the gate, and stops: the reading is `partial`
+    // (31 of 40 in-window detailed) and the wallet is admitted.
     const buyIndexes = new Set([20, 25, 30]);
     for (let i = 0; i < 40; i++) {
       const signature = `trunc_defer_${i}`;
@@ -1783,18 +1864,64 @@ describe('admission scan fail-closed', () => {
       }
     }
 
-    await h.svc.evaluate();
+    const result = await h.svc.evaluate();
     const candidate = repo.getCandidate(handle.db, 'cand_trunc_defer')!;
+    expect(candidate.activityCheckStatus).toBe('partial');
+    expect(candidate.buys24h).toBe(3);
+    expect(candidate.activityCheckedAt).not.toBe(oldAt);
+    expect(repo.getWatchWallet(handle.db, 'cand_trunc_defer')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_trunc_defer'))).toBeUndefined();
+    expect(h.heliusDetailCalls.get('WalletTruncDefer')).toBe(31);
+  });
+
+  it('keeps the deepening inside the configured per-scan detail cap', async () => {
+    seedCandidate('cand_cap_18', 'cap_18', 'WalletCap18');
+    const h = harness(
+      riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100, ADMISSION_MAX_DETAILS_PER_SCAN: 18 }),
+    );
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_cap_18', {
+      swaps24h: 8,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 4,
+      sells24h: 4,
+      checkedAt: oldAt,
+    });
+
+    // The same wallet shape as above, but the configured cap stops the scan
+    // after 18 reads — before the first buy at index 20. The old census is
+    // preserved and the candidate defers on ladder step 1 (30 minutes).
+    const buyIndexes = new Set([20, 25, 30]);
+    for (let i = 0; i < 40; i++) {
+      const signature = `cap_18_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      if (buyIndexes.has(i)) {
+        h.summaries.set(
+          signature,
+          swapSummary({
+            signature,
+            minutesAgo: i + 1,
+            tokens: 6_000_000n,
+            usd: 6_000_000n,
+            side: 'buy',
+          }),
+        );
+      }
+    }
+
+    await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_cap_18')!;
     expect(candidate.activityCheckStatus).toBe('failed');
     expect(candidate.buys24h).toBe(4);
-    expect(candidate.swaps24h).toBe(8);
-    expect(candidate.lastBuyAt).toBe(lastBuy);
     expect(candidate.activityCheckedAt).toBe(oldAt);
-    expect(repo.getWatchWallet(handle.db, 'cand_trunc_defer')).toBeUndefined();
-    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_trunc_defer'));
+    expect(h.heliusDetailCalls.get('WalletCap18')).toBe(18);
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_cap_18'));
     expect(deferredUntil).toBeDefined();
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
-    expect(h.heliusDetailCalls.get('WalletTruncDefer')).toBe(12);
   });
 
   it('records a complete window of exactly the detail budget as ok', async () => {
@@ -1830,18 +1957,40 @@ describe('admission scan fail-closed', () => {
     expect(h.heliusDetailCalls.get('WalletExact12')).toBe(12);
   });
 
-  it('caps a single admission scan at 12 detail reads', async () => {
+  it('reads a whole attributed window in full and records the ok census even when the gate fails', async () => {
     seedCandidate('cand_budget_cap', 'budget_cap', 'WalletBudgetCap');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
     setActivity('cand_budget_cap', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // 40 attributed signatures (two buys, below the gate) fit the deepened
+    // budget (60): the scan reads them all, records the complete census as ok,
+    // and the candidate advances instead of deferring forever. The gate (3
+    // buys) rejects admission — a real but quiet wallet is not a member.
+    const buyIndexes = new Set([5, 25]);
     for (let i = 0; i < 40; i++) {
-      h.page.push({ signature: `budget_cap_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+      const signature = `budget_cap_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      h.summaries.set(
+        signature,
+        swapSummary({
+          signature,
+          minutesAgo: i + 1,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: buyIndexes.has(i) ? 'buy' : 'sell',
+        }),
+      );
     }
 
     await h.svc.evaluate();
-    expect(h.heliusDetailCalls.get('WalletBudgetCap')).toBe(12);
-    expect(repo.getCandidate(handle.db, 'cand_budget_cap')?.activityCheckStatus).toBe('failed');
+    expect(h.heliusDetailCalls.get('WalletBudgetCap')).toBe(40);
+    const candidate = repo.getCandidate(handle.db, 'cand_budget_cap')!;
+    expect(candidate.activityCheckStatus).toBe('ok');
+    expect(candidate.buys24h).toBe(2);
+    expect(candidate.sells24h).toBe(38);
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_budget_cap'))).toBeUndefined();
+    expect(repo.getWatchWallet(handle.db, 'cand_budget_cap')).toBeUndefined();
   });
 
   it('admits a busy wallet when its bounded prefix proves the gate', async () => {
@@ -1923,7 +2072,7 @@ describe('admission scan fail-closed', () => {
     expect(result.admitted).toBe(1);
   });
 
-  it('defers a busy wallet whose prefix cannot prove the gate and keeps the old census', async () => {
+  it('defers a busy wallet whose deepened prefix cannot prove the gate and keeps the old census', async () => {
     seedCandidate('cand_over_cap_neg', 'over_cap_neg', 'WalletOverCapNeg');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
@@ -1941,6 +2090,11 @@ describe('admission scan fail-closed', () => {
       h.page.push({ signature: `over_neg_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
     }
 
+    // 101 in-window signatures, none of them classifiable: every readable read
+    // is a third-party transaction with no wallet-owned balances (the
+    // platform-style pattern), so the scan stops after two batches and defers
+    // on ladder step 1 (30 minutes) with the old census intact and a
+    // diagnostic verdict in the audit.
     await h.svc.evaluate();
     const candidate = repo.getCandidate(handle.db, 'cand_over_cap_neg')!;
     expect(candidate.activityCheckStatus).toBe('failed');
@@ -1952,6 +2106,54 @@ describe('admission scan fail-closed', () => {
     const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_over_cap_neg'));
     expect(deferredUntil).toBeDefined();
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
+    expect(h.heliusDetailCalls.get('WalletOverCapNeg')).toBe(24);
+    const audit = repo
+      .listAudit(handle.db, 50)
+      .find((row) => row.message.includes('admission prefix for over_cap_neg'))!;
+    expect(audit.message).toContain('third-party-signed');
+  });
+
+  it('escalates the defer window while a candidate keeps failing, and resets on a real reading', async () => {
+    seedCandidate('cand_ladder', 'ladder', 'WalletLadder');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    setActivity('cand_ladder', {
+      swaps24h: 9,
+      lastSwapAt: iso(Date.now() - HOUR),
+      lastBuyAt: iso(Date.now() - HOUR),
+      buys24h: 4,
+      sells24h: 5,
+      checkedAt: oldAt,
+    });
+    for (let i = 0; i < 101; i++) {
+      h.page.push({ signature: `ladder_${i}`, blockTime: NOW_SEC - (i + 1) * 60 });
+    }
+
+    // Attempt 1: ladder step 1 = 30 minutes. The platform-style early exit
+    // caps each scan at two batches of detail reads.
+    await h.svc.evaluate();
+    expect(repo.kvGet(handle.db, repo.admissionAttemptsKey('cand_ladder'))).toBe('1');
+    expect(h.heliusDetailCalls.get('WalletLadder')).toBe(24);
+    const first = repo.kvGet(handle.db, repo.admissionDeferKey('cand_ladder'))!;
+    expect(Date.parse(first)).toBeGreaterThan(Date.now() + 25 * 60_000);
+    expect(Date.parse(first)).toBeLessThan(Date.now() + 35 * 60_000);
+
+    // Attempt 2: ladder step 2 = 2 hours.
+    repo.deferCandidateActivity(handle.db, 'cand_ladder', iso(Date.now() - 1_000), iso(Date.now()));
+    await h.svc.evaluate();
+    expect(repo.kvGet(handle.db, repo.admissionAttemptsKey('cand_ladder'))).toBe('2');
+    const second = repo.kvGet(handle.db, repo.admissionDeferKey('cand_ladder'))!;
+    expect(Date.parse(second)).toBeGreaterThan(Date.now() + 90 * 60_000);
+
+    // A recorded reading (here: an ok empty census) clears the ladder.
+    repo.deferCandidateActivity(handle.db, 'cand_ladder', iso(Date.now() - 1_000), iso(Date.now()));
+    h.page.length = 0;
+    await h.svc.evaluate();
+    const after = repo.getCandidate(handle.db, 'cand_ladder')!;
+    expect(after.activityCheckStatus).toBe('ok');
+    expect(repo.kvGet(handle.db, repo.admissionAttemptsKey('cand_ladder'))).toBeUndefined();
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_ladder'))).toBeUndefined();
   });
 
   it('does not rescan a deferred prefix every tick, then retries after the window', async () => {

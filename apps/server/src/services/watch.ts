@@ -100,6 +100,25 @@ export interface AdmissionReading {
   partial: boolean;
   /** The scan's funded events, oldest first — used for the optional backfill. */
   events: FundedSwap[];
+  /**
+   * Why each detail read resolved the way it did. A wallet whose every
+   * readable transaction is a third-party affair with no balances of its own
+   * (platform-style trading account) can never be proven — this is how the
+   * audit and the dashboard say so instead of "did not prove N funded buys".
+   */
+  evidence: {
+    inWindow: number;
+    /** Detail reads attempted (RPC answers, readable or not). */
+    detailed: number;
+    /** Reads the node could not answer (null transaction). */
+    unreadable: number;
+    /** Readable transactions the wallet signed. */
+    selfSigned: number;
+    /** Readable transactions that only moved balances the wallet owns. */
+    ownedDeltas: number;
+    /** Readable transactions that are not the wallet's party at all. */
+    noParty: number;
+  };
 }
 
 export interface WatchTickResult {
@@ -143,13 +162,29 @@ const ADMISSION_SIGNATURE_PAGE = 100;
 const ADMISSION_MAX_PAGES = 3;
 /**
  * Detail reads admitted per admission pass. A window with more signatures is
- * read through its newest 12 and marked `partial`: admission only has to prove
- * the funded-buy gate, not census the whole day. The cap keeps one tick from
- * spending a full busy wallet's history.
+ * read through its newest 12 first and marked `partial`: admission only has to
+ * prove the funded-buy gate, not census the whole day. The cap keeps one tick
+ * from spending a full busy wallet's history.
  */
 export const ADMISSION_DETAILS_PER_TICK = 12;
+/**
+ * When the newest 12 cannot prove the gate, the scan deepens in 12-detail
+ * batches up to this many reads, stopping the moment the gate is proven. A
+ * hyperactive wallet whose newest signatures mix buys and sells (3 buys in the
+ * newest 12, 40+ across the day) is otherwise deferred forever despite being
+ * the best candidate on the board.
+ */
+export const ADMISSION_MAX_DETAILS_PER_SCAN = 60;
 /** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
 const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
+/**
+ * A scan that cannot prove the gate backs off longer each time: 30 min, 2h,
+ * 8h, then 24h. After a deepened scan, an unproven wallet is either genuinely
+ * below the bar or its activity is unattributable — either way it must not
+ * hold the one admission slot every 30 minutes forever. A recorded reading
+ * (ok census or proven partial) resets the ladder.
+ */
+const ADMISSION_DEFER_LADDER_MS = [30 * 60_000, 2 * 3_600_000, 8 * 3_600_000, 24 * 3_600_000];
 
 /** The detail budget is spent or the public reader failed; retry next tick. */
 class DetailDeferred extends Error {
@@ -252,16 +287,17 @@ export class WatchService {
 
   /**
    * Admission detail read: the paid reader directly, bounded by the per-pass
-   * budget. Admission is the hire path; spending its window retrying a
-   * rate-limited public node is what left active wallets unscanned. The daily
-   * CreditGovernor cap remains the hard stop.
+   * budget. Returns who acted in the transaction — the summary, the fact the
+   * wallet only owned the moved balances (bot execution), that it was no
+   * party at all (platform-style account), or that the node could not answer.
+   * The daily CreditGovernor cap remains the hard stop.
    */
-  private async admissionTxSummary(address: string, signature: string) {
+  private async admissionTxParty(address: string, signature: string) {
     if (this.admissionDetailsRemaining <= 0) {
       throw new DetailDeferred('watch detail deferred (admission budget)');
     }
     this.admissionDetailsRemaining -= 1;
-    return this.deps.helius.transactionSummary(address, signature, 'watch');
+    return this.deps.helius.transactionParty(address, signature, 'watch');
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -370,16 +406,23 @@ export class WatchService {
    * A window with at most ADMISSION_DETAILS_PER_TICK in-window signatures is
    * detailed in full and recorded as a complete (`ok`) reading. A busier
    * wallet — including one whose history does not fit in three signature pages
-   * — gets a bounded newest prefix instead: admission only has to prove the
-   * funded-buy gate, not census the whole day. That reading is marked
-   * `partial`; it is a lower bound and is never stored as an `ok` census. A
-   * genuinely empty wallet still returns an empty complete reading.
+   * — gets a bounded newest prefix instead: the scan details the newest 12,
+   * and while `opts.proveBuys` funded buys have not been seen it deepens in
+   * 12-detail batches up to `opts.maxDetails` reads, stopping the moment the
+   * gate is proven. Admission only has to prove the funded-buy gate, not
+   * census the whole day. That reading is marked `partial`; it is a lower
+   * bound and is never stored as an `ok` census. A genuinely empty wallet
+   * still returns an empty complete reading.
    *
    * Throws only when a signature page or a detail read itself fails (the
    * caller preserves the last good columns) or when the paid detail budget is
    * spent (the caller defers briefly so the queue advances).
    */
-  async scanWallet(address: string, lookbackHours = ADMISSION_LOOKBACK_HOURS): Promise<AdmissionReading> {
+  async scanWallet(
+    address: string,
+    lookbackHours = ADMISSION_LOOKBACK_HOURS,
+    opts: { proveBuys?: number; maxDetails?: number } = {},
+  ): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
 
@@ -409,18 +452,59 @@ export class WatchService {
     }
 
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
-    const detailRows = inWindow.slice(0, ADMISSION_DETAILS_PER_TICK);
-    const partial = !covered || detailRows.length < inWindow.length;
+    const detailRows = inWindow.slice(0, Math.max(ADMISSION_DETAILS_PER_TICK, opts.maxDetails ?? 0));
 
     const events: FundedSwap[] = [];
-    for (const row of detailRows) {
-      const summary = await this.admissionTxSummary(address, row.signature);
-      if (!summary) continue;
-      const swap = classifyFundedSwap(summary);
-      if (swap) events.push(swap);
+    const evidence: AdmissionReading['evidence'] = {
+      inWindow: inWindow.length,
+      detailed: 0,
+      unreadable: 0,
+      selfSigned: 0,
+      ownedDeltas: 0,
+      noParty: 0,
+    };
+    let buysSeen = 0;
+    let detailed = 0;
+    for (; detailed < detailRows.length; detailed++) {
+      // Deepening phase (past the first batch): stop the moment the gate is
+      // proven — the reading is a partial lower bound anyway, and the budget
+      // belongs to the rest of the queue. Quiet wallets (a window that fits
+      // the first batch) always get their complete census.
+      if (detailed >= ADMISSION_DETAILS_PER_TICK && buysSeen >= (opts.proveBuys ?? Number.MAX_SAFE_INTEGER)) {
+        break;
+      }
+      // A platform-style account (every readable transaction third-party with
+      // none of the wallet's own balances moving) can never prove the gate no
+      // matter how deep the scan goes — stop spending the budget on it once
+      // the pattern is established.
+      if (
+        detailed >= ADMISSION_DETAILS_PER_TICK &&
+        evidence.detailed + evidence.noParty >= ADMISSION_DETAILS_PER_TICK * 2 &&
+        evidence.selfSigned + evidence.ownedDeltas === 0
+      ) {
+        break;
+      }
+      const party = await this.admissionTxParty(address, detailRows[detailed]!.signature);
+      if (party.kind === 'unreadable') {
+        evidence.unreadable++;
+        continue;
+      }
+      if (party.kind === 'no-party') {
+        evidence.noParty++;
+        continue;
+      }
+      evidence.detailed++;
+      if (party.how === 'self-signed') evidence.selfSigned++;
+      else evidence.ownedDeltas++;
+      const swap = classifyFundedSwap(party.summary);
+      if (swap) {
+        events.push(swap);
+        if (swap.side === 'buy' || swap.side === 'swap') buysSeen++;
+      }
     }
+    const partial = !covered || detailed < inWindow.length;
     events.sort((a, b) => (a.blockTime ?? 0) - (b.blockTime ?? 0));
-    const buys = events.filter((e) => e.side === 'buy');
+    const buys = events.filter((e) => e.side === 'buy' || e.side === 'swap');
     const newestBuy = buys[buys.length - 1] ?? null;
     return {
       fundedBuys24h: buys.length,
@@ -429,6 +513,7 @@ export class WatchService {
       measuredAt,
       partial,
       events,
+      evidence,
     };
   }
 
@@ -459,7 +544,10 @@ export class WatchService {
       candidateId,
       address,
       signature: swap.signature,
-      side: swap.side,
+      // A rotation is an entry into the incoming coin (operator decision
+      // 2026-11-22): the event row records it as the buy it economically is,
+      // so the funded-buy recency clock and the dashboards see it.
+      side: swap.side === 'swap' ? 'buy' : swap.side,
       mint: swap.mint,
       tokenAmountBase: tokens.toString(),
       decimals: swap.decimals,
@@ -472,7 +560,8 @@ export class WatchService {
     this.seenShadowEvents.add(key);
 
     if (swap.side === 'buy') await this.openShadowFromBuy(candidateId, swap, backfilled);
-    else await this.closeShadowFromSell(candidateId, swap, observedAt);
+    else if (swap.side === 'sell') await this.closeShadowFromSell(candidateId, swap, observedAt);
+    else await this.applySwapRotation(candidateId, swap, backfilled, observedAt);
     return true;
   }
 
@@ -489,11 +578,24 @@ export class WatchService {
       inputUsdMicro = null; // unpriced: the event row stays, the shadow does not
     }
     if (inputUsdMicro === null) return;
+    this.openLotAtValue(candidateId, swap, tokens, inputUsdMicro, backfilled);
+  }
+
+  /**
+   * One shadow entry at a known USD value: the lot is priced at the LEADER's
+   * per-coin price (what he paid); our notional only decides how much of the
+   * pretend position we take (the D1 clamp).
+   */
+  private openLotAtValue(
+    candidateId: string,
+    swap: FundedSwap,
+    tokens: bigint,
+    inputUsdMicro: bigint,
+    backfilled: boolean,
+  ): void {
     const notional = shadowNotionalUsdMicro(inputUsdMicro, this.risk);
     if (notional === null) return;
     const scale = 10n ** BigInt(Math.max(0, swap.decimals));
-    // The lot is priced at the LEADER's price (what he paid per coin); our
-    // notional only decides how much of the pretend position we take.
     const entryPriceUsdMicro = (inputUsdMicro * scale) / tokens;
     if (entryPriceUsdMicro <= 0n) return;
     repo.openShadowTrade(this.db, {
@@ -533,7 +635,23 @@ export class WatchService {
     const scale = 10n ** BigInt(Math.max(0, swap.decimals));
     const exitPriceUsdMicro = (proceedsUsdMicro * scale) / soldTokens;
     if (exitPriceUsdMicro <= 0n) return;
+    this.closeLotsFifo(candidateId, swap, soldTokens, exitPriceUsdMicro, closedAt);
+  }
 
+  /**
+   * FIFO close of `soldTokens` base units of the swap's mint at
+   * `exitPriceUsdMicro` (the leader's implied per-coin price). A partial sell
+   * closes proportionally: the closed part becomes a row, the remainder stays
+   * open with its original entry price and open time.
+   */
+  private closeLotsFifo(
+    candidateId: string,
+    swap: FundedSwap,
+    soldTokens: bigint,
+    exitPriceUsdMicro: bigint,
+    closedAt: string,
+  ): void {
+    const scale = 10n ** BigInt(Math.max(0, swap.decimals));
     let remainingSold = soldTokens;
     const lots = repo.listOpenShadowTrades(this.db, candidateId).filter((l) => l.mint === swap.mint);
     for (const lot of lots) {
@@ -588,6 +706,53 @@ export class WatchService {
       exitPriceUsdMicro: exitPriceUsdMicro.toString(),
     });
     this.deps.onStateChanged();
+  }
+
+  /**
+   * Coin-for-coin rotation (operator decision 2026-11-22): the leader exited
+   * `outMint` and entered `swap.mint` in one transaction. The shadow ruler
+   * mirrors both legs at one price — the incoming coin's USD value at the
+   * swap prices the exit of the outgoing lots AND the entry of the incoming
+   * lot. An unpriceable incoming coin leaves the ledger untouched: the exit
+   * waits for the ceiling clock, the entry for a priceable trade.
+   */
+  private async applySwapRotation(
+    candidateId: string,
+    swap: FundedSwap,
+    backfilled: boolean,
+    observedAt: string,
+  ): Promise<void> {
+    const inTokens = swap.tokenDeltaBase > 0n ? swap.tokenDeltaBase : -swap.tokenDeltaBase;
+    if (inTokens <= 0n || !swap.outMint) return;
+    let inValueUsdMicro: bigint | null = null;
+    try {
+      const price = await this.deps.prices.priceOf(swap.mint, swap.decimals);
+      inValueUsdMicro = (inTokens * price.priceUsdMicro) / 10n ** BigInt(Math.max(0, swap.decimals));
+    } catch {
+      inValueUsdMicro = null; // no quote: never invent a notional
+    }
+    if (inValueUsdMicro === null || inValueUsdMicro <= 0n) return;
+
+    const outTokens =
+      swap.outTokenDeltaBase !== undefined
+        ? swap.outTokenDeltaBase < 0n
+          ? -swap.outTokenDeltaBase
+          : swap.outTokenDeltaBase
+        : 0n;
+    if (outTokens > 0n) {
+      const outScale = 10n ** BigInt(Math.max(0, swap.outDecimals ?? 0));
+      const exitPriceUsdMicro = (inValueUsdMicro * outScale) / outTokens;
+      if (exitPriceUsdMicro > 0n) {
+        this.closeLotsFifo(
+          candidateId,
+          { ...swap, mint: swap.outMint, decimals: swap.outDecimals ?? 0 },
+          outTokens,
+          exitPriceUsdMicro,
+          observedAt,
+        );
+      }
+    }
+    this.openLotAtValue(candidateId, swap, inTokens, inValueUsdMicro, backfilled);
   }
 
   /** Ceiling: MAX_POSITION_AGE_HOURS, + POSITION_GRACE_HOURS when the mark is not positive. */
@@ -817,7 +982,10 @@ export class WatchService {
     // is deferred. A spent detail budget also defers briefly, so one busy
     // candidate cannot hold the only slot. Every failure path preserves the
     // last good activity columns and their true freshness.
-    this.admissionDetailsRemaining = Math.min(ADMISSION_DETAILS_PER_TICK, this.risk.WATCH_DETAIL_PER_MINUTE);
+    this.admissionDetailsRemaining = Math.min(
+      Math.max(ADMISSION_DETAILS_PER_TICK, this.risk.ADMISSION_MAX_DETAILS_PER_SCAN),
+      this.risk.WATCH_DETAIL_PER_MINUTE,
+    );
     const checkedBefore = new Date(Date.now() - ADMISSION_RESCAN_MS).toISOString();
     const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK, checkedBefore);
     for (const candidate of candidates) {
@@ -827,7 +995,10 @@ export class WatchService {
       if (!address) continue;
       let reading: AdmissionReading;
       try {
-        reading = await this.scanWallet(address);
+        reading = await this.scanWallet(address, ADMISSION_LOOKBACK_HOURS, {
+          proveBuys: this.risk.ADMISSION_MIN_BUYS_24H,
+          maxDetails: this.risk.ADMISSION_MAX_DETAILS_PER_SCAN,
+        });
       } catch (e) {
         const failedAt = new Date().toISOString();
         const transient = e instanceof DetailDeferred;
@@ -854,16 +1025,32 @@ export class WatchService {
         continue;
       }
       if (reading.partial && reading.fundedBuys24h < this.risk.ADMISSION_MIN_BUYS_24H) {
-        // The bounded prefix did not prove the gate. Never overwrite the last
-        // good census with a truncated zero; defer so the queue advances.
-        const deferredUntil = new Date(Date.now() + ADMISSION_RESCAN_MS).toISOString();
+        // The deepened prefix did not prove the gate. Never overwrite the last
+        // good census with a truncated reading; back off longer each time so a
+        // wallet that cannot be proven — genuinely quiet, or trading through
+        // accounts this scanner cannot attribute — cannot hold the one
+        // admission slot every 30 minutes forever.
+        const attempts = this.bumpAdmissionAttempts(candidate.candidateId);
+        const deferMs =
+          ADMISSION_DEFER_LADDER_MS[Math.min(attempts - 1, ADMISSION_DEFER_LADDER_MS.length - 1)]!;
+        const deferredUntil = new Date(Date.now() + deferMs).toISOString();
         repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
+        const ev = reading.evidence;
+        const readable = ev.detailed + ev.noParty;
+        const verdict =
+          ev.selfSigned + ev.ownedDeltas > 0
+            ? 'attributed'
+            : readable > 0
+              ? `third-party-signed ${readable}/${readable} readable — no wallet-owned balances moved`
+              : ev.unreadable > 0
+                ? `unreadable ${ev.unreadable}/${ev.unreadable} read`
+                : 'quiet';
         repo.audit(
           this.db,
           'watch',
           `admission prefix for ${candidate.handle} did not prove ` +
-            `${this.risk.ADMISSION_MIN_BUYS_24H} funded buys; deferred`,
-          { candidateId: candidate.candidateId, address, deferredUntil },
+            `${this.risk.ADMISSION_MIN_BUYS_24H} funded buys; deferred ${Math.round(deferMs / 60_000)} min (attempt ${attempts}, ${verdict})`,
+          { candidateId: candidate.candidateId, address, deferredUntil, attempts, evidence: ev },
         );
         continue;
       }
@@ -1033,6 +1220,19 @@ export class WatchService {
   /** The bench gate: the wallet's shadow record. A chair is the hire's concern. */
   promotionDecision(candidateId: string): { ok: boolean; reason: PromotionBlockReason | null } {
     return canPromote(this.recordInput(candidateId));
+  }
+
+  /**
+   * One more consecutive "did not prove" scan (1-based). Drives the defer
+   * ladder; `updateCandidateActivity` clears the counter when a real reading
+   * (ok census or proven partial) is finally recorded.
+   */
+  private bumpAdmissionAttempts(candidateId: string): number {
+    const key = repo.admissionAttemptsKey(candidateId);
+    const current = Number(repo.kvGet(this.db, key) ?? '0');
+    const attempts = (Number.isFinite(current) && current > 0 ? current : 0) + 1;
+    repo.kvSet(this.db, key, String(attempts));
+    return attempts;
   }
 
   /**
