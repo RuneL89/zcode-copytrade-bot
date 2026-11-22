@@ -91,8 +91,14 @@ no LLM in the loop (D6).
   buy as fresh. A coin-for-coin rotation (side `swap`, operator decision
   2026-11-22) mirrors both legs at one price: the incoming coin's USD value
   closes the outgoing lots FIFO and opens the incoming lot; an unpriceable
-  incoming coin leaves the ledger untouched. The engine records
-  `swap_rotate` events; copying the entered coin is the staged next step.
+  incoming coin leaves the ledger untouched. The engine mirrors rotations the
+  same way (`handleLeaderRotate`): a stale or unpriced rotation trades
+  neither leg and records `MAX_COPY_EVENT_AGE_SECONDS` / `ROTATION_UNPRICED`
+  rejections; otherwise the outgoing position exits through the normal
+  leader-exit path (proportional, no-op when not held) and the incoming coin
+  enters through the normal leader-buy path sized at 0.25x of its swap-time
+  USD value inside every existing cap — while entries are paused the exit
+  still mirrors and the entry records the gate's skipped intent.
 - **Cursor rules.** The monitor sets the leader cursor at activation; activity
   before activation is never copied. Restart resumes forward from the saved
   cursor, and events older than `MAX_COPY_EVENT_AGE_SECONDS` are rejected.
