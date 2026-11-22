@@ -20,7 +20,10 @@ OUT = LOGS / "credit-guard.log"
 PID = LOGS / "credit-guard.pid"
 STOP = LOGS / "overnight-monitor.stop"
 SERVICE = ROOT / "scripts" / "copydesk-service.ps1"
-DAILY_HARD_CAP = 13_600
+# 90% of the 1M-credit monthly plan ÷ 31 (longest month): sustained spend at the
+# cap stays under the plan, the remaining 10% is ad-hoc headroom. The guard
+# bounds each day at this rate, so the month is bounded by cap × days.
+DAILY_HARD_CAP = 29_032
 TICKS_PER_DAY = 288
 EET = timezone(timedelta(hours=2))
 
@@ -171,19 +174,21 @@ def main():
             log("service not running — monitor stays alive and will keep checking")
         if daily is not None and daily > DAILY_HARD_CAP and c15 >= 40:
             log(f"ABORT: projected {daily:.0f}/day exceeds {DAILY_HARD_CAP} ({basis})")
-            stop_service()
+            # stop_service() takes this guard process down with the service
+            # tree — write the reason FIRST or ABORT_REASON.txt stays stale.
             LOGS.joinpath("ABORT_REASON.txt").write_text(
                 f"{datetime.now(EET).isoformat()} credit-guard: projected {daily:.0f}/day ({basis})\n",
                 encoding="utf-8",
             )
+            stop_service()
             break
         if st15.get(429, 0) >= 20:
             log(f"ABORT: {st15.get(429)} Helius 429s in 15 minutes")
-            stop_service()
             LOGS.joinpath("ABORT_REASON.txt").write_text(
                 f"{datetime.now(EET).isoformat()} credit-guard: 429 storm {st15.get(429)} in 15m\n",
                 encoding="utf-8",
             )
+            stop_service()
             break
         time.sleep(60)
 
