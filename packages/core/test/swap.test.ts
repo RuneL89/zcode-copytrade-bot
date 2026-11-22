@@ -84,10 +84,28 @@ describe('classifyFundedSwap — the one funded-swap definition (D4)', () => {
     ).toBeNull();
   });
 
-  it('a token-for-token swap is not a funded buy or sell', () => {
+  it('a coin-for-coin rotation is a real trade: side swap, both legs carried', () => {
+    // Operator decision 2026-11-22: a real swap counts whoever signed it and
+    // whatever the quote asset — one coin out, one different coin in.
+    const swap = classifyFundedSwap(
+      tx({ tokenDeltas: [leg('TOKEN', 5_000_000n), leg('CHEAP', -2_000_000n)] }),
+    );
+    expect(swap).not.toBeNull();
+    expect(swap).toMatchObject({
+      side: 'swap',
+      mint: 'TOKEN',
+      tokenDeltaBase: 5_000_000n,
+      outMint: 'CHEAP',
+      outTokenDeltaBase: -2_000_000n,
+    });
+    // Same coin on both sides (a no-op rewrap) is still not a trade.
     expect(
-      classifyFundedSwap(tx({ tokenDeltas: [leg('TOKEN', 5_000_000n), leg('CHEAP', -2_000_000n)] })),
+      classifyFundedSwap(tx({ tokenDeltas: [leg('TOKEN', 5_000_000n), leg('TOKEN', -2_000_000n)] })),
     ).toBeNull();
+    // …and the copier sees a rotate event, not an ambiguous skip.
+    expect(
+      classifyLeaderEvent(tx({ tokenDeltas: [leg('TOKEN', 5_000_000n), leg('CHEAP', -2_000_000n)] })).kind,
+    ).toBe('swap_rotate');
   });
 
   it('a stable-to-stable move is not a funded trade', () => {

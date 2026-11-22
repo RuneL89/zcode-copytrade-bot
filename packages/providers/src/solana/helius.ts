@@ -953,7 +953,6 @@ export class HeliusProvider {
     const signed =
       signerKeys.has(leaderAddress) ||
       rawKeys.some((k) => typeof k !== 'string' && k.pubkey === leaderAddress && k.signer === true);
-    if (!signed) return null;
 
     const staticKeys = rawKeys.map((k) => (typeof k === 'string' ? k : k.pubkey));
     const loaded = meta.loadedAddresses ?? {};
@@ -1001,6 +1000,14 @@ export class HeliusProvider {
     collect(meta.preTokenBalances, 'pre');
     collect(meta.postTokenBalances, 'post');
 
+    // Attribution (operator decision 2026-11-22): the wallet signed the
+    // transaction OR the transaction moved a token balance the wallet owns. A
+    // bot-executed swap against the wallet's own accounts is real trade
+    // evidence; a transaction that neither the wallet signed nor touched its
+    // balances attributes to nobody (platform-style trading accounts).
+    const ownedHasDelta = [...owned.values()].some((v) => v.post - v.pre !== 0n);
+    if (!signed && !ownedHasDelta) return null;
+
     const tokenDeltas: TokenDelta[] = [];
     for (const [mint, v] of owned) {
       const delta = v.post - v.pre;
@@ -1024,6 +1031,58 @@ export class HeliusProvider {
       foreignTokenMints,
       programs: [...programs],
     };
+  }
+
+  /**
+   * Who acted in this transaction, from the wallet's point of view (the
+   * admission scan's diagnosis): did the wallet read at all, and if it did,
+   * did the wallet sign it, or does it merely own the balances that moved
+   * (third-party/bot execution), or is it not a party at all — the
+   * platform-style trading account whose trades live on executor hot wallets?
+   */
+  async transactionParty(
+    address: string,
+    signature: string,
+    path?: CreditPath,
+  ): Promise<
+    | { kind: 'unreadable' }
+    | { kind: 'no-party' }
+    | { kind: 'party'; summary: LeaderTxSummary; how: 'self-signed' | 'owned-deltas' }
+  > {
+    const tx = await this.rpc<{
+      slot?: number;
+      blockTime?: number | null;
+      transactionIndex?: number;
+      meta?: { err?: unknown } | null;
+      transaction?: { signatures?: string[] };
+    } | null>(
+      'getTransaction',
+      [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 255, commitment: 'confirmed' }],
+      path ?? this.spendPath,
+      (path ?? this.spendPath) === 'watch' ? address : undefined,
+    );
+    if (!tx) return { kind: 'unreadable' };
+    const wrapped = {
+      signature,
+      slot: tx.slot ?? 0,
+      transactionIndex: tx.transactionIndex ?? 0,
+      blockTime: tx.blockTime ?? null,
+      err: tx.meta?.err != null,
+      raw: tx,
+    };
+    const summary = HeliusProvider.toSignerTxSummary(address, wrapped);
+    if (!summary) return { kind: 'no-party' };
+    const raw = tx as {
+      transaction?: { message?: { accountKeys?: Array<string | { pubkey: string; signer?: boolean }> } };
+    };
+    const rawKeys = raw.transaction?.message?.accountKeys ?? [];
+    const header = (raw.transaction?.message as { header?: { numRequiredSignatures?: number } } | undefined)
+      ?.header;
+    const required = Math.min(Math.max(header?.numRequiredSignatures ?? 1, 0), rawKeys.length);
+    const selfSigned = rawKeys
+      .slice(0, required)
+      .some((k) => (typeof k === 'string' ? k : k.pubkey) === address);
+    return { kind: 'party', summary, how: selfSigned ? 'self-signed' : 'owned-deltas' };
   }
 }
 

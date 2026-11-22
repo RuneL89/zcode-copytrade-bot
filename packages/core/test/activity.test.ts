@@ -80,13 +80,15 @@ describe('measureCopyableActivity', () => {
     expect(s.entries24h).toBe(1);
   });
 
-  it('a token-for-token swap is a movement, never a funded buy or sell', () => {
+  it('a coin-for-coin swap is a movement and counts as the entry it is', () => {
+    // Operator decision 2026-11-22: the rotation into the incoming coin is a
+    // buy signal, priced at what the incoming coin is worth.
     const s = measureCopyableActivity(
       [tx({ tokenDeltas: [leg('TOKEN', 5_000n), leg('CHEAP', -2_000_000n)] })],
       opts(),
     );
     expect(s.copyableTrades24h).toBe(1); // the coins moved
-    expect(s.entries24h).toBe(0); // but no funding leg was paid
+    expect(s.entries24h).toBe(1); // the incoming coin is the entry
     expect(s.exits24h).toBe(0);
   });
 

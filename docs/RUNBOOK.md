@@ -493,12 +493,14 @@ for watched wallets with an open shadow position or a funded buy in the last
 hour, so an idle watcher waits for the next public read instead of spending
 credits. A failed page or detail read
 keeps the last good activity reading and retries the candidate next tick
-instead of recording zeros. A complete 24h window of at most 12 signatures is
-a census; a busier wallet (or one beyond three signature pages) is read through
-its newest 12 signatures and may be admitted with a `partial` reading (a lower
-bound). A prefix that cannot prove the three-buy gate is deferred for 30
-minutes; a spent detail budget is deferred for 10 minutes so one candidate
-cannot hold the only admission slot. Live mode starts on the same
+instead of recording zeros. A complete 24h window that fits the detail budget
+is a census; a busier wallet (or one beyond three signature pages) is read
+through its newest 12 signatures first, then deepened in 12-detail batches up
+to `ADMISSION_MAX_DETAILS_PER_SCAN` (default 60) until the gate is proven, and
+may be admitted with a `partial` reading (a lower bound). A prefix that still
+cannot prove the gate backs off longer each time (30 min, 2h, 8h, 24h) so an
+unprovable wallet cannot hold the only admission slot forever; a spent detail
+budget is deferred for 10 minutes. Live mode starts on the same
 free plan; if credits ever get tight (higher capital, faster copying wanted),
 the options are a slower poll or the Developer tier
 ($49/mo, 10M credits — ~3+ months at 8 s polling).
@@ -583,7 +585,7 @@ pnpm sweep --risk-file my-risk.json         # baseline overrides (JSON object)
 | Badge RECONCILIATION                        | open reconciliation case → §6.                                                                                                                          |
 | PAUSED_NO_TRADER                            | no chair is filled → nothing to do; the promotion queue and the demand-driven discovery fill it.                                                        |
 | Entries never happen                        | check Audit → RISK REJECTIONS (rule names map to `.env` limits); check pause/emergency state.                                                           |
-| Board wallets active, no admissions         | check the `watch detail deferred (admission budget)` / `admission prefix … did not prove` audits; tune `WATCH_DETAIL_PER_MINUTE` or the admission gate. |
+| Board wallets active, no admissions         | check the `watch detail deferred (admission budget)` / `admission prefix … did not prove` audits; tune `WATCH_DETAIL_PER_MINUTE` / `ADMISSION_MAX_DETAILS_PER_SCAN` or the admission gate. A repeated `attempt N` suffix on the defer audits means the wallet's activity cannot be proven (quiet, or trades signed by a bot executor so no funded swap is attributable) — the ladder backs off automatically. |
 | Helius 429                                  | rate limited — increase `LEADER_POLL_INTERVAL_MS`.                                                                                                      |
 | `worker lock held by another process`       | a worker is already running; stop it or remove a stale `data/worker.lock`.                                                                              |
 | Webhook/robots/CAPTCHA errors from fomo-web | adapter failed closed by design; log in manually in the visible browser or import manually.                                                             |

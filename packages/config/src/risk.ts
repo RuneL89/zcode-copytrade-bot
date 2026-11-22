@@ -146,6 +146,15 @@ export const riskConfigSchema = z
      * daily governor cap remains the hard stop.
      */
     WATCH_DETAIL_PER_MINUTE: positiveInt('WATCH_DETAIL_PER_MINUTE'),
+    /**
+     * Detail reads ONE admission scan may spend when its newest 12-signature
+     * prefix cannot prove the funded-buy gate: the scan deepens in 12-detail
+     * batches and stops as soon as the gate is proven. A busy wallet whose
+     * newest signatures mix buys and sells can therefore still prove the gate
+     * without the scan deferring it forever. One pass never spends more than
+     * WATCH_DETAIL_PER_MINUTE.
+     */
+    ADMISSION_MAX_DETAILS_PER_SCAN: positiveInt('ADMISSION_MAX_DETAILS_PER_SCAN'),
     /** Evict wallets that fail the funded-buy screen for this many days. */
     WATCH_EVICTION_DAYS: positiveInt('WATCH_EVICTION_DAYS'),
     /** Seed the shadow record from the admission scan (observed trades only). */
@@ -257,9 +266,11 @@ export const DEFAULT_RISK: RiskConfig = {
   PER_MINT_CAP_USD: 0, // 0 = disabled (operator decision: no cap for now)
   WATCH_POLL_MS: 300000,
   ROSTER_POLL_MS: 45000,
-  // Admission scans one candidate per tick and caps each pass at 12 details;
-  // this config is the hard upper bound for both admission and watch fallback.
+  // Admission scans one candidate per tick; a busy wallet's scan deepens past
+  // the newest 12 up to this many details, stopping at the gate. WATCH_DETAIL_PER_MINUTE
+  // stays the hard upper bound for both admission and watch fallback.
   WATCH_DETAIL_PER_MINUTE: 120,
+  ADMISSION_MAX_DETAILS_PER_SCAN: 60,
   WATCH_EVICTION_DAYS: 14,
   SHADOW_BACKFILL_ON_ADMIT: true,
   DISCOVERY_MIN_INTERVAL_MS: 1800000,
@@ -312,6 +323,7 @@ const settingsPatchObjectSchema = z
     WATCH_POLL_MS: z.number().int().min(60_000).optional(),
     ROSTER_POLL_MS: z.number().int().min(15_000).optional(),
     WATCH_DETAIL_PER_MINUTE: z.number().int().positive().optional(),
+    ADMISSION_MAX_DETAILS_PER_SCAN: z.number().int().positive().optional(),
     WATCH_EVICTION_DAYS: z.number().int().positive().optional(),
     SHADOW_BACKFILL_ON_ADMIT: z.boolean().optional(),
     DISCOVERY_MIN_INTERVAL_MS: z.number().int().min(600_000).optional(),
