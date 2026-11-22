@@ -1924,6 +1924,84 @@ describe('admission scan fail-closed', () => {
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
   });
 
+  it('stops at the base window when no attributed buy shows in it', async () => {
+    seedCandidate('cand_base_gate', 'base_gate', 'WalletBaseGate');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    const lastBuy = iso(Date.now() - HOUR);
+    setActivity('cand_base_gate', {
+      swaps24h: 8,
+      lastSwapAt: lastBuy,
+      lastBuyAt: lastBuy,
+      buys24h: 3,
+      sells24h: 5,
+      checkedAt: oldAt,
+    });
+
+    // Attributed activity throughout, but all three buys sit beyond the base
+    // 24. The scan stops at the base instead of chasing depth for a wallet
+    // that has shown it nothing to prove yet; the defer ladder owns the rest.
+    const buyIndexes = new Set([28, 32, 36]);
+    for (let i = 0; i < 44; i++) {
+      const signature = `base_gate_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      h.summaries.set(
+        signature,
+        swapSummary({
+          signature,
+          minutesAgo: i + 1,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: buyIndexes.has(i) ? 'buy' : 'sell',
+        }),
+      );
+    }
+
+    await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_base_gate')!;
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.buys24h).toBe(3);
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    expect(h.heliusDetailCalls.get('WalletBaseGate')).toBe(24);
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_base_gate'));
+    expect(deferredUntil).toBeDefined();
+    expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
+  });
+
+  it('deepens when the base window shows progress and proves a near-miss wallet', async () => {
+    seedCandidate('cand_near_miss', 'near_miss', 'WalletNearMiss');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_near_miss', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // One buy inside the base 24 shows the wallet is a trader; the scan keeps
+    // deepening while buys keep appearing and proves the gate at read 41.
+    const buyIndexes = new Set([5, 30, 40]);
+    for (let i = 0; i < 60; i++) {
+      const signature = `near_miss_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      h.summaries.set(
+        signature,
+        swapSummary({
+          signature,
+          minutesAgo: i + 1,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: buyIndexes.has(i) ? 'buy' : 'sell',
+        }),
+      );
+    }
+
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_near_miss')!;
+    expect(candidate.activityCheckStatus).toBe('partial');
+    expect(candidate.buys24h).toBe(3);
+    expect(repo.getWatchWallet(handle.db, 'cand_near_miss')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+    expect(h.heliusDetailCalls.get('WalletNearMiss')).toBe(41);
+  });
+
   it('records a complete window of exactly the detail budget as ok', async () => {
     seedCandidate('cand_exact_12', 'exact_12', 'WalletExact12');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));

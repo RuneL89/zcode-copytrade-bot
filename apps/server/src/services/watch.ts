@@ -168,11 +168,20 @@ const ADMISSION_MAX_PAGES = 3;
  */
 export const ADMISSION_DETAILS_PER_TICK = 12;
 /**
- * When the newest 12 cannot prove the gate, the scan deepens in 12-detail
- * batches up to this many reads, stopping the moment the gate is proven. A
- * hyperactive wallet whose newest signatures mix buys and sells (3 buys in the
- * newest 12, 40+ across the day) is otherwise deferred forever despite being
- * the best candidate on the board.
+ * Detail reads every scan gets before any gating: a window this small is a
+ * complete census; beyond it the scan is deepening and must show progress
+ * (at least one attributed funded buy) to keep spending. A wallet whose buys
+ * all sit deeper than this without one in the base window is not chased —
+ * the defer ladder retries it, and the platform-style exit below stops
+ * unattributable wallets at the same depth.
+ */
+export const ADMISSION_BASE_DETAILS_PER_SCAN = 24;
+/**
+ * The absolute ceiling of one admission scan: the base 24 deepen in 12-detail
+ * batches up to this many reads while the scan keeps finding attributed buys,
+ * stopping the moment the gate is proven. A hyperactive wallet whose newest
+ * signatures mix buys and sells (1 buy in the base 24, 40+ across the day) is
+ * otherwise deferred forever despite being the best candidate on the board.
  */
 export const ADMISSION_MAX_DETAILS_PER_SCAN = 60;
 /** A transient detail-budget miss leaves the queue for this long, so it cannot starve peers. */
@@ -466,11 +475,16 @@ export class WatchService {
     let buysSeen = 0;
     let detailed = 0;
     for (; detailed < detailRows.length; detailed++) {
-      // Deepening phase (past the first batch): stop the moment the gate is
-      // proven — the reading is a partial lower bound anyway, and the budget
-      // belongs to the rest of the queue. Quiet wallets (a window that fits
-      // the first batch) always get their complete census.
+      // Gate proven past the first batch: stop immediately — the reading is a
+      // partial lower bound anyway, and the budget belongs to the rest of the
+      // queue. Quiet wallets (a window that fits the first batch) always get
+      // their complete census.
       if (detailed >= ADMISSION_DETAILS_PER_TICK && buysSeen >= (opts.proveBuys ?? Number.MAX_SAFE_INTEGER)) {
+        break;
+      }
+      // Past the base window with no attributable buy yet: depth will not help
+      // — stop and let the defer ladder own the wallet.
+      if (detailed >= ADMISSION_BASE_DETAILS_PER_SCAN && buysSeen === 0) {
         break;
       }
       // A platform-style account (every readable transaction third-party with

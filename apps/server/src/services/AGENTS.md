@@ -123,11 +123,14 @@ no LLM in the loop (D6).
   page and pages backwards to the 24h cutoff, and scans one candidate per watch
   tick. A window that fits the detail budget is detailed in full and written
   as `ok`; a busier wallet (or one that does not fit in three pages) gets a
-  bounded newest-prefix reading instead: the newest 12 in-window signatures,
-  deepened in 12-detail batches up to `ADMISSION_MAX_DETAILS_PER_SCAN`
+  bounded newest-prefix reading instead: the newest 24 in-window signatures,
+  deepened in 12-detail batches beyond that only while the scan keeps finding
+  attributed funded buys, up to `ADMISSION_MAX_DETAILS_PER_SCAN`
   (default 60) and stopping the moment `ADMISSION_MIN_BUYS_24H` funded buys
   are proven — a hyperactive wallet whose newest signatures mix buys and
-  sells can otherwise never prove the gate. A proven prefix admits the wallet
+  sells can otherwise never prove the gate, while a wallet that shows no
+  attributable buy in its base window is not chased by depth. A proven prefix
+  admits the wallet
   and is written as `partial` — a lower bound, never an `ok` census. A prefix
   that still cannot prove the gate keeps the last good columns and defers on
   an escalating ladder (30 min, 2h, 8h, 24h) tracked by an
