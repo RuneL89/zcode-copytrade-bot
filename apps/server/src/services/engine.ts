@@ -276,6 +276,8 @@ export class CopyEngine {
     if (event.kind === 'skipped') return;
     if (event.kind === 'swap_buy') await this.handleLeaderBuy(activationId, candidateId, summary, event);
     if (event.kind === 'swap_sell') await this.handleLeaderSell(activationId, candidateId, summary, event);
+    if (event.kind === 'swap_rotate')
+      await this.handleLeaderRotate(activationId, candidateId, summary, event);
     this.callbacks.onStateChanged();
   }
 
@@ -613,6 +615,103 @@ export class CopyEngine {
 
     // Persisted (pending_quote + reservation) before any quote/sign.
     await this.runIntent(spec, { activationId, candidateId, eventSignature: event.signature });
+  }
+
+  /**
+   * Coin-for-coin rotation (operator decision 2026-11-22): the leader exited
+   * one coin and entered another in the same transaction. Mirror both legs
+   * through the existing handlers — exit our position in the outgoing coin
+   * via the normal leader-sell path (proportional, no-op when we hold none),
+   * then enter the incoming coin via the normal leader-buy path, sized at
+   * 0.25x of the incoming coin's swap-time USD value inside every existing
+   * cap. One quote prices both legs: the rotation's own exchange rate makes
+   * the outgoing coin worth what the incoming coin was received for. Fail
+   * closed: a stale or unpriceable rotation trades neither leg and records
+   * why.
+   */
+  private async handleLeaderRotate(
+    activationId: string,
+    candidateId: string,
+    summary: LeaderTxSummary,
+    event: Extract<LeaderClassifiedEvent, { kind: 'swap_rotate' }>,
+  ): Promise<void> {
+    if (isEventTooOld(event.blockTime, Date.now(), this.risk.MAX_COPY_EVENT_AGE_SECONDS)) {
+      repo.insertRiskRejection(this.db, {
+        activationId,
+        rule: 'MAX_COPY_EVENT_AGE_SECONDS',
+        limitValue: String(this.risk.MAX_COPY_EVENT_AGE_SECONDS),
+        actualValue: String(Math.round((Date.now() - event.blockTime * 1000) / 1000)),
+        detail: `stale rotation ${event.signature}`,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    let leaderInUsdMicro: bigint;
+    try {
+      const price = await this.prices.priceOf(event.mint, event.mintDecimals);
+      leaderInUsdMicro =
+        (event.tokenDeltaBase * price.priceUsdMicro) / 10n ** BigInt(Math.max(0, event.mintDecimals));
+    } catch {
+      repo.insertRiskRejection(this.db, {
+        activationId,
+        rule: 'ROTATION_UNPRICED',
+        limitValue: '0',
+        actualValue: '1',
+        detail: `no quote for the incoming coin ${event.mint}: rotation ${event.signature} not mirrored`,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (leaderInUsdMicro <= 0n) {
+      repo.insertRiskRejection(this.db, {
+        activationId,
+        rule: 'ROTATION_UNPRICED',
+        limitValue: '0',
+        actualValue: String(leaderInUsdMicro),
+        detail: `non-positive value for the incoming coin ${event.mint}: rotation ${event.signature} not mirrored`,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Exit leg first: releases the outgoing basis before the entry reserves
+    // new exposure. Position lock only, released before the entry's
+    // activation+budget locks — no inversion. No held position no-ops.
+    await this.handleLeaderSell(activationId, candidateId, summary, {
+      kind: 'swap_sell',
+      signature: event.signature,
+      slot: event.slot,
+      transactionIndex: event.transactionIndex,
+      blockTime: event.blockTime,
+      legIndex: 0,
+      mint: event.outMint,
+      mintDecimals: event.outMintDecimals,
+      tokenDeltaBase: event.outTokenDeltaBase,
+      fundingMint: event.mint,
+      fundingDecimals: event.mintDecimals,
+      fundingDeltaBase: 0n,
+      parserVersion: event.parserVersion,
+    });
+
+    // Entry leg through the normal buy path: the USDC funding branch takes
+    // the micro-USD value verbatim, so sizing, budget reservation, coalescing
+    // and every gate behave exactly as for a funded buy.
+    await this.handleLeaderBuy(activationId, candidateId, summary, {
+      kind: 'swap_buy',
+      signature: event.signature,
+      slot: event.slot,
+      transactionIndex: event.transactionIndex,
+      blockTime: event.blockTime,
+      legIndex: 0,
+      mint: event.mint,
+      mintDecimals: event.mintDecimals,
+      tokenDeltaBase: event.tokenDeltaBase,
+      fundingMint: USDC_MINT,
+      fundingDecimals: 6,
+      fundingDeltaBase: leaderInUsdMicro,
+      parserVersion: event.parserVersion,
+    });
   }
 
   private async handleLeaderSell(

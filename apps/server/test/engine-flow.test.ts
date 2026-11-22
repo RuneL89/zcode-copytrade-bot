@@ -21,6 +21,8 @@ import type { RiskConfig } from '@zcode-bot/config';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const MEOW = 'MeowMint111111111111111111111111111111111111111';
+const NEWMINT = 'NewMint1111111111111111111111111111111111111111';
+const GHOSTMINT = 'GhostMint11111111111111111111111111111111111111';
 const JUP = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
 const LEADER_A = 'LeaderA11111111111111111111111111111111111';
 const LEADER_B = 'LeaderB11111111111111111111111111111111111';
@@ -83,10 +85,27 @@ function leaderSell(mint: string, pre: bigint, post: bigint): LeaderTxSummary {
   });
 }
 
+/** Coin-for-coin rotation: one coin out (partial or full), a different coin in, no funding leg. */
+function leaderRotate(
+  outMint: string,
+  pre: bigint,
+  post: bigint,
+  inMint: string,
+  inBase: bigint,
+): LeaderTxSummary {
+  return tx({
+    tokenDeltas: [
+      { mint: outMint, decimals: 6, preBase: pre, postBase: post, deltaBase: post - pre },
+      { mint: inMint, decimals: 6, preBase: 0n, postBase: inBase, deltaBase: inBase },
+    ],
+  });
+}
+
 const prices = new StaticPriceProvider(
   new Map([
     [USDC, 1_000_000n],
     [MEOW, 500_000n], // $0.50: round trips are deterministic LOSSES with the assumed-price executor
+    [NEWMINT, 2_000_000n], // $2.00
   ]),
 );
 
@@ -754,5 +773,125 @@ describe('live mode: no trading before ARM', () => {
       .filter((i) => i.activationId === 'act_livegate');
     expect(confirmed.length).toBeGreaterThanOrEqual(1);
     control.disarm();
+  });
+});
+
+describe('coin-for-coin rotation copying (operator decision 2026-11-22)', () => {
+  function seedActivation(activationId: string, candidateId: string): void {
+    repo.createActivation(handle.db, {
+      activationId,
+      candidateId,
+      state: 'ACTIVE',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      endReason: null,
+      lossStreak: 0,
+      firedReason: null,
+      source: 'test',
+    });
+  }
+
+  it('mirrors a rotation: exits the outgoing coin, enters the incoming one', async () => {
+    seedActivation('act_rot1', 'cand_rot1');
+    // Leader buys $40 of MEOW (our copy: $10), then rotates the whole MEOW
+    // bag into 24M NEWMINT at $2 = $48 of value (copy: $12, above the $5 min).
+    await engine.handleLeaderTx('act_rot1', 'cand_rot1', leaderBuy(40_000_000n));
+    const meow = repo.openPositions(handle.db).find((p) => p.activationId === 'act_rot1')!;
+    expect(meow.mint).toBe(MEOW);
+
+    await engine.handleLeaderTx(
+      'act_rot1',
+      'cand_rot1',
+      leaderRotate(MEOW, 9_000_000n, 0n, NEWMINT, 24_000_000n),
+    );
+
+    // The outgoing position closed through the leader-exit path…
+    const closed = repo.getPosition(handle.db, meow.positionId)!;
+    expect(closed.status).toBe('closed');
+    expect(BigInt(closed.remainingTokenBase)).toBe(0n);
+    // …and the incoming coin is open at 0.25x of its $48 swap value.
+    const entered = repo.openPositions(handle.db).find((p) => p.activationId === 'act_rot1')!;
+    expect(entered.mint).toBe(NEWMINT);
+    expect(entered.inputUsdMicro).toBe('12000000');
+  });
+
+  it('trades neither leg when the incoming coin has no quote', async () => {
+    seedActivation('act_rot2', 'cand_rot2');
+    await engine.handleLeaderTx('act_rot2', 'cand_rot2', leaderBuy(40_000_000n));
+    const meow = repo.openPositions(handle.db).find((p) => p.activationId === 'act_rot2')!;
+
+    await engine.handleLeaderTx(
+      'act_rot2',
+      'cand_rot2',
+      leaderRotate(MEOW, 9_000_000n, 0n, GHOSTMINT, 24_000_000n),
+    );
+
+    const rejection = repo
+      .listRiskRejections(handle.db, 50)
+      .find((r) => r.activationId === 'act_rot2' && r.rule === 'ROTATION_UNPRICED');
+    expect(rejection).toBeDefined();
+    // Fail closed: the MEOW position was not exited and nothing was entered.
+    expect(repo.getPosition(handle.db, meow.positionId)!.status).toBe('open');
+    expect(repo.openPositions(handle.db).filter((p) => p.activationId === 'act_rot2')).toHaveLength(1);
+  });
+
+  it('trades neither leg of a stale rotation', async () => {
+    seedActivation('act_rot3', 'cand_rot3');
+    await engine.handleLeaderTx('act_rot3', 'cand_rot3', leaderBuy(40_000_000n));
+    const meow = repo.openPositions(handle.db).find((p) => p.activationId === 'act_rot3')!;
+
+    const stale = leaderRotate(MEOW, 9_000_000n, 0n, NEWMINT, 24_000_000n);
+    stale.blockTime = Math.floor(Date.now() / 1000) - 7_200;
+    await engine.handleLeaderTx('act_rot3', 'cand_rot3', stale);
+
+    const rejection = repo
+      .listRiskRejections(handle.db, 50)
+      .find((r) => r.activationId === 'act_rot3' && r.rule === 'MAX_COPY_EVENT_AGE_SECONDS');
+    expect(rejection).toBeDefined();
+    expect(repo.getPosition(handle.db, meow.positionId)!.status).toBe('open');
+    expect(repo.openPositions(handle.db).filter((p) => p.activationId === 'act_rot3')).toHaveLength(1);
+  });
+
+  it('enters only the incoming coin when the outgoing coin is not held', async () => {
+    seedActivation('act_rot4', 'cand_rot4');
+    // No prior buy: the leader's outgoing coin maps to no position of ours —
+    // the exit leg no-ops and only the entry mirrors.
+    await engine.handleLeaderTx(
+      'act_rot4',
+      'cand_rot4',
+      leaderRotate(MEOW, 9_000_000n, 0n, NEWMINT, 24_000_000n),
+    );
+
+    const positions = repo.openPositions(handle.db).filter((p) => p.activationId === 'act_rot4');
+    expect(positions).toHaveLength(1);
+    expect(positions[0]!.mint).toBe(NEWMINT);
+    expect(positions[0]!.inputUsdMicro).toBe('12000000');
+  });
+
+  it('keeps the mirrored exit while entries are paused', async () => {
+    seedActivation('act_rot5', 'cand_rot5');
+    await engine.handleLeaderTx('act_rot5', 'cand_rot5', leaderBuy(40_000_000n));
+    const meow = repo.openPositions(handle.db).find((p) => p.activationId === 'act_rot5')!;
+
+    control.pauseNewEntries('rotation test');
+    try {
+      await engine.handleLeaderTx(
+        'act_rot5',
+        'cand_rot5',
+        leaderRotate(MEOW, 9_000_000n, 0n, NEWMINT, 24_000_000n),
+      );
+    } finally {
+      control.resumeNewEntries();
+    }
+
+    // Mirrored exits continue while paused; the entry is recorded as the
+    // gate's skipped intent, never traded.
+    expect(repo.getPosition(handle.db, meow.positionId)!.status).toBe('closed');
+    expect(repo.openPositions(handle.db).filter((p) => p.activationId === 'act_rot5')).toHaveLength(0);
+    const pausedEntry = repo
+      .intentsInStates(handle.db, ['skipped'])
+      .find((i) => i.activationId === 'act_rot5' && i.mint === NEWMINT);
+    expect(pausedEntry).toBeDefined();
+    expect(pausedEntry!.reason).toBe('new entries paused');
   });
 });

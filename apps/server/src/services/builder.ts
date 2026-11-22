@@ -858,14 +858,15 @@ export class StateBuilder {
           return row?.activationId === a.activationId && p.status === 'requires_reconciliation';
         });
       // The newest observed signal decides what the seat shows: a sell is
-      // SELLING, a buy (even a skipped one) is BUYING; no signal is IDLE.
-      // Reconciliation overrides both — it is the state that freezes a chair.
+      // SELLING, a buy or rotation (even a skipped one) is BUYING; no signal
+      // is IDLE. Reconciliation overrides both — it is the state that freezes
+      // a chair.
       const signal = repo.listObservedEvents(this.db, a.activationId, 1)[0] ?? null;
       const status: DashboardState['pipeline']['roster'][number]['status'] = reconciling
         ? 'RECONCILING'
         : signal?.kind === 'swap_sell'
           ? 'SELLING'
-          : signal?.kind === 'swap_buy' || signal?.kind === 'skipped'
+          : signal?.kind === 'swap_buy' || signal?.kind === 'swap_rotate' || signal?.kind === 'skipped'
             ? 'BUYING'
             : 'IDLE';
       const realized = lots
@@ -974,7 +975,11 @@ export class StateBuilder {
         continue;
       }
 
-      if (ev.kind === 'swap_buy') {
+      if (ev.kind === 'swap_buy' || ev.kind === 'swap_rotate') {
+        // A rotation renders like an entry into its incoming coin; it has no
+        // funding leg, so the leader-side USD/SOL figure stays null rather
+        // than an invented number. The copy intent lookup still matches: the
+        // rotate's synthetic entry uses the same signature.
         const intent = intents.find(
           (i) => i.kind === 'entry' && (i.idempotencyKey ?? '').includes(ev.signature),
         );
