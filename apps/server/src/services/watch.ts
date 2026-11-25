@@ -5,6 +5,7 @@ import {
   canPromote,
   canReenter,
   dayTradeExitDecision,
+  GovernedSpendError,
   unpriceableShadowExitDecision,
   SHADOW_UNPRICEABLE_BACKSTOP_HOURS,
   classifyFundedSwap,
@@ -100,6 +101,16 @@ export interface AdmissionReading {
   partial: boolean;
   /** The scan's funded events, oldest first — used for the optional backfill. */
   events: FundedSwap[];
+  /** Newest on-chain signature the scan saw, whatever its age; null for an empty wallet. */
+  tip: string | null;
+  /** True when the credit governor cut the scan short: the counts are a lower bound. */
+  budgetExhausted: boolean;
+  /**
+   * Set instead of a reading when the wallet's newest signature is the one a
+   * previous, completed scan already saw while finding it below the gate.
+   * Nothing can have improved, so no read was paid for.
+   */
+  unchangedSince?: { buys: number };
   /**
    * Why each detail read resolved the way it did. A wallet whose every
    * readable transaction is a third-party affair with no balances of its own
@@ -131,6 +142,8 @@ export interface WatchTickResult {
   hired: string | null;
   demoted: number;
   archived: number;
+  /** Watching wallets whose slot went back to the admission queue (stale, no open lot). */
+  released: number;
   errors: string[];
 }
 
@@ -194,6 +207,29 @@ const ADMISSION_TRANSIENT_DEFER_MS = 10 * 60_000;
  * (ok census or proven partial) resets the ladder.
  */
 const ADMISSION_DEFER_LADDER_MS = [30 * 60_000, 2 * 3_600_000, 8 * 3_600_000, 24 * 3_600_000];
+/**
+ * A failed read (transport, HTTP, a Helius error) backs the candidate off like
+ * this, so one wallet's persistent error cannot hold the only admission slot.
+ * A single blip costs ten minutes; repeats escalate.
+ */
+const ADMISSION_ERROR_LADDER_MS = [10 * 60_000, 30 * 60_000, 2 * 3_600_000, 8 * 3_600_000];
+/**
+ * Deepening stops after this many consecutive reads without a new funded buy:
+ * past the base window the scan continues only while buys keep appearing.
+ */
+const ADMISSION_DRY_READS_STOP = ADMISSION_BASE_DETAILS_PER_SCAN;
+/**
+ * When the credit governor refuses an admission read (the pre-hire budget for
+ * the day is spent, or the ladder paused it) no candidate can be scanned, so
+ * the whole admission scan rests this long before probing again instead of
+ * spending a tick per candidate to be told the same thing.
+ */
+const ADMISSION_SUSPEND_MS = 15 * 60_000;
+
+/** The wait for the n-th consecutive miss (1-based); the last step repeats. */
+function ladderDefer(ladder: readonly number[], attempts: number): number {
+  return ladder[Math.min(Math.max(attempts, 1) - 1, ladder.length - 1)]!;
+}
 
 /** The detail budget is spent or the public reader failed; retry next tick. */
 class DetailDeferred extends Error {
@@ -208,6 +244,10 @@ const ADMISSION_LOOKBACK_HOURS = 24;
 export class WatchService {
   /** Admission details left in this evaluate() pass (shared across scans). */
   private admissionDetailsRemaining = 0;
+  /** Admission scanning rests until this instant after the credit governor refuses a read. */
+  private admissionSuspendedUntil = 0;
+  /** True while "the watch list is full" has been audited, so it is audited once, not per tick. */
+  private admissionFullNoted = false;
   private readonly watchListDetailCeiling: MinuteCeiling;
 
   constructor(private deps: WatchServiceDeps) {
@@ -251,6 +291,7 @@ export class WatchService {
     address: string,
     limit: number,
     before?: string,
+    heliusPath: 'watch' | 'vetting' = 'watch',
   ): Promise<Array<{ signature: string; blockTime: number | null }>> {
     if (this.deps.publicSolana.configured) {
       try {
@@ -260,7 +301,7 @@ export class WatchService {
         // Public node unavailable: the strict paid fallback below answers or throws.
       }
     }
-    const rows = await this.deps.helius.recentSignaturesStrict(address, limit, before);
+    const rows = await this.deps.helius.recentSignaturesStrict(address, limit, before, heliusPath);
     return rows.map((r) => ({ signature: r.signature, blockTime: r.blockTime }));
   }
 
@@ -299,14 +340,18 @@ export class WatchService {
    * budget. Returns who acted in the transaction — the summary, the fact the
    * wallet only owned the moved balances (bot execution), that it was no
    * party at all (platform-style account), or that the node could not answer.
-   * The daily CreditGovernor cap remains the hard stop.
+   *
+   * Paid from the `vetting` path, NOT `watch`: admission is pre-hire vetting,
+   * it has no per-wallet ceiling there, and its spend can neither drain the
+   * watch-list fallback's bucket nor trip the amber rule that pauses it. A
+   * refusal throws `GovernedSpendError`; `scanWallet` decides what it means.
    */
   private async admissionTxParty(address: string, signature: string) {
     if (this.admissionDetailsRemaining <= 0) {
       throw new DetailDeferred('watch detail deferred (admission budget)');
     }
     this.admissionDetailsRemaining -= 1;
-    return this.deps.helius.transactionParty(address, signature, 'watch');
+    return this.deps.helius.transactionParty(address, signature, 'vetting');
   }
 
   /** The mint's decimals as our own funded-swap record saw them (pricing needs them). */
@@ -415,22 +460,37 @@ export class WatchService {
    * A window with at most ADMISSION_DETAILS_PER_TICK in-window signatures is
    * detailed in full and recorded as a complete (`ok`) reading. A busier
    * wallet — including one whose history does not fit in three signature pages
-   * — gets a bounded newest prefix instead: the scan details the newest 12,
-   * and while `opts.proveBuys` funded buys have not been seen it deepens in
-   * 12-detail batches up to `opts.maxDetails` reads, stopping the moment the
-   * gate is proven. Admission only has to prove the funded-buy gate, not
-   * census the whole day. That reading is marked `partial`; it is a lower
-   * bound and is never stored as an `ok` census. A genuinely empty wallet
-   * still returns an empty complete reading.
+   * — gets a bounded newest prefix instead. The base window (the newest
+   * `ADMISSION_BASE_DETAILS_PER_SCAN`) is always read; past it the scan
+   * deepens only while the gate is still reachable at the base window's own
+   * buy rate and buys keep appearing, up to `opts.maxDetails` reads, and stops
+   * the moment the gate is proven. Admission only has to prove the funded-buy
+   * gate, not census the whole day. That reading is marked `partial`; it is a
+   * lower bound and is never stored as an `ok` census. A genuinely empty
+   * wallet still returns an empty complete reading.
    *
-   * Throws only when a signature page or a detail read itself fails (the
-   * caller preserves the last good columns) or when the paid detail budget is
-   * spent (the caller defers briefly so the queue advances).
+   * Every paid call — a signature page when the public node cannot answer, and
+   * every detail read — is charged to the `vetting` path: the pre-hire budget,
+   * with no per-wallet ceiling, whose spend can neither drain nor pause the
+   * watch-list fallback.
+   *
+   * When the credit governor refuses a read mid-scan, the scan keeps what it
+   * already found and reports `budgetExhausted`. Refused before the first
+   * read, the refusal is rethrown: nothing on the path can spend, and the
+   * caller rests the whole admission scan. Every other failure — transport,
+   * HTTP, the per-pass detail budget — always throws; the caller preserves the
+   * last good columns and defers the candidate so the queue advances.
+   *
+   * With `opts.candidateId` the scan first compares the wallet's newest
+   * signature with the tip a previous completed scan stored while finding the
+   * wallet below the gate. An unchanged tip means nothing new happened
+   * on-chain, so the reading cannot have improved: the scan returns
+   * `unchangedSince` without paying for a single read.
    */
   async scanWallet(
     address: string,
     lookbackHours = ADMISSION_LOOKBACK_HOURS,
-    opts: { proveBuys?: number; maxDetails?: number } = {},
+    opts: { proveBuys?: number; maxDetails?: number; candidateId?: string } = {},
   ): Promise<AdmissionReading> {
     const measuredAt = new Date().toISOString();
     const cutoffSec = Math.floor(Date.now() / 1000) - lookbackHours * 3600;
@@ -442,7 +502,7 @@ export class WatchService {
     let before: string | undefined;
     let covered = false;
     for (let page = 0; page < ADMISSION_MAX_PAGES; page++) {
-      const batch = await this.signaturePageStrict(address, ADMISSION_SIGNATURE_PAGE, before);
+      const batch = await this.signaturePageStrict(address, ADMISSION_SIGNATURE_PAGE, before, 'vetting');
       if (batch.length === 0) {
         covered = true;
         break;
@@ -460,8 +520,16 @@ export class WatchService {
       before = oldest.signature;
     }
 
+    const tip = rows[0]?.signature ?? null;
+    if (opts.candidateId && tip !== null) {
+      const stored = this.storedTip(opts.candidateId);
+      if (stored && stored.tip === tip) return this.unchangedReading(measuredAt, stored.buys);
+    }
+
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
-    const detailRows = inWindow.slice(0, Math.max(ADMISSION_DETAILS_PER_TICK, opts.maxDetails ?? 0));
+    const proveBuys = opts.proveBuys ?? Number.MAX_SAFE_INTEGER;
+    const maxDetails = Math.max(ADMISSION_DETAILS_PER_TICK, opts.maxDetails ?? 0);
+    const detailRows = inWindow.slice(0, maxDetails);
 
     const events: FundedSwap[] = [];
     const evidence: AdmissionReading['evidence'] = {
@@ -474,18 +542,26 @@ export class WatchService {
     };
     let buysSeen = 0;
     let detailed = 0;
+    let dryReads = 0;
+    let budgetExhausted = false;
     for (; detailed < detailRows.length; detailed++) {
       // Gate proven past the first batch: stop immediately — the reading is a
       // partial lower bound anyway, and the budget belongs to the rest of the
       // queue. Quiet wallets (a window that fits the first batch) always get
       // their complete census.
-      if (detailed >= ADMISSION_DETAILS_PER_TICK && buysSeen >= (opts.proveBuys ?? Number.MAX_SAFE_INTEGER)) {
+      if (detailed >= ADMISSION_DETAILS_PER_TICK && buysSeen >= proveBuys) {
         break;
       }
-      // Past the base window with no attributable buy yet: depth will not help
-      // — stop and let the defer ladder own the wallet.
-      if (detailed >= ADMISSION_BASE_DETAILS_PER_SCAN && buysSeen === 0) {
-        break;
+      // Past the base window, keep reading only while the gate is reachable at
+      // the base window's own buy rate (buys so far, extrapolated over the
+      // whole scan budget) and buys keep appearing. A wallet that cannot
+      // reach the bar at that rate is not chased by depth — the defer ladder
+      // re-reads it when it has traded again.
+      if (detailed >= ADMISSION_BASE_DETAILS_PER_SCAN) {
+        const reachable = buysSeen * maxDetails >= proveBuys * ADMISSION_BASE_DETAILS_PER_SCAN;
+        if (!reachable || dryReads >= ADMISSION_DRY_READS_STOP) {
+          break;
+        }
       }
       // A platform-style account (every readable transaction third-party with
       // none of the wallet's own balances moving) can never prove the gate no
@@ -498,7 +574,20 @@ export class WatchService {
       ) {
         break;
       }
-      const party = await this.admissionTxParty(address, detailRows[detailed]!.signature);
+      const party = await this.admissionTxParty(address, detailRows[detailed]!.signature).catch(
+        (e: unknown): null => {
+          // The day's pre-hire budget (or the ladder) ended the scan: what the
+          // reads so far found still holds as a lower bound. A 429 backoff is
+          // a blip, not a budget: let it throw.
+          if (e instanceof GovernedSpendError && e.decision.reason !== 'backoff' && detailed > 0) return null;
+          throw e;
+        },
+      );
+      if (party === null) {
+        budgetExhausted = true;
+        break;
+      }
+      dryReads++;
       if (party.kind === 'unreadable') {
         evidence.unreadable++;
         continue;
@@ -513,10 +602,13 @@ export class WatchService {
       const swap = classifyFundedSwap(party.summary);
       if (swap) {
         events.push(swap);
-        if (swap.side === 'buy' || swap.side === 'swap') buysSeen++;
+        if (swap.side === 'buy' || swap.side === 'swap') {
+          buysSeen++;
+          dryReads = 0;
+        }
       }
     }
-    const partial = !covered || detailed < inWindow.length;
+    const partial = !covered || detailed < inWindow.length || budgetExhausted;
     events.sort((a, b) => (a.blockTime ?? 0) - (b.blockTime ?? 0));
     const buys = events.filter((e) => e.side === 'buy' || e.side === 'swap');
     const newestBuy = buys[buys.length - 1] ?? null;
@@ -527,7 +619,37 @@ export class WatchService {
       measuredAt,
       partial,
       events,
+      tip,
+      budgetExhausted,
       evidence,
+    };
+  }
+
+  /** The tip a completed scan stored for a candidate it found below the gate. */
+  private storedTip(candidateId: string): { tip: string; buys: number } | null {
+    const raw = repo.kvGet(this.db, repo.admissionTipKey(candidateId));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { tip?: unknown; buys?: unknown };
+      return typeof parsed.tip === 'string' && typeof parsed.buys === 'number'
+        ? { tip: parsed.tip, buys: parsed.buys }
+        : null;
+    } catch {
+      return null; // an unparsable record never skips a scan
+    }
+  }
+
+  private unchangedReading(measuredAt: string, buys: number): AdmissionReading {
+    return {
+      fundedBuys24h: buys,
+      lastFundedBuyAt: null,
+      measuredAt,
+      partial: true,
+      events: [],
+      tip: null,
+      budgetExhausted: false,
+      unchangedSince: { buys },
+      evidence: { inWindow: 0, detailed: 0, unreadable: 0, selfSigned: 0, ownedDeltas: 0, noParty: 0 },
     };
   }
 
@@ -887,6 +1009,7 @@ export class WatchService {
       hired: null,
       demoted: 0,
       archived: 0,
+      released: 0,
       errors: [],
     };
 
@@ -913,6 +1036,7 @@ export class WatchService {
     result.hired = evaluation.hired;
     result.demoted = evaluation.demoted;
     result.archived = evaluation.archived;
+    result.released = evaluation.released;
     return result;
   }
 
@@ -968,7 +1092,8 @@ export class WatchService {
   }
 
   /**
-   * Admission scan (bounded per tick), demotion/eviction, then promotion.
+   * Admission scan (bounded per tick), eviction/release/demotion, then
+   * promotion.
    */
   async evaluate(): Promise<{
     admitted: number;
@@ -976,12 +1101,14 @@ export class WatchService {
     hired: string | null;
     demoted: number;
     archived: number;
+    released: number;
   }> {
     let admitted = 0;
     let benched = 0;
     let hired: string | null = null;
     let demoted = 0;
     let archived = 0;
+    let released = 0;
 
     // --- admission: candidates with a wallet that are not already on the list ---
     // The list is ordered least-recently-measured first (never-measured ahead of
@@ -992,105 +1119,113 @@ export class WatchService {
     // Failure policy: a complete read (including a genuinely empty wallet) is
     // recorded as `ok` and moves the candidate to the back of the queue. A
     // bounded prefix that PROVES the D4 gate is recorded as `partial` and
-    // admitted; a prefix that cannot prove it records NOTHING as a census and
-    // is deferred. A spent detail budget also defers briefly, so one busy
-    // candidate cannot hold the only slot. Every failure path preserves the
-    // last good activity columns and their true freshness.
+    // admitted. Anything below the gate — a truncated reading, a complete
+    // window with too few buys, or a wallet unchanged since such a scan —
+    // records what it may and waits on the defer ladder, so one candidate can
+    // never hold the only slot. A scan that throws defers too: a refusal by
+    // the credit governor rests the whole scan (no candidate can spend), a
+    // brief miss waits ten minutes, any other error backs that candidate off
+    // on its own ladder. Every failure path preserves the last good activity
+    // columns and their true freshness.
     this.admissionDetailsRemaining = Math.min(
       Math.max(ADMISSION_DETAILS_PER_TICK, this.risk.ADMISSION_MAX_DETAILS_PER_SCAN),
       this.risk.WATCH_DETAIL_PER_MINUTE,
     );
-    const checkedBefore = new Date(Date.now() - ADMISSION_RESCAN_MS).toISOString();
-    const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK, checkedBefore);
-    for (const candidate of candidates) {
-      const address = repo
-        .listCandidateAddresses(this.db, candidate.candidateId)
-        .find((a) => a.chain === 'solana')?.address;
-      if (!address) continue;
-      let reading: AdmissionReading;
-      try {
-        reading = await this.scanWallet(address, ADMISSION_LOOKBACK_HOURS, {
-          proveBuys: this.risk.ADMISSION_MIN_BUYS_24H,
-          maxDetails: this.risk.ADMISSION_MAX_DETAILS_PER_SCAN,
-        });
-      } catch (e) {
-        const failedAt = new Date().toISOString();
-        const transient = e instanceof DetailDeferred;
-        const deferredUntil = transient
-          ? new Date(Date.now() + ADMISSION_TRANSIENT_DEFER_MS).toISOString()
-          : null;
-        if (deferredUntil !== null) {
-          repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, failedAt);
-        } else {
-          repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
-        }
-        repo.audit(
-          this.db,
-          'watch',
-          `admission scan failed for ${candidate.handle} (fail closed): ${
-            e instanceof Error ? e.message : e
-          }`,
-          {
+    // Nothing can be admitted while the list is full, so a scan could only
+    // spend pre-hire credits to be turned away. Resume as soon as a slot frees.
+    const watchingCount = repo.listWatchWallets(this.db, 'watching').length;
+    const listFull = watchingCount >= this.risk.WATCH_LIST_SIZE;
+    if (listFull !== this.admissionFullNoted) {
+      this.admissionFullNoted = listFull;
+      repo.audit(
+        this.db,
+        'watch',
+        listFull
+          ? `admission idle: watch list is full (${watchingCount}/${this.risk.WATCH_LIST_SIZE}); scanning resumes when a slot frees`
+          : `admission resumed: watch list has room (${watchingCount}/${this.risk.WATCH_LIST_SIZE})`,
+        {},
+      );
+    }
+    const minBuys = this.risk.ADMISSION_MIN_BUYS_24H;
+    if (!listFull && Date.now() >= this.admissionSuspendedUntil) {
+      const checkedBefore = new Date(Date.now() - ADMISSION_RESCAN_MS).toISOString();
+      const candidates = repo.listAdmissionScanCandidates(this.db, ADMISSION_SCAN_PER_TICK, checkedBefore);
+      for (const candidate of candidates) {
+        const address = repo
+          .listCandidateAddresses(this.db, candidate.candidateId)
+          .find((a) => a.chain === 'solana')?.address;
+        if (!address) continue;
+        let reading: AdmissionReading;
+        try {
+          reading = await this.scanWallet(address, ADMISSION_LOOKBACK_HOURS, {
+            proveBuys: minBuys,
+            maxDetails: this.risk.ADMISSION_MAX_DETAILS_PER_SCAN,
             candidateId: candidate.candidateId,
-            address,
-            ...(deferredUntil === null ? {} : { deferredUntil }),
-          },
-        );
-        continue;
-      }
-      if (reading.partial && reading.fundedBuys24h < this.risk.ADMISSION_MIN_BUYS_24H) {
-        // The deepened prefix did not prove the gate. Never overwrite the last
-        // good census with a truncated reading; back off longer each time so a
-        // wallet that cannot be proven — genuinely quiet, or trading through
-        // accounts this scanner cannot attribute — cannot hold the one
-        // admission slot every 30 minutes forever.
-        const attempts = this.bumpAdmissionAttempts(candidate.candidateId);
-        const deferMs =
-          ADMISSION_DEFER_LADDER_MS[Math.min(attempts - 1, ADMISSION_DEFER_LADDER_MS.length - 1)]!;
-        const deferredUntil = new Date(Date.now() + deferMs).toISOString();
-        repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
-        const ev = reading.evidence;
-        const readable = ev.detailed + ev.noParty;
-        const verdict =
-          ev.selfSigned + ev.ownedDeltas > 0
-            ? 'attributed'
-            : readable > 0
-              ? `third-party-signed ${readable}/${readable} readable — no wallet-owned balances moved`
-              : ev.unreadable > 0
-                ? `unreadable ${ev.unreadable}/${ev.unreadable} read`
-                : 'quiet';
-        repo.audit(
-          this.db,
-          'watch',
-          `admission prefix for ${candidate.handle} did not prove ` +
-            `${this.risk.ADMISSION_MIN_BUYS_24H} funded buys; deferred ${Math.round(deferMs / 60_000)} min (attempt ${attempts}, ${verdict})`,
-          { candidateId: candidate.candidateId, address, deferredUntil, attempts, evidence: ev },
-        );
-        continue;
-      }
-      const newestEvent = reading.events[reading.events.length - 1] ?? null;
-      repo.updateCandidateActivity(this.db, candidate.candidateId, {
-        swaps24h: reading.events.length,
-        lastSwapAt:
-          newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
-        lastBuyAt: reading.lastFundedBuyAt,
-        buys24h: reading.fundedBuys24h,
-        sells24h: reading.events.filter((e) => e.side === 'sell').length,
-        status: reading.partial ? 'partial' : 'ok',
-        checkedAt: reading.measuredAt,
-      });
-      try {
-        const verdict = await this.admit(candidate.candidateId, reading);
-        if (verdict.ok) admitted++;
-      } catch (e) {
-        // The reading itself was good; a seat-side failure must not be recorded
-        // as a failed activity check.
-        repo.audit(
-          this.db,
-          'watch',
-          `admission failed for ${candidate.handle}: ${e instanceof Error ? e.message : e}`,
-          { candidateId: candidate.candidateId, address },
-        );
+          });
+        } catch (e) {
+          this.admissionScanFailed(candidate, address, e);
+          continue;
+        }
+        if (reading.unchangedSince) {
+          // The wallet has not moved since a completed scan already read it and
+          // found it below the gate. Nothing can have improved, and no read was
+          // paid for; it keeps waiting on the same ladder.
+          const attempts = this.bumpAdmissionAttempts(candidate.candidateId);
+          const deferMs = ladderDefer(ADMISSION_DEFER_LADDER_MS, attempts);
+          const deferredUntil = new Date(Date.now() + deferMs).toISOString();
+          repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
+          repo.audit(
+            this.db,
+            'watch',
+            `admission unchanged for ${candidate.handle}: no new transaction since the last scan ` +
+              `(${reading.unchangedSince.buys} funded buys); deferred ${Math.round(deferMs / 60_000)} min (attempt ${attempts})`,
+            { candidateId: candidate.candidateId, address, deferredUntil, attempts },
+          );
+          continue;
+        }
+        const belowGate = reading.fundedBuys24h < minBuys;
+        if (belowGate && reading.partial) {
+          // Never overwrite the last good census with a truncated reading.
+          this.deferBelowGate(candidate, address, reading, 'prefix');
+          continue;
+        }
+        const priorAttempts = this.admissionAttempts(candidate.candidateId);
+        const newestEvent = reading.events[reading.events.length - 1] ?? null;
+        repo.updateCandidateActivity(this.db, candidate.candidateId, {
+          swaps24h: reading.events.length,
+          lastSwapAt:
+            newestEvent?.blockTime != null ? new Date(newestEvent.blockTime * 1000).toISOString() : null,
+          lastBuyAt: reading.lastFundedBuyAt,
+          buys24h: reading.fundedBuys24h,
+          sells24h: reading.events.filter((e) => e.side === 'sell').length,
+          status: reading.partial ? 'partial' : 'ok',
+          checkedAt: reading.measuredAt,
+        });
+        if (belowGate && reading.fundedBuys24h > 0) {
+          // A complete window with real buys but too few of them. The census
+          // stands (it is a true reading of the day), and the wallet waits on
+          // the ladder instead of being re-read every time it becomes the
+          // oldest row of its tier. A quiet wallet (no buy at all) is simply
+          // recorded and rejoins the pool's normal rotation.
+          this.deferBelowGate(candidate, address, reading, 'complete window', priorAttempts);
+          continue;
+        }
+        // At or above the gate: when a slot frees this reading has to be taken
+        // again, so no stored tip may short-circuit the rescan.
+        repo.kvDelete(this.db, repo.admissionTipKey(candidate.candidateId));
+        try {
+          const verdict = await this.admit(candidate.candidateId, reading);
+          if (verdict.ok) admitted++;
+        } catch (e) {
+          // The reading itself was good; a seat-side failure must not be recorded
+          // as a failed activity check.
+          repo.audit(
+            this.db,
+            'watch',
+            `admission failed for ${candidate.handle}: ${e instanceof Error ? e.message : e}`,
+            { candidateId: candidate.candidateId, address },
+          );
+        }
       }
     }
 
@@ -1131,6 +1266,33 @@ export class WatchService {
           netPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
         });
         demoted++;
+        continue;
+      }
+      // Stale release: the list is a funnel cap, not a seat for life. A wallet
+      // that has not bought for longer than admission's own freshness rule can
+      // no longer be promoted and would no longer be admitted; with nothing
+      // open there is nothing left to observe. It gives its slot back to the
+      // queue. This is NOT the irreversible archive: the shadow record stays
+      // and a later re-admission continues it.
+      if (
+        lastBuyMs !== null &&
+        now - lastBuyMs >= this.risk.ADMISSION_MAX_LAST_BUY_HOURS * 3_600_000 &&
+        openLots === 0
+      ) {
+        const quietHours = Math.round((now - lastBuyMs) / 3_600_000);
+        repo.releaseWatchWallet(this.db, wallet.candidateId);
+        repo.audit(
+          this.db,
+          'watch',
+          `watch released: no funded buy for ${quietHours}h and nothing open; slot returned to the admission queue`,
+          {
+            candidateId: wallet.candidateId,
+            lastFundedBuyAt: wallet.lastFundedBuyAt,
+            closedCount: aggregates.closedCount,
+            netPnlUsdMicro: aggregates.netPnlUsdMicro.toString(),
+          },
+        );
+        released++;
       }
     }
 
@@ -1208,8 +1370,8 @@ export class WatchService {
       if (filled.hired.length > 0) hired = filled.hired[0]!;
     }
 
-    if (admitted + benched + demoted + archived > 0) this.deps.onStateChanged();
-    return { admitted, benched, hired, demoted, archived };
+    if (admitted + benched + demoted + archived + released > 0) this.deps.onStateChanged();
+    return { admitted, benched, hired, demoted, archived, released };
   }
 
   /** The live inputs of a wallet's own promotion gates (no chair count). */
@@ -1236,17 +1398,138 @@ export class WatchService {
     return canPromote(this.recordInput(candidateId));
   }
 
+  /** Consecutive scans of this candidate that produced no usable admission. */
+  private admissionAttempts(candidateId: string): number {
+    const current = Number(repo.kvGet(this.db, repo.admissionAttemptsKey(candidateId)) ?? '0');
+    return Number.isFinite(current) && current > 0 ? current : 0;
+  }
+
   /**
-   * One more consecutive "did not prove" scan (1-based). Drives the defer
-   * ladder; `updateCandidateActivity` clears the counter when a real reading
-   * (ok census or proven partial) is finally recorded.
+   * One more consecutive scan without a usable admission (1-based). Drives the
+   * defer ladders; `updateCandidateActivity` clears the counter when a real
+   * reading is recorded.
    */
   private bumpAdmissionAttempts(candidateId: string): number {
-    const key = repo.admissionAttemptsKey(candidateId);
-    const current = Number(repo.kvGet(this.db, key) ?? '0');
-    const attempts = (Number.isFinite(current) && current > 0 ? current : 0) + 1;
-    repo.kvSet(this.db, key, String(attempts));
+    const attempts = this.admissionAttempts(candidateId) + 1;
+    repo.kvSet(this.db, repo.admissionAttemptsKey(candidateId), String(attempts));
     return attempts;
+  }
+
+  /**
+   * A scan that found the wallet below the funded-buy gate. The caller has
+   * recorded a complete census already (`kind === 'complete window'`, and
+   * `priorAttempts` is the ladder step that recording has just cleared); a
+   * truncated reading records nothing as a census. Either way the wallet waits
+   * on the defer ladder, and the on-chain tip is stored so an unchanged wallet
+   * is not paid for again — unless the credit budget cut the scan short, in
+   * which case a later full scan may still find more.
+   */
+  private deferBelowGate(
+    candidate: { candidateId: string; handle: string },
+    address: string,
+    reading: AdmissionReading,
+    kind: 'prefix' | 'complete window',
+    priorAttempts?: number,
+  ): void {
+    const minBuys = this.risk.ADMISSION_MIN_BUYS_24H;
+    const attempts =
+      priorAttempts === undefined ? this.bumpAdmissionAttempts(candidate.candidateId) : priorAttempts + 1;
+    const deferMs = ladderDefer(ADMISSION_DEFER_LADDER_MS, attempts);
+    const deferredUntil = new Date(Date.now() + deferMs).toISOString();
+    if (priorAttempts === undefined) {
+      repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
+    } else {
+      // The census was recorded as `ok`; only the eligibility signal is written.
+      repo.kvSet(this.db, repo.admissionAttemptsKey(candidate.candidateId), String(attempts));
+      repo.kvSet(this.db, repo.admissionDeferKey(candidate.candidateId), deferredUntil);
+    }
+    if (!reading.budgetExhausted && reading.tip !== null) {
+      repo.kvSet(
+        this.db,
+        repo.admissionTipKey(candidate.candidateId),
+        JSON.stringify({ tip: reading.tip, buys: reading.fundedBuys24h }),
+      );
+    }
+    const ev = reading.evidence;
+    const readable = ev.detailed + ev.noParty;
+    const verdict =
+      ev.selfSigned + ev.ownedDeltas > 0
+        ? 'attributed'
+        : readable > 0
+          ? `third-party-signed ${readable}/${readable} readable — no wallet-owned balances moved`
+          : ev.unreadable > 0
+            ? `unreadable ${ev.unreadable}/${ev.unreadable} read`
+            : 'quiet';
+    repo.audit(
+      this.db,
+      'watch',
+      `admission ${kind} for ${candidate.handle} did not prove ` +
+        `${minBuys} funded buys (${reading.fundedBuys24h} found); deferred ${Math.round(deferMs / 60_000)} min ` +
+        `(attempt ${attempts}, ${verdict})${reading.budgetExhausted ? ' [cut by the credit budget]' : ''}`,
+      {
+        candidateId: candidate.candidateId,
+        address,
+        deferredUntil,
+        attempts,
+        evidence: ev,
+        budgetExhausted: reading.budgetExhausted,
+      },
+    );
+  }
+
+  /**
+   * A scan that threw. The last good activity columns always stay.
+   *
+   * A refusal by the credit governor — the pre-hire budget for the day is
+   * spent, or the ladder paused the path — is not about this candidate:
+   * nothing can be scanned, so the whole admission scan rests for a while and
+   * the candidate stays first in line. The per-pass detail budget and a 429
+   * backoff are brief: the candidate waits ten minutes. Any other error backs
+   * the candidate off on its own ladder, so a wallet that fails every time
+   * cannot hold the only admission slot.
+   */
+  private admissionScanFailed(
+    candidate: { candidateId: string; handle: string },
+    address: string,
+    e: unknown,
+  ): void {
+    const failedAt = new Date().toISOString();
+    const message = e instanceof Error ? e.message : String(e);
+    const denial = e instanceof GovernedSpendError ? (e.decision.reason ?? 'unknown') : null;
+    if (denial !== null && denial !== 'backoff') {
+      this.admissionSuspendedUntil = Date.now() + ADMISSION_SUSPEND_MS;
+      repo.markCandidateActivityFailed(this.db, candidate.candidateId, failedAt);
+      repo.audit(
+        this.db,
+        'watch',
+        `admission paused ${Math.round(ADMISSION_SUSPEND_MS / 60_000)} min: the credit governor refused a read ` +
+          `for ${candidate.handle} (${message}); the candidate stays first in line`,
+        {
+          candidateId: candidate.candidateId,
+          address,
+          reason: denial,
+          suspendedUntil: new Date(this.admissionSuspendedUntil).toISOString(),
+        },
+      );
+      return;
+    }
+    const brief = denial === 'backoff' || e instanceof DetailDeferred;
+    const attempts = brief ? null : this.bumpAdmissionAttempts(candidate.candidateId);
+    const deferMs = brief ? ADMISSION_TRANSIENT_DEFER_MS : ladderDefer(ADMISSION_ERROR_LADDER_MS, attempts!);
+    const deferredUntil = new Date(Date.now() + deferMs).toISOString();
+    repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, failedAt);
+    repo.audit(
+      this.db,
+      'watch',
+      `admission scan failed for ${candidate.handle} (fail closed): ${message}` +
+        (attempts === null ? '' : `; deferred ${Math.round(deferMs / 60_000)} min (attempt ${attempts})`),
+      {
+        candidateId: candidate.candidateId,
+        address,
+        deferredUntil,
+        ...(attempts === null ? {} : { attempts }),
+      },
+    );
   }
 
   /**

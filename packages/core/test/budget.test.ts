@@ -191,6 +191,27 @@ describe('ring-fence, throttle storm, and the degrade ladder', () => {
     expect(exit.ok).toBe(true);
   });
 
+  it('lets a day of admission scans spend the vetting bucket without pausing the watch fallback', () => {
+    // Admission detail reads are paid from `vetting`. They are the funnel's
+    // normal work, so they must never trip the amber rule that pushes the
+    // watch list onto public RPC — they only stop at their own cap.
+    const governor = new CreditGovernor();
+    for (let i = 0; i < PATH_BUDGETS.vetting.capPerDay; i++) {
+      expect(governor.spend({ path: 'vetting', method: 'getTransaction', atMs: T0 }).ok).toBe(true);
+    }
+    expect(governor.level(T0)).toBe('green');
+    expect(governor.spend({ path: 'vetting', method: 'getTransaction', atMs: T0 })).toMatchObject({
+      ok: false,
+      reason: 'path_cap',
+    });
+    expect(
+      governor.spend({ path: 'watch', method: 'getSignaturesForAddress', atMs: T0, fallback: true }).ok,
+    ).toBe(true);
+    // The month ladder still governs it: at red, pre-hire reads pause.
+    governor.setReportedUsage(MONTH_RED);
+    expect(governor.spend({ path: 'vetting', method: 'getTransaction', atMs: T0 }).reason).toBe('paused');
+  });
+
   it('pauses vetting, agent, token, and wallet at red; roster and exit stay open', () => {
     const governor = new CreditGovernor();
     governor.setReportedUsage(MONTH_RED);

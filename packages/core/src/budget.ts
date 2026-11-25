@@ -60,6 +60,9 @@ export const PATH_BUDGETS: Record<CreditPath, PathBudget> = {
   exit: { capPerDay: 1_500, expectedPerDay: 300, exempt: true },
   wallet: { capPerDay: 500, expectedPerDay: 300, exempt: false },
   watch: { capPerDay: 2_500, expectedPerDay: 800, exempt: false },
+  // Pre-hire reads: the admission scan's detail reads (one candidate per watch
+  // tick) and the manual full-history deep-dive. Keeping them off `watch` is
+  // what lets a day of deep scans run without pausing the watch-list fallback.
   vetting: { capPerDay: 3_000, expectedPerDay: 1_500, exempt: false },
   agent: { capPerDay: 1_500, expectedPerDay: 600, exempt: false },
   token: { capPerDay: 500, expectedPerDay: 200, exempt: false },
@@ -201,8 +204,13 @@ const EMPTY_PATHS = (): Record<CreditPath, number> => ({
  * it into the 75% amber rule would paint every normal day amber and cut the
  * watch fallback. Amber still trips on every other non-exempt path, and health
  * still hard-stops at its own cap.
+ *
+ * `vetting` is not an amber-ratio path either: since 2026-11-24 it carries the
+ * admission scans, which are the funnel's normal work. A day of deep scans
+ * must not trip the ladder that switches the watch list to public RPC. Vetting
+ * still hard-stops at its own cap and still pauses at red.
  */
-const AMBER_RATIO_PATHS: CreditPath[] = ['wallet', 'watch', 'vetting', 'agent', 'token'];
+const AMBER_RATIO_PATHS: CreditPath[] = ['wallet', 'watch', 'agent', 'token'];
 
 const RED_PAUSED: ReadonlySet<CreditPath> = new Set(['vetting', 'agent', 'token', 'wallet']);
 

@@ -124,37 +124,56 @@ no LLM in the loop (D6).
 - **Admission reads fail closed, but a busy wallet is not disqualified.** A
   failed signature page or transaction detail read marks the activity check
   failed via `markCandidateActivityFailed`; the last good activity columns and
-  `activity_checked_at` stay intact, no watch row is created, and a transient
-  failure stays first in line for the next tick. Admission uses the strict
-  page and pages backwards to the 24h cutoff, and scans one candidate per watch
-  tick. A window that fits the detail budget is detailed in full and written
-  as `ok`; a busier wallet (or one that does not fit in three pages) gets a
-  bounded newest-prefix reading instead: the newest 24 in-window signatures,
-  deepened in 12-detail batches beyond that only while the scan keeps finding
-  attributed funded buys, up to `ADMISSION_MAX_DETAILS_PER_SCAN`
-  (default 60) and stopping the moment `ADMISSION_MIN_BUYS_24H` funded buys
-  are proven — a hyperactive wallet whose newest signatures mix buys and
-  sells can otherwise never prove the gate, while a wallet that shows no
-  attributable buy in its base window is not chased by depth. A proven prefix
-  admits the wallet
-  and is written as `partial` — a lower bound, never an `ok` census. A prefix
-  that still cannot prove the gate keeps the last good columns and defers on
-  an escalating ladder (30 min, 2h, 8h, 24h) tracked by an
-  `admission.attempts:<candidateId>` key in `kv`; `updateCandidateActivity`
-  clears the counter when a real reading is recorded. Every detail read goes
-  through `helius.transactionParty`, so the scan knows WHY it could not prove
-  the gate and says so in the defer audit: the wallet signed the transaction,
-  only owns the balances that moved (third-party/bot execution — real trade
-  evidence since 2026-11-22), or is no party at all. When two full batches are
-  readable and none of them is the wallet's own, the pattern is established:
-  the scan stops early (platform-style trading account whose trades live on
-  executor hot wallets — unprovable from this address) and the ladder backs
-  off. A spent Helius detail
-  budget (`WATCH_DETAIL_PER_MINUTE` is the per-pass hard stop) defers for
-  10 minutes so one candidate cannot hold the only admission slot. Freshness
+  `activity_checked_at` stay intact. Admission is paid from the `vetting`
+  credit path (the pre-hire budget — never `watch`, so a day of deep scans can
+  neither drain nor pause the watch-list fallback), uses the strict page and
+  pages backwards to the 24h cutoff, and scans one candidate per watch tick.
+  It idles while the watch list is full (audited once on the flip, not per
+  tick) — scanning to be turned away spends pre-hire credits for nothing. A
+  window that fits the detail budget is detailed in full and written as `ok`;
+  a busier wallet (or one that does not fit in three pages) gets a bounded
+  newest-prefix reading instead: the newest 24 in-window signatures, deepened
+  in 12-detail batches beyond that only while the base window's buy rate can
+  still reach `ADMISSION_MIN_BUYS_24H` and buys keep appearing (a run of
+  24 reads without a new buy stops the deepening), up to
+  `ADMISSION_MAX_DETAILS_PER_SCAN` (default 60) and stopping the moment the
+  gate is proven. A proven prefix admits the wallet and is written as
+  `partial` — a lower bound, never an `ok` census. A wallet still below the
+  gate keeps the last good columns and defers on an escalating ladder
+  (30 min, 2h, 8h, 24h) tracked by an `admission.attempts:<candidateId>` key
+  in `kv`; `updateCandidateActivity` clears the counter when a real reading is
+  recorded, and a complete census below the gate records the census first (a
+  trading wallet is not re-read at full depth every round-robin), while a
+  genuinely empty (complete) read records `ok` zeros and rejoins the pool's
+  normal rotation. The scan also stores the wallet's newest on-chain
+  signature (`admission.tip:<candidateId>`): an unchanged tip — nothing new
+  on-chain since the scan that found it below the gate — answers the reading
+  from the free signature page without paying a single detail read. Every
+  detail read goes through `helius.transactionParty`, so the scan knows WHY it
+  could not prove the gate and says so in the defer audit: the wallet signed
+  the transaction, only owns the balances that moved (third-party/bot
+  execution — real trade evidence since 2026-11-22), or is no party at all.
+  When two full batches are readable and none of them is the wallet's own,
+  the pattern is established: the scan stops early (platform-style trading
+  account whose trades live on executor hot wallets — unprovable from this
+  address) and the ladder backs off. A credit-governor refusal is not the
+  candidate's fault: the whole admission scan rests 15 minutes
+  (`admissionSuspendedUntil`) because no candidate can spend; a 429 backoff
+  or the per-pass `WATCH_DETAIL_PER_MINUTE` budget waits ten minutes on the
+  candidate; any other thrown scan backs that candidate off on a private
+  10 min → 30 min → 2h → 8h ladder. Freshness
   is filtered in SQL before the one-candidate limit, so a recently checked
-  head row cannot consume the tick. A genuinely empty (complete) read still
-  records `ok` zeros and advances the queue.
+  head row cannot consume the tick.
+- **The watch list is a funnel cap, not a seat for life.** On every tick, a
+  watching wallet that has not bought for longer than admission's own
+  freshness rule (`ADMISSION_MAX_LAST_BUY_HOURS`) — with no open shadow lot —
+  is _released_ via `repo.releaseWatchWallet`: the membership row, cursor and
+  admission bookkeeping are deleted and the slot returns to the queue, while
+  the observed events and lots stay so a later re-admission continues the same
+  forward record. This is distinct from the eviction archive (irreversible,
+  `WATCH_EVICTION_DAYS`) and from the negative-sample demotion; releasing
+  cannot lose promotable evidence and keeps admitted-but-stale wallets from
+  clogging the cap (`admission failed: watch list is full`).
 - **Watch-list detail reads are public-only by default.** Helius is a bounded
   15-read/minute safety valve only for watched wallets with an open shadow
   position or a funded buy inside the last hour; idle watchers retry on the

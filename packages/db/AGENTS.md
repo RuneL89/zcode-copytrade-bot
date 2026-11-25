@@ -75,10 +75,16 @@ and every repository function the server calls.
   successful `updateCandidateActivity` deletes it. The consecutive-failure
   count behind the admission defer ladder lives in a sibling
   `admission.attempts:<candidateId>` key, which the same
-  `updateCandidateActivity` clears. Neither key is a freshness stamp and
-  neither changes the activity columns. The query's optional `checkedBefore`
-  cutoff filters recently measured rows before the SQL limit, so a
-  one-candidate admission tick cannot be consumed by a fresh head row.
+  `updateCandidateActivity` clears; a third sibling,
+  `admission.tip:<candidateId>`, stores the newest on-chain signature a
+  completed scan saw so an unchanged wallet is not re-read. None of these keys
+  is a freshness stamp and none changes the activity columns.
+  `releaseWatchWallet` returns a stale watch slot to the admission queue: it
+  deletes the membership row, its cursor and all three admission keys, but
+  keeps the observed events and shadow lots for a later re-admission (distinct
+  from `resetWatchRecord`, which erases the evidence too). The query's optional
+  `checkedBefore` cutoff filters recently measured rows before the SQL limit,
+  so a one-candidate admission tick cannot be consumed by a fresh head row.
 - **Exit-queue lookups are bounded helpers.** `listKvByPrefix` reads
   `exit.queue:*` rows for the runtime retry consumer. `latestFailedExitIntent`
   resolves a legacy queue row by position and returns only a `failed` exit

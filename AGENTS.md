@@ -150,21 +150,30 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
 - Helius timer polling is signature-first (`getSignaturesForAddress`, then
   `getTransaction` for an unseen signature). `getTransactionsForAddress` is
   vetting-only. Enhanced Transactions is deprecated — do not reintroduce it.
-- Admission is a bounded scan. A complete 24h window that fits the detail
-  budget is a census and is stored as `ok`; a busier wallet (or one beyond
-  three signature pages) gets a newest-prefix reading — the newest 24
-  signatures, deepened in 12-detail batches beyond that only while attributed
-  funded buys keep appearing, up to `ADMISSION_MAX_DETAILS_PER_SCAN`
-  (default 60), stopping the moment the gate is proven — and may be admitted
-  as `partial`, a lower bound that is never stored as an `ok` census. A prefix
-  that cannot prove `ADMISSION_MIN_BUYS_24H` funded buys defers on an
-  escalating ladder (30 min → 2h → 8h → 24h, reset when a real reading is
-  recorded) so an unprovable wallet cannot hold the one admission slot
-  forever. Every detail read reports WHY it failed (`transactionParty`): the
-  wallet signed the tx, only owns the balances that moved (third-party/bot
+- Admission is a bounded scan paid from the `vetting` credit path (the
+  pre-hire budget — never from `watch`, so a day of deep scans can neither
+  drain nor pause the watch-list fallback). A complete 24h window that fits
+  the detail budget is a census and is stored as `ok`; a busier wallet (or one
+  beyond three signature pages) gets a newest-prefix reading — the newest 24
+  signatures, deepened in 12-detail batches beyond that only while the base
+  window's buy rate can still reach the gate and buys keep appearing, up to
+  `ADMISSION_MAX_DETAILS_PER_SCAN` (default 60), stopping the moment the gate
+  is proven — and may be admitted as `partial`, a lower bound that is never
+  stored as an `ok` census. A wallet below the gate waits on an escalating
+  ladder (30 min → 2h → 8h → 24h, reset when a real reading is recorded), and
+  the scan stores its newest on-chain signature: an unchanged wallet is not
+  re-read at all. When the list is full, admission idles instead of scanning
+  to be turned away; a watching wallet that has not bought for longer than
+  admission's own freshness rule — with nothing open — is _released_: its slot
+  returns to the queue while its shadow record stays for a later
+  re-admission. Every detail read reports WHY it failed (`transactionParty`):
+  the wallet signed the tx, only owns the balances that moved (third-party/bot
   execution — real trade evidence since 2026-11-22), or is no party at all;
   two full batches of no-party reads stop the scan early (platform-style
-  account). A spent `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the
+  account). A credit-governor refusal is not the candidate's fault: the whole
+  scan rests 15 minutes (a 429 blip waits ten on the candidate); any other
+  thrown scan backs its candidate off on a private 10 min → 30 min → 2h → 8h
+  ladder. A spent `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the
   candidate briefly so it cannot starve the admission queue.
 - Jupiter uses Swap API v2 `GET /swap/v2/build` on `api.jup.ag` (free key).
   Paper quotes fall back to a cached price. Live assembly is enabled only
