@@ -136,6 +136,8 @@ export class Runtime {
   private seatRefreshTimer: ReturnType<typeof setInterval> | null = null;
   readonly creditGovernor = new CreditGovernor();
   private rosterPush: HeliusRosterPush | null = null;
+  /** Rolling 10-min ingest counter per address: the velocity limiter's window. */
+  private ingestWindow = new Map<string, { start: number; count: number; audited: boolean }>();
   /** Caps Helius getTransaction during a hire or reconnect backfill. */
   private backfillCeiling = new MinuteCeiling(HIRE_BACKFILL_PER_MINUTE);
   private rosterPollMs = 0;
@@ -979,6 +981,45 @@ export class Runtime {
     signature: string,
     source: 'push' | 'backfill',
   ): Promise<void> {
+    const mode = this.config.mode === 'live' ? 'live' : 'paper';
+    const act = repo.listActiveActivations(this.db.db, mode).find((row) => {
+      if (row.state !== 'ACTIVE') return false;
+      return repo
+        .listCandidateAddresses(this.db.db, row.candidateId)
+        .some((item) => item.address === address);
+    });
+    if (!act) return;
+
+    // Velocity limiter (incident 2026-11-25): an event machine on a seat would
+    // otherwise turn the roster bucket into a firehose before the monitor's
+    // rate watcher fires the seat. Past LEADER_MAX_EVENTS_PER_10MIN the fetch
+    // is dropped until the window rolls; the monitor polls the cursor forward
+    // so dropped events are not re-fetched, and the seat is fired on the next
+    // tick if the rate holds.
+    const nowMs = Date.now();
+    let window = this.ingestWindow.get(address);
+    if (!window || nowMs - window.start >= 600_000) {
+      window = { start: nowMs, count: 0, audited: window?.audited ?? false };
+      this.ingestWindow.set(address, window);
+    }
+    window.count++;
+    const eventCap = this.config.risk.LEADER_MAX_EVENTS_PER_10MIN;
+    if (window.count > eventCap) {
+      if (!window.audited) {
+        window.audited = true;
+        repo.audit(
+          this.db.db,
+          'monitor',
+          `ingest limiter: ${address} passed ${eventCap} events/10 min — dropping events until the window rolls; the rate watcher fires the seat if it holds`,
+          {
+            address,
+            activationId: act.activationId,
+          },
+        );
+      }
+      return;
+    }
+
     let summary = null;
     if (this.publicSolana.configured) {
       try {
@@ -995,14 +1036,6 @@ export class Runtime {
       summary = await this.helius.transactionSummary(address, signature, 'roster').catch(() => null);
     }
     if (!summary) return;
-    const mode = this.config.mode === 'live' ? 'live' : 'paper';
-    const act = repo.listActiveActivations(this.db.db, mode).find((row) => {
-      if (row.state !== 'ACTIVE') return false;
-      return repo
-        .listCandidateAddresses(this.db.db, row.candidateId)
-        .some((item) => item.address === address);
-    });
-    if (!act) return;
     await this.engine.handleLeaderTx(act.activationId, act.candidateId, summary);
     const saved = repo.getCursor(this.db.db, address);
     if (saved && saved.activationId === act.activationId && saved.lastSlot > summary.slot) return;

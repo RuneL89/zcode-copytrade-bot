@@ -24,6 +24,7 @@ function promoteConfig(risk: RiskConfig) {
     promotionMinClosed: risk.PROMOTION_MIN_CLOSED,
     promotionMinNetUsdMicro: usdToMicro(risk.PROMOTION_MIN_NET_USD),
     promotionMaxLastBuyHours: risk.PROMOTION_MAX_LAST_BUY_HOURS,
+    promotionMaxClosesPerHour: risk.PROMOTION_MAX_CLOSES_PER_HOUR,
     cooldownHours: risk.COOLDOWN_HOURS,
   };
 }

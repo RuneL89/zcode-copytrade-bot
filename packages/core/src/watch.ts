@@ -8,10 +8,12 @@ export interface ShadowAggregates {
   closedCount: number;
   netPnlUsdMicro: bigint;
   lastClosedAt: string | null;
+  /** Oldest forward close of the sample: the velocity gate's clock. */
+  firstClosedAt?: string | null;
 }
 
 export type PromotionBlockReason =
-  'FEWER_THAN_K_CLOSED' | 'NET_BELOW_THRESHOLD' | 'LAST_BUY_TOO_OLD' | 'REENTRY_BANNED';
+  'FEWER_THAN_K_CLOSED' | 'NET_BELOW_THRESHOLD' | 'SAMPLE_TOO_FAST' | 'LAST_BUY_TOO_OLD' | 'REENTRY_BANNED';
 
 export interface PromotionConfig {
   /** Closed shadow trades required (K). */
@@ -25,6 +27,13 @@ export interface PromotionConfig {
    * another candidate after the firing lifts the block immediately.
    */
   cooldownHours: number;
+  /**
+   * Velocity ceiling for the forward sample: a machine-speed closer racks up
+   * K closes in minutes (Qwerty54321: 45 closes in ~15 min), and the copier
+   * cannot mirror that rate nor observe it within budget. Closes per hour of
+   * sample span above this number reject the promotion.
+   */
+  promotionMaxClosesPerHour: number;
 }
 
 export interface PromotionInput {
@@ -57,6 +66,23 @@ export function canPromote(input: PromotionInput): PromotionDecision {
   }
   if (input.aggregates.netPnlUsdMicro <= input.config.promotionMinNetUsdMicro) {
     return { ok: false, reason: 'NET_BELOW_THRESHOLD' };
+  }
+  // Velocity gate: a full sample that accumulated faster than a human trades
+  // is machine rate (Qwerty54321: a full sample within ~15 min of admission).
+  // The copier cannot mirror that rate and observing it blows the credit
+  // budget, so the promotion is refused however profitable the sample looks.
+  // The span runs from the first forward close to now — a wallet that closed
+  // 8 lots in one minute 5 hours ago has been quiet ever since and is judged
+  // on its whole observed history, not on that one burst.
+  if (input.config.promotionMaxClosesPerHour > 0 && typeof input.aggregates.firstClosedAt === 'string') {
+    const firstMs = Date.parse(input.aggregates.firstClosedAt);
+    if (Number.isFinite(firstMs)) {
+      const spanHours = Math.max(input.nowMs - firstMs, 1) / 3_600_000;
+      const closesPerHour = input.aggregates.closedCount / spanHours;
+      if (closesPerHour > input.config.promotionMaxClosesPerHour) {
+        return { ok: false, reason: 'SAMPLE_TOO_FAST' };
+      }
+    }
   }
   const lastBuyMs = input.lastFundedBuyAt === null ? null : Date.parse(input.lastFundedBuyAt);
   const recencyMs = input.config.promotionMaxLastBuyHours * 3_600_000;

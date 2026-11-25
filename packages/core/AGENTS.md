@@ -78,7 +78,10 @@ Everything is re-exported from `src/index.ts`.
   `vetting` bucket, and `vetting` is deliberately excluded from the 75% amber
   ratio: a day of pre-hire scans is normal funnel work and must not trip the
   ladder that pauses the watch-list fallback (it still stops at its own cap
-  and still pauses at red).
+  and still pauses at red). The promotion gates also carry a velocity ceiling
+  (PROMOTION_MAX_CLOSES_PER_HOUR): a forward shadow sample closing faster
+  than a human trades (SAMPLE_TOO_FAST) is machine rate and is refused
+  however profitable (incident 2026-11-25).
 - **Exit mode is matched.** `guardExitMode` refuses when the executor mode and
   the position mode differ. A refusal does not invent a paper fill.
 - **Purity:** no network, database, filesystem, or clock access. The only

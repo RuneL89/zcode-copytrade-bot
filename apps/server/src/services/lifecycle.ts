@@ -129,6 +129,7 @@ export class TraderLifecycle {
       promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
       promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
       promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+      promotionMaxClosesPerHour: this.risk.PROMOTION_MAX_CLOSES_PER_HOUR,
       cooldownHours: this.risk.COOLDOWN_HOURS,
     };
     const freeChair = repo.activeActivationCount(this.db, this.mode) < this.risk.ROSTER_SIZE;
@@ -345,6 +346,7 @@ export class TraderLifecycle {
       promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
       promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
       promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+      promotionMaxClosesPerHour: this.risk.PROMOTION_MAX_CLOSES_PER_HOUR,
       cooldownHours: this.risk.COOLDOWN_HOURS,
     };
     /** A bench row is only a candidate while its record still passes the gates. */

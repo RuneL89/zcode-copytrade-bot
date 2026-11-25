@@ -175,6 +175,15 @@ pnpm format:check && pnpm typecheck && pnpm test && pnpm build
   thrown scan backs its candidate off on a private 10 min → 30 min → 2h → 8h
   ladder. A spent `WATCH_DETAIL_PER_MINUTE` Helius burst budget defers the
   candidate briefly so it cannot starve the admission queue.
+  Velocity gates (incident 2026-11-25, Qwerty54321: 549 leader events in
+  10.1 min stopped the whole desk through credit burn): the newest 50
+  signatures span rejects a candidate above `ADMISSION_MAX_EVENTS_PER_MIN`
+  events/min (machine rate — zero detail reads, deferred 24h); a forward
+  shadow sample closing faster than `PROMOTION_MAX_CLOSES_PER_HOUR`/hour
+  rejects the promotion (SAMPLE_TOO_FAST); the monitor fires a hired seat
+  past `LEADER_MAX_EVENTS_PER_10MIN` events/10 min; and the runtime ingest
+  limiter drops a seat's detail fetches past the same ceiling until the
+  window rolls or the fire lands.
 - Jupiter uses Swap API v2 `GET /swap/v2/build` on `api.jup.ag` (free key).
   Paper quotes fall back to a cached price. Live assembly is enabled only
   through the validated path: a known Jupiter program, the wallet as sole

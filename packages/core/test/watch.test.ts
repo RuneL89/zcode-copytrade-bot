@@ -10,11 +10,17 @@ const config: PromotionConfig = {
   promotionMinClosed: 8,
   promotionMinNetUsdMicro: 3_000_000n,
   promotionMaxLastBuyHours: 4,
+  promotionMaxClosesPerHour: 12,
   cooldownHours: 3,
 };
 
 const passing = {
-  aggregates: { closedCount: 8, netPnlUsdMicro: 4_000_000n, lastClosedAt: iso(NOW - HOUR) },
+  aggregates: {
+    closedCount: 8,
+    netPnlUsdMicro: 4_000_000n,
+    lastClosedAt: iso(NOW - HOUR),
+    firstClosedAt: iso(NOW - 8 * HOUR),
+  },
   lastFundedBuyAt: iso(NOW - 2 * HOUR),
   lastFiredAt: null,
   nowMs: NOW,
@@ -42,6 +48,35 @@ describe('canPromote — the bench gate (AC6)', () => {
     expect(
       canPromote({ ...passing, lastFiredAt: iso(NOW - HOUR), lastFundedBuyAt: iso(NOW - 2 * HOUR) }).reason,
     ).toBe('REENTRY_BANNED');
+  });
+
+  it('rejects a machine-speed sample (incident 2026-11-25: Qwerty54321)', () => {
+    // 8 closes inside 20 minutes = 24/hour, over the 12/hour ceiling: however
+    // profitable, the copier cannot mirror that rate and observing it blows
+    // the credit budget.
+    const fast = canPromote({
+      ...passing,
+      aggregates: { ...passing.aggregates, firstClosedAt: iso(NOW - 20 * 60_000) },
+    });
+    expect(fast).toEqual({ ok: false, reason: 'SAMPLE_TOO_FAST' });
+    // A human-paced sample of the same size passes: 8 closes across 8 hours.
+    expect(canPromote(passing).ok).toBe(true);
+    // An event machine never escapes the gate by waiting: the span runs to
+    // now, and a full sample inside the first minutes is still too fast an
+    // hour later only if recent closes kept it fast — a wallet that has been
+    // quiet for hours is judged on its whole history.
+    const quiet = canPromote({
+      ...passing,
+      aggregates: { ...passing.aggregates, firstClosedAt: iso(NOW - 30 * HOUR) },
+    });
+    expect(quiet.ok).toBe(true);
+    // Without a first-close timestamp the gate cannot run: the sample passes
+    // (fail open for legacy records, never for a refusal reason).
+    const noSpan = canPromote({
+      ...passing,
+      aggregates: { ...passing.aggregates, firstClosedAt: null },
+    });
+    expect(noSpan).toEqual({ ok: true, reason: null });
   });
 
   it('a hire of another trader after the firing lifts the re-entry ban', () => {

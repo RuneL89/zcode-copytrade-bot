@@ -81,6 +81,14 @@ no LLM in the loop (D6).
   fire cannot leave its bag unmanaged past the time/stop rules. The idle and
   stall watchers stay `ACTIVE`-only: calling `fire()` on a blocked activation
   could bypass the signed/unknown case checks.
+  A velocity fire (incident 2026-11-25) runs for every ACTIVE seat on
+  every tick: more than LEADER_MAX_EVENTS_PER_10MIN observed leader events
+  in 10 minutes fires the seat through the normal transactional path
+  (an event machine at 54 events/min burned ~350 roster credits per 5
+  minutes and stopped the desk). The runtime ingest path backs this with a
+  per-address 10-minute limiter (ingestWindow) that drops detail fetches
+  past the same ceiling until the window rolls, and it resolves the owning
+  activation BEFORE any paid fetch so pushes for non-seats cost nothing.
 - **The shadow gate is forward-only.** Admission-replayed events are written
   with `source='backfill'` and their lots with `backfilled=1`;
   `shadowAggregates` excludes backfilled lots by default. Promotion/demotion

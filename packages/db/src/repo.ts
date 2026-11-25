@@ -1361,6 +1361,8 @@ export interface ShadowAggregates {
   /** Net of closed trades, micro-USD (bigint: never floating point). */
   netPnlUsdMicro: bigint;
   lastClosedAt: string | null;
+  /** Oldest forward close of the sample: the promotion velocity gate's clock. */
+  firstClosedAt: string | null;
 }
 
 /**
@@ -1390,11 +1392,33 @@ export function shadowAggregates(
     .all();
   let net = 0n;
   let lastClosedAt: string | null = null;
+  let firstClosedAt: string | null = null;
   for (const row of rows) {
     if (row.pnlUsdMicro) net += BigInt(row.pnlUsdMicro);
     if (row.closedAt && (lastClosedAt === null || row.closedAt > lastClosedAt)) lastClosedAt = row.closedAt;
+    if (row.closedAt && (firstClosedAt === null || row.closedAt < firstClosedAt))
+      firstClosedAt = row.closedAt;
   }
-  return { closedCount: rows.length, netPnlUsdMicro: net, lastClosedAt };
+  return { closedCount: rows.length, netPnlUsdMicro: net, lastClosedAt, firstClosedAt };
+}
+
+/**
+ * Leader events this activation produced since `sinceIso`. The monitor's
+ * velocity watcher counts these per seat — an event machine on a chair costs
+ * thousands of observation credits a day and cannot be copied at any size.
+ */
+export function countObservedEventsSince(db: Db, activationId: string, sinceIso: string): number {
+  const row = db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.observedLeaderEvents)
+    .where(
+      and(
+        eq(schema.observedLeaderEvents.activationId, activationId),
+        gt(schema.observedLeaderEvents.processedAt, sinceIso),
+      ),
+    )
+    .get();
+  return row?.n ?? 0;
 }
 
 export function getWatchCursor(db: Db, address: string) {

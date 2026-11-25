@@ -124,6 +124,27 @@ export const riskConfigSchema = z
     PROMOTION_MIN_NET_USD: positiveInt('PROMOTION_MIN_NET_USD'),
     /** Promotion: the operator's tighter recency rule — the last funded buy must be this fresh. */
     PROMOTION_MAX_LAST_BUY_HOURS: positiveInt('PROMOTION_MAX_LAST_BUY_HOURS'),
+    /**
+     * Promotion velocity ceiling: forward closes per hour of sample span. A
+     * machine-speed closer (Qwerty54321: a full sample in ~15 min) is not
+     * copyable at any size — the copier cannot mirror the rate and observing
+     * it blows the credit budget.
+     */
+    PROMOTION_MAX_CLOSES_PER_HOUR: positiveInt('PROMOTION_MAX_CLOSES_PER_HOUR'),
+    /**
+     * Monitor velocity ceiling: observed leader events in 10 minutes. Above
+     * this the seat is fired — an event machine cannot be copied at any size
+     * and observing its every swap costs thousands of credits a day
+     * (incident 2026-11-25, Qwerty54321: 549 events in 10.1 min).
+     */
+    LEADER_MAX_EVENTS_PER_10MIN: positiveInt('LEADER_MAX_EVENTS_PER_10MIN'),
+    /**
+     * Admission velocity ceiling: newest-signature rate (events/minute over
+     * the newest 50) above which a candidate is refused as machine rate —
+     * bots pass a funded-buy count trivially, but their event firehose is
+     * uncopyable and unobservable within budget.
+     */
+    ADMISSION_MAX_EVENTS_PER_MIN: positiveInt('ADMISSION_MAX_EVENTS_PER_MIN'),
     /** Watched wallets the list holds. */
     WATCH_LIST_SIZE: positiveInt('WATCH_LIST_SIZE'),
     /** Promotable wallets the bench must keep (discovery trigger, D5). */
@@ -258,6 +279,9 @@ export const DEFAULT_RISK: RiskConfig = {
   ADMISSION_MAX_LAST_BUY_HOURS: 24,
   PROMOTION_MIN_CLOSED: 8,
   PROMOTION_MIN_NET_USD: 3,
+  PROMOTION_MAX_CLOSES_PER_HOUR: 12,
+  LEADER_MAX_EVENTS_PER_10MIN: 100,
+  ADMISSION_MAX_EVENTS_PER_MIN: 6,
   // The operator's tighter recency rule (D4): a promotable wallet must have bought recently.
   PROMOTION_MAX_LAST_BUY_HOURS: 4,
   WATCH_LIST_SIZE: 20,
@@ -315,6 +339,9 @@ const settingsPatchObjectSchema = z
     PROMOTION_MIN_CLOSED: z.number().int().positive().optional(),
     PROMOTION_MIN_NET_USD: z.number().int().positive().optional(),
     PROMOTION_MAX_LAST_BUY_HOURS: z.number().int().positive().optional(),
+    PROMOTION_MAX_CLOSES_PER_HOUR: z.number().int().positive().optional(),
+    LEADER_MAX_EVENTS_PER_10MIN: z.number().int().positive().optional(),
+    ADMISSION_MAX_EVENTS_PER_MIN: z.number().int().positive().optional(),
     WATCH_LIST_SIZE: z.number().int().positive().optional(),
     BENCH_TARGET: z.number().int().positive().optional(),
     ROSTER_SIZE: z.number().int().min(1).max(10).optional(),
