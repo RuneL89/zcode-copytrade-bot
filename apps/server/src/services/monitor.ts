@@ -164,6 +164,12 @@ export class LeaderMonitor {
         this.lastError = null;
         return;
       }
+      const rateFired = await this.checkRate(activation, now);
+      if (rateFired) {
+        this.lastTickAt = now.toISOString();
+        this.lastError = null;
+        return;
+      }
     }
     const addresses = repo.listCandidateAddresses(this.db, activation.candidateId);
     const solana = addresses.find((a) => a.chain === 'solana');
@@ -418,6 +424,38 @@ export class LeaderMonitor {
       .then(() => this.onStateChange())
       .catch((e: Error) => {
         repo.audit(this.db, 'monitor', `idle fire failed: ${e.message}`, {});
+      });
+    return true;
+  }
+
+  /**
+   * Velocity watcher (incident 2026-11-25): an event machine on a seat
+   * (Qwerty54321: 549 leader events in 10.1 min) cannot be copied at any size,
+   * and observing its every swap burns thousands of credits a day — the
+   * credit guard stops the whole desk over it. Count this seat's observed
+   * leader events over the last 10 minutes; past
+   * `LEADER_MAX_EVENTS_PER_10MIN` fire through the normal transactional path
+   * (positions closed, chair freed, wallet cooling).
+   */
+  private async checkRate(
+    activation: { activationId: string; candidateId: string; state: string },
+    now: Date,
+  ): Promise<boolean> {
+    const since = new Date(now.getTime() - 10 * 60_000).toISOString();
+    const events = repo.countObservedEventsSince(this.db, activation.activationId, since);
+    const cap = this.risk.LEADER_MAX_EVENTS_PER_10MIN;
+    if (events <= cap) return false;
+    repo.audit(
+      this.db,
+      'monitor',
+      `rate watcher: ${events} leader events in 10 min (cap ${cap}) — firing an event machine`,
+      { activationId: activation.activationId, candidateId: activation.candidateId },
+    );
+    await this.lifecycle
+      .fire(activation.activationId, `event rate over ceiling: ${events} events in 10 min`)
+      .then(() => this.onStateChange())
+      .catch((e: Error) => {
+        repo.audit(this.db, 'monitor', `rate fire failed: ${e.message}`, {});
       });
     return true;
   }

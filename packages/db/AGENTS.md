@@ -85,6 +85,11 @@ and every repository function the server calls.
   from `resetWatchRecord`, which erases the evidence too). The query's optional
   `checkedBefore` cutoff filters recently measured rows before the SQL limit,
   so a one-candidate admission tick cannot be consumed by a fresh head row.
+- **Velocity counters are query-backed.**
+  countObservedEventsSince(db, activationId, sinceIso) counts a seat
+  observed leader events over a window for the monitor velocity watcher,
+  and ShadowAggregates.firstClosedAt (oldest forward close) feeds the
+  promotion velocity gate (SAMPLE_TOO_FAST).
 - **Exit-queue lookups are bounded helpers.** `listKvByPrefix` reads
   `exit.queue:*` rows for the runtime retry consumer. `latestFailedExitIntent`
   resolves a legacy queue row by position and returns only a `failed` exit

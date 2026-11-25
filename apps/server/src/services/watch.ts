@@ -111,6 +111,8 @@ export interface AdmissionReading {
    * Nothing can have improved, so no read was paid for.
    */
   unchangedSince?: { buys: number };
+  /** Newest-signature rate over the ceiling: machine rate, no reads spent. */
+  tooFast?: boolean;
   /**
    * Why each detail read resolved the way it did. A wallet whose every
    * readable transaction is a third-party affair with no balances of its own
@@ -524,6 +526,40 @@ export class WatchService {
     if (opts.candidateId && tip !== null) {
       const stored = this.storedTip(opts.candidateId);
       if (stored && stored.tip === tip) return this.unchangedReading(measuredAt, stored.buys);
+    }
+
+    // Velocity gate from data already in hand — the newest 50 signatures' span,
+    // no extra reads. A machine-speed rotation bot did 549 events in 10.1 min
+    // (54/min); a human day-trader sustains a fraction of one per minute.
+    // Above the ceiling the wallet is a bot: skip every detail read (its every
+    // swap would blow the credit budget and the copier cannot mirror the rate)
+    // and let the caller defer it on the ladder's max step.
+    const newest = rows.filter((r) => r.blockTime !== null).slice(0, 50);
+    let tooFast = false;
+    if (newest.length >= 50) {
+      const spanMin = (newest[0]!.blockTime! - newest[newest.length - 1]!.blockTime!) / 60;
+      const perMin = spanMin > 0 ? newest.length / spanMin : Number.POSITIVE_INFINITY;
+      tooFast = perMin > this.risk.ADMISSION_MAX_EVENTS_PER_MIN;
+    }
+    if (tooFast) {
+      return {
+        fundedBuys24h: 0,
+        lastFundedBuyAt: null,
+        measuredAt,
+        partial: true,
+        events: [],
+        tip,
+        budgetExhausted: false,
+        tooFast: true,
+        evidence: {
+          inWindow: rows.length,
+          detailed: 0,
+          unreadable: 0,
+          selfSigned: 0,
+          ownedDeltas: 0,
+          noParty: 0,
+        },
+      };
     }
 
     const inWindow = rows.filter((r) => r.blockTime !== null && r.blockTime >= cutoffSec);
@@ -1183,6 +1219,24 @@ export class WatchService {
           );
           continue;
         }
+        if (reading.tooFast) {
+          // Machine rate: the newest-signature span proves no human trades this
+          // fast, the copier cannot mirror it, and observing it costs thousands
+          // of credits a day. Defer on the ladder's max step — a bot stays a
+          // bot — and audit it in the machine-rate verdict so the dashboard
+          // says why.
+          const attempts = this.bumpAdmissionAttempts(candidate.candidateId);
+          const deferredUntil = new Date(Date.now() + 24 * 3_600_000).toISOString();
+          repo.deferCandidateActivity(this.db, candidate.candidateId, deferredUntil, reading.measuredAt);
+          repo.audit(
+            this.db,
+            'watch',
+            `admission rate gate for ${candidate.handle}: newest-signature rate over ` +
+              `${this.risk.ADMISSION_MAX_EVENTS_PER_MIN}/min — machine rate; deferred 24h (attempt ${attempts})`,
+            { candidateId: candidate.candidateId, address, deferredUntil, attempts },
+          );
+          continue;
+        }
         const belowGate = reading.fundedBuys24h < minBuys;
         if (belowGate && reading.partial) {
           // Never overwrite the last good census with a truncated reading.
@@ -1388,6 +1442,7 @@ export class WatchService {
         promotionMinClosed: this.risk.PROMOTION_MIN_CLOSED,
         promotionMinNetUsdMicro: usdToMicro(this.risk.PROMOTION_MIN_NET_USD),
         promotionMaxLastBuyHours: this.risk.PROMOTION_MAX_LAST_BUY_HOURS,
+        promotionMaxClosesPerHour: this.risk.PROMOTION_MAX_CLOSES_PER_HOUR,
         cooldownHours: this.risk.COOLDOWN_HOURS,
       },
     };

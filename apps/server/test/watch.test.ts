@@ -1948,6 +1948,32 @@ describe('admission scan fail-closed', () => {
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
   });
 
+  it('refuses a machine-rate wallet without spending a single detail read', async () => {
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    seedCandidate('cand_qwerty', 'qwerty', 'WalletQwerty');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_qwerty', { checkedAt: oldAt });
+
+    // Incident 2026-11-25 (Qwerty54321): the newest 50 signatures span 7.5
+    // minutes — ~6.7 events/min, over the 6/min ceiling. The page span alone
+    // proves the wallet is a bot, so zero detail reads are spent and the
+    // ladder's max step (24h) applies: a bot stays a bot.
+    for (let i = 0; i < 80; i++) {
+      h.page.push({ signature: 'qwerty_${i}', blockTime: NOW_SEC - i * 9 });
+    }
+
+    await h.svc.evaluate();
+    expect(h.heliusDetailCalls.get('WalletQwerty')).toBeUndefined();
+    const candidate = repo.getCandidate(handle.db, 'cand_qwerty')!;
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_qwerty'));
+    expect(deferredUntil).toBeDefined();
+    expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 23 * HOUR);
+    expect(repo.listAudit(handle.db, 20).some((row) => row.message.includes('machine rate'))).toBe(true);
+  });
+
   it('stops at the base window when no attributed buy shows in it', async () => {
     seedCandidate('cand_base_gate', 'base_gate', 'WalletBaseGate');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
