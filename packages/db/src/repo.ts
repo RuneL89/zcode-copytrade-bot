@@ -54,6 +54,7 @@ export function listKvByPrefix(db: Db, prefix: string) {
 /** Per-candidate admission-scan deferral (an eligibility signal, not freshness). */
 export const ADMISSION_DEFER_KEY_PREFIX = 'admission.defer:';
 export const ADMISSION_ATTEMPTS_KEY_PREFIX = 'admission.attempts:';
+export const ADMISSION_TIP_KEY_PREFIX = 'admission.tip:';
 
 export function admissionDeferKey(candidateId: string): string {
   return `${ADMISSION_DEFER_KEY_PREFIX}${candidateId}`;
@@ -62,6 +63,15 @@ export function admissionDeferKey(candidateId: string): string {
 /** Consecutive "prefix did not prove the gate" scans (drives the defer ladder). */
 export function admissionAttemptsKey(candidateId: string): string {
   return `${ADMISSION_ATTEMPTS_KEY_PREFIX}${candidateId}`;
+}
+
+/**
+ * Newest on-chain signature a completed scan saw for the candidate. An
+ * unchanged tip means the wallet did nothing since a scan that already found
+ * it below the gate, so the next scan cannot learn anything new.
+ */
+export function admissionTipKey(candidateId: string): string {
+  return `${ADMISSION_TIP_KEY_PREFIX}${candidateId}`;
 }
 
 // --- audit / control ---------------------------------------------------------
@@ -1207,6 +1217,25 @@ export function setWatchStatus(db: Db, candidateId: string, status: string, reas
     .set({ status, reason: reason ?? null, updatedAt: nowIso() })
     .where(eq(schema.watchWallets.candidateId, candidateId))
     .run();
+}
+
+/**
+ * Return a watch-list slot to the admission queue WITHOUT touching the
+ * wallet's shadow record. Deletes the membership row, its cursor and the
+ * scan bookkeeping (defer, attempts, tip); the observed events and lots stay,
+ * so a later re-admission continues the same forward record and starts its
+ * cursor at the tip again. Distinct from `resetWatchRecord`, which erases the
+ * evidence too.
+ */
+export function releaseWatchWallet(db: Db, candidateId: string): void {
+  db.delete(schema.watchWallets).where(eq(schema.watchWallets.candidateId, candidateId)).run();
+  db.delete(schema.watchCursors).where(eq(schema.watchCursors.candidateId, candidateId)).run();
+  for (const key of [
+    admissionDeferKey(candidateId),
+    admissionAttemptsKey(candidateId),
+    admissionTipKey(candidateId),
+  ])
+    kvDelete(db, key);
 }
 
 /**

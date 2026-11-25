@@ -175,16 +175,18 @@ export class HeliusProvider {
     }
   }
 
+  /** The per-wallet daily ceiling only applies to the watch-list fallback path. */
   private async signatureRows(
     address: string,
     limit: number,
     before?: string,
+    path: CreditPath = 'watch',
   ): Promise<Array<{ signature: string; blockTime: number | null }>> {
     const rows = await this.rpc<Array<{ signature: string; blockTime: number | null }>>(
       'getSignaturesForAddress',
       [address, { limit, ...(before ? { before } : {}) }],
-      'watch',
-      address,
+      path,
+      path === 'watch' ? address : undefined,
     );
     return rows ?? [];
   }
@@ -209,13 +211,18 @@ export class HeliusProvider {
     }
   }
 
-  /** Strict signature page: throws on a transport/governor failure. */
+  /**
+   * Strict signature page: throws on a transport/governor failure. `path`
+   * defaults to the watch-list fallback; the admission scan passes `vetting`
+   * so its pages come out of the pre-hire budget, not the watch fallback's.
+   */
   async recentSignaturesStrict(
     address: string,
     limit = 100,
     before?: string,
+    path: CreditPath = 'watch',
   ): Promise<Array<{ signature: string; blockTime: number | null }>> {
-    return this.signatureRows(address, limit, before);
+    return this.signatureRows(address, limit, before, path);
   }
 
   /**

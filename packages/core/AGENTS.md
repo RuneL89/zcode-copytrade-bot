@@ -73,7 +73,12 @@ Everything is re-exported from `src/index.ts`.
   `backfill.ts` also exports the admission/watch detail burst ceiling
   (`WATCH_DETAIL_PER_MINUTE`); the server reads the same default from
   `risk.WATCH_DETAIL_PER_MINUTE`, applies a stricter 12-detail admission
-  per-pass budget, and keeps the governor's daily cap as the hard stop.
+  per-pass budget, and keeps the governor's daily cap as the hard stop. Since
+  2026-11-24 the admission scan pays its pages and detail reads from the
+  `vetting` bucket, and `vetting` is deliberately excluded from the 75% amber
+  ratio: a day of pre-hire scans is normal funnel work and must not trip the
+  ladder that pauses the watch-list fallback (it still stops at its own cap
+  and still pauses at red).
 - **Exit mode is matched.** `guardExitMode` refuses when the executor mode and
   the position mode differ. A refusal does not invent a paper fill.
 - **Purity:** no network, database, filesystem, or clock access. The only

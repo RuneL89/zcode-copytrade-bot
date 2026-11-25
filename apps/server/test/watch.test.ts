@@ -7,7 +7,14 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { openDatabase } from '@zcode-bot/db';
 import * as repo from '@zcode-bot/db/repo.js';
 import { loadConfig, type RiskConfig } from '@zcode-bot/config';
-import { STABLE_MINTS, type FundedSwap, type LeaderTxSummary, type TokenDelta } from '@zcode-bot/core';
+import {
+  GovernedSpendError,
+  STABLE_MINTS,
+  type FundedSwap,
+  type LeaderTxSummary,
+  type SpendDenyReason,
+  type TokenDelta,
+} from '@zcode-bot/core';
 import { PriceUnavailableError } from '@zcode-bot/providers';
 import { WatchService, shadowPnlUsdMicro, type WatchServiceDeps } from '../src/services/watch.js';
 import { Runtime } from '../src/runtime.js';
@@ -122,7 +129,15 @@ interface HarnessOptions {
   /** Per-address Helius failures. */
   heliusPageFailures?: string[];
   heliusDetailFailures?: string[];
+  /** The credit governor refuses this address's paid signature page. */
+  heliusPageDenial?: { address: string; reason: SpendDenyReason };
+  /** The credit governor refuses this address's paid detail reads from the n-th read on. */
+  heliusDetailDenial?: { address: string; fromRead: number; reason: SpendDenyReason };
 }
+
+/** What the provider throws when the credit governor refuses a paid call. */
+const spendDenial = (method: 'getTransaction' | 'getSignaturesForAddress', reason: SpendDenyReason) =>
+  new GovernedSpendError({ ok: false, credits: 0, path: 'vetting', method, level: 'green', reason });
 
 function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
   const summaries = new Map<string, LeaderTxSummary>();
@@ -178,6 +193,9 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
       recentSignaturesStrict: async (address: string, limit = 100, before?: string) => {
         notePageCall(address);
         if (over.heliusPageFailures?.includes(address)) throw new Error('helius: HTTP 429');
+        if (over.heliusPageDenial?.address === address) {
+          throw spendDenial('getSignaturesForAddress', over.heliusPageDenial.reason);
+        }
         return pageFor(address, limit, before);
       },
       transactionSummary: async (address: string, signature: string) => {
@@ -186,8 +204,13 @@ function harness(risk: RiskConfig, over: HarnessOptions = {}): Harness {
         return perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature) ?? null;
       },
       transactionParty: async (address: string, signature: string) => {
-        heliusDetailCalls.set(address, (heliusDetailCalls.get(address) ?? 0) + 1);
+        const reads = (heliusDetailCalls.get(address) ?? 0) + 1;
+        heliusDetailCalls.set(address, reads);
         if (over.heliusDetailFailures?.includes(address)) throw new Error('helius: HTTP 429');
+        const denial = over.heliusDetailDenial;
+        if (denial?.address === address && reads >= denial.fromRead) {
+          throw spendDenial('getTransaction', denial.reason);
+        }
         const summary = perAddress.get(address)?.summaries.get(signature) ?? summaries.get(signature);
         if (!summary) return { kind: 'no-party' as const };
         return { kind: 'party' as const, summary, how: 'self-signed' as const };
@@ -1842,11 +1865,12 @@ describe('admission scan fail-closed', () => {
       checkedAt: oldAt,
     });
 
-    // The three buys sit at 20/25/30 minutes back — outside the newest-12
-    // prefix but inside the deepened one. The scan details indexes 0..30
-    // (31 reads), proves the gate, and stops: the reading is `partial`
-    // (31 of 40 in-window detailed) and the wallet is admitted.
-    const buyIndexes = new Set([20, 25, 30]);
+    // Two buys sit inside the base 24 (indexes 18 and 22) and the third at 30.
+    // The base buy rate (2 in 24) can reach the three-buy gate inside the scan
+    // budget, so the scan deepens past the base, finds the third buy at read
+    // 31, proves the gate and stops: the reading is `partial` (31 of 40
+    // in-window detailed) and the wallet is admitted.
+    const buyIndexes = new Set([18, 22, 30]);
     for (let i = 0; i < 40; i++) {
       const signature = `trunc_defer_${i}`;
       h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
@@ -1969,17 +1993,52 @@ describe('admission scan fail-closed', () => {
     expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
   });
 
-  it('deepens when the base window shows progress and proves a near-miss wallet', async () => {
+  it('deepens when the base buy rate can reach the gate and proves the wallet', async () => {
     seedCandidate('cand_near_miss', 'near_miss', 'WalletNearMiss');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
     setActivity('cand_near_miss', { checkedAt: iso(Date.now() - 96 * HOUR) });
 
-    // One buy inside the base 24 shows the wallet is a trader; the scan keeps
-    // deepening while buys keep appearing and proves the gate at read 41.
-    const buyIndexes = new Set([5, 30, 40]);
+    const fill = (buyIndexes: Set<number>, rows: number) => {
+      for (let i = 0; i < rows; i++) {
+        const signature = `near_miss_${i}`;
+        h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+        h.summaries.set(
+          signature,
+          swapSummary({
+            signature,
+            minutesAgo: i + 1,
+            tokens: 6_000_000n,
+            usd: 6_000_000n,
+            side: buyIndexes.has(i) ? 'buy' : 'sell',
+          }),
+        );
+      }
+    };
+
+    // Two buys inside the base 24, the third at 34: the base rate makes the
+    // gate reachable, the scan deepens and proves it at read 35.
+    fill(new Set([5, 14, 34]), 60);
+    const result = await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_near_miss')!;
+    expect(candidate.activityCheckStatus).toBe('partial');
+    expect(candidate.buys24h).toBe(3);
+    expect(repo.getWatchWallet(handle.db, 'cand_near_miss')?.status).toBe('watching');
+    expect(result.admitted).toBe(1);
+    expect(h.heliusDetailCalls.get('WalletNearMiss')).toBe(35);
+  });
+
+  it('does not deepen when the base buy rate cannot reach the gate', async () => {
+    seedCandidate('cand_sparse', 'sparse', 'WalletSparse');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_sparse', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // One buy in the base 24 extrapolates to 2.5 buys over the whole scan
+    // budget — short of the three-buy gate even though two more buys sit at
+    // 30 and 40. Depth is not spent on it; the ladder re-reads it later.
     for (let i = 0; i < 60; i++) {
-      const signature = `near_miss_${i}`;
+      const signature = `sparse_${i}`;
       h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
       h.summaries.set(
         signature,
@@ -1988,18 +2047,95 @@ describe('admission scan fail-closed', () => {
           minutesAgo: i + 1,
           tokens: 6_000_000n,
           usd: 6_000_000n,
-          side: buyIndexes.has(i) ? 'buy' : 'sell',
+          side: i === 5 || i === 30 || i === 40 ? 'buy' : 'sell',
         }),
       );
     }
 
-    const result = await h.svc.evaluate();
-    const candidate = repo.getCandidate(handle.db, 'cand_near_miss')!;
-    expect(candidate.activityCheckStatus).toBe('partial');
-    expect(candidate.buys24h).toBe(3);
-    expect(repo.getWatchWallet(handle.db, 'cand_near_miss')?.status).toBe('watching');
-    expect(result.admitted).toBe(1);
-    expect(h.heliusDetailCalls.get('WalletNearMiss')).toBe(41);
+    await h.svc.evaluate();
+    expect(h.heliusDetailCalls.get('WalletSparse')).toBe(24);
+    expect(repo.getWatchWallet(handle.db, 'cand_sparse')).toBeUndefined();
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_sparse'))).toBeDefined();
+  });
+
+  it('stops deepening after 24 consecutive reads without a new buy', async () => {
+    seedCandidate('cand_dry', 'dry', 'WalletDry');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_dry', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // Two buys in the base 24 open the deepening; reads 15..38 bring none.
+    // The scan stops there (39 reads) instead of chasing the third buy at 40.
+    for (let i = 0; i < 60; i++) {
+      const signature = `dry_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      h.summaries.set(
+        signature,
+        swapSummary({
+          signature,
+          minutesAgo: i + 1,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: i === 5 || i === 14 || i === 40 ? 'buy' : 'sell',
+        }),
+      );
+    }
+
+    await h.svc.evaluate();
+    expect(h.heliusDetailCalls.get('WalletDry')).toBe(39);
+    expect(repo.getWatchWallet(handle.db, 'cand_dry')).toBeUndefined();
+    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_dry'))).toBeDefined();
+  });
+
+  it('does not re-read a wallet that has not moved since a scan found it below the gate', async () => {
+    seedCandidate('cand_still', 'still', 'WalletStill');
+    const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
+    stampAllActivity();
+    setActivity('cand_still', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    // A complete 12-row window with one buy: recorded as an ok census, and
+    // deferred on the ladder — a trading wallet below the bar is not re-read
+    // every time it becomes the oldest row of its tier.
+    for (let i = 0; i < 12; i++) {
+      const signature = `still_${i}`;
+      h.page.push({ signature, blockTime: NOW_SEC - (i + 1) * 60 });
+      h.summaries.set(
+        signature,
+        swapSummary({
+          signature,
+          minutesAgo: i + 1,
+          tokens: 6_000_000n,
+          usd: 6_000_000n,
+          side: i === 4 ? 'buy' : 'sell',
+        }),
+      );
+    }
+    await h.svc.evaluate();
+    const candidate = repo.getCandidate(handle.db, 'cand_still')!;
+    expect(candidate.activityCheckStatus).toBe('ok');
+    expect(candidate.buys24h).toBe(1);
+    expect(h.heliusDetailCalls.get('WalletStill')).toBe(12);
+    const first = repo.kvGet(handle.db, repo.admissionDeferKey('cand_still'))!;
+    expect(Date.parse(first)).toBeGreaterThan(Date.now() + 25 * 60_000);
+    expect(Date.parse(first)).toBeLessThan(Date.now() + 35 * 60_000);
+
+    // The deferral lapses and the reading ages past the freshness window, but
+    // the wallet has not moved: the tip check answers from the free signature
+    // page, no detail read is paid, and the ladder steps up.
+    repo.kvSet(handle.db, repo.admissionDeferKey('cand_still'), iso(Date.now() - 1_000));
+    handle.sqlite
+      .prepare('update trader_candidates set activity_checked_at = ? where candidate_id = ?')
+      .run(iso(Date.now() - 31 * 60_000), 'cand_still');
+    await h.svc.evaluate();
+    expect(h.heliusDetailCalls.get('WalletStill')).toBe(12);
+    expect(repo.kvGet(handle.db, repo.admissionAttemptsKey('cand_still'))).toBe('2');
+    const second = repo.kvGet(handle.db, repo.admissionDeferKey('cand_still'))!;
+    expect(Date.parse(second)).toBeGreaterThan(Date.now() + 90 * 60_000);
+    expect(
+      repo.listAudit(handle.db, 20).some((row) => row.message.includes('admission unchanged for still')),
+    ).toBe(true);
+    // The census itself was untouched.
+    expect(repo.getCandidate(handle.db, 'cand_still')!.buys24h).toBe(1);
   });
 
   it('records a complete window of exactly the detail budget as ok', async () => {
@@ -2035,16 +2171,19 @@ describe('admission scan fail-closed', () => {
     expect(h.heliusDetailCalls.get('WalletExact12')).toBe(12);
   });
 
-  it('reads a whole attributed window in full and records the ok census even when the gate fails', async () => {
+  it('stops at the base window when one buy there cannot extrapolate to the gate', async () => {
     seedCandidate('cand_budget_cap', 'budget_cap', 'WalletBudgetCap');
     const h = harness(riskConfig({ ADMISSION_MIN_BUYS_24H: 3, WATCH_LIST_SIZE: 100 }));
     stampAllActivity();
-    setActivity('cand_budget_cap', { checkedAt: iso(Date.now() - 96 * HOUR) });
+    const oldAt = iso(Date.now() - 96 * HOUR);
+    setActivity('cand_budget_cap', { checkedAt: oldAt });
 
-    // 40 attributed signatures (two buys, below the gate) fit the deepened
-    // budget (60): the scan reads them all, records the complete census as ok,
-    // and the candidate advances instead of deferring forever. The gate (3
-    // buys) rejects admission — a real but quiet wallet is not a member.
+    // 40 attributed signatures with two buys, only one of them inside the base
+    // 24. One buy per 24 reads extrapolates to 2.5 over the scan budget —
+    // short of the three-buy gate — so the scan stops at the base instead of
+    // paying for the other 16 reads. The truncated reading records no census
+    // (the old columns and their freshness stay) and the wallet waits on the
+    // ladder until it has traded again.
     const buyIndexes = new Set([5, 25]);
     for (let i = 0; i < 40; i++) {
       const signature = `budget_cap_${i}`;
@@ -2062,12 +2201,13 @@ describe('admission scan fail-closed', () => {
     }
 
     await h.svc.evaluate();
-    expect(h.heliusDetailCalls.get('WalletBudgetCap')).toBe(40);
+    expect(h.heliusDetailCalls.get('WalletBudgetCap')).toBe(24);
     const candidate = repo.getCandidate(handle.db, 'cand_budget_cap')!;
-    expect(candidate.activityCheckStatus).toBe('ok');
-    expect(candidate.buys24h).toBe(2);
-    expect(candidate.sells24h).toBe(38);
-    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_budget_cap'))).toBeUndefined();
+    expect(candidate.activityCheckStatus).toBe('failed');
+    expect(candidate.activityCheckedAt).toBe(oldAt);
+    const deferredUntil = repo.kvGet(handle.db, repo.admissionDeferKey('cand_budget_cap'));
+    expect(deferredUntil).toBeDefined();
+    expect(Date.parse(deferredUntil!)).toBeGreaterThan(Date.now() + 25 * 60_000);
     expect(repo.getWatchWallet(handle.db, 'cand_budget_cap')).toBeUndefined();
   });
 
@@ -2279,7 +2419,7 @@ describe('admission scan fail-closed', () => {
     expect(h.signatureCalls.get('WalletOverflow')).toBeGreaterThan(firstCalls);
   });
 
-  it('keeps a transient signature-page failure on the retry-next-tick path', async () => {
+  it('defers a wallet whose scan throws, briefly at first, so it cannot hold the only slot', async () => {
     seedCandidate('cand_transient', 'transient', 'WalletTransient');
     const h = harness(riskConfig(), { heliusPageFailures: ['WalletTransient'] });
     stampAllActivity();
@@ -2297,11 +2437,102 @@ describe('admission scan fail-closed', () => {
     await h.svc.evaluate();
     expect(h.signatureCalls.get('WalletTransient')).toBe(1);
     expect(repo.getCandidate(handle.db, 'cand_transient')?.activityCheckStatus).toBe('failed');
-    expect(repo.kvGet(handle.db, repo.admissionDeferKey('cand_transient'))).toBeUndefined();
+    const first = repo.kvGet(handle.db, repo.admissionDeferKey('cand_transient'))!;
+    expect(Date.parse(first)).toBeGreaterThan(Date.now() + 8 * 60_000);
+    expect(Date.parse(first)).toBeLessThan(Date.now() + 12 * 60_000);
 
+    // The deferral lapses: attempt 2 backs off to 30 minutes instead of being
+    // retried on the very next tick.
+    repo.kvSet(handle.db, repo.admissionDeferKey('cand_transient'), iso(Date.now() - 1_000));
     await h.svc.evaluate();
     expect(h.signatureCalls.get('WalletTransient')).toBe(2);
-    expect(repo.getCandidate(handle.db, 'cand_transient')?.activityCheckStatus).toBe('failed');
+    const second = repo.kvGet(handle.db, repo.admissionDeferKey('cand_transient'))!;
+    expect(Date.parse(second)).toBeGreaterThan(Date.now() + 25 * 60_000);
+  });
+
+  it('rests the whole admission scan when the credit governor refuses a read', async () => {
+    seedCandidate('cand_vetdenied', 'vetdenied', 'WalletVetDenied');
+    seedCandidate('cand_vetnext', 'vetnext', 'WalletVetNext');
+    const h = harness(riskConfig(), {
+      heliusPageDenial: { address: 'WalletVetDenied', reason: 'path_cap' },
+    });
+    stampAllActivity();
+    setActivity('cand_vetdenied', { checkedAt: iso(Date.now() - 96 * HOUR) });
+    setActivity('cand_vetnext', { checkedAt: iso(Date.now() - 95 * HOUR) });
+
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletVetDenied')).toBe(1);
+    // Nothing else was scanned: the refusal is not about this candidate.
+    expect(h.signatureCalls.get('WalletVetNext')).toBeUndefined();
+    expect(repo.listAudit(handle.db, 20).some((row) => row.message.includes('admission paused 15 min'))).toBe(
+      true,
+    );
+    expect(repo.getCandidate(handle.db, 'cand_vetdenied')?.activityCheckStatus).toBe('failed');
+
+    // While suspended, no candidate is scanned even when its deferral lapses.
+    repo.kvSet(handle.db, repo.admissionDeferKey('cand_vetdenied'), iso(Date.now() - 1_000));
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletVetDenied')).toBe(1);
+    expect(h.signatureCalls.get('WalletVetNext')).toBeUndefined();
+  });
+
+  it('does not scan while the watch list is full and resumes when a slot frees', async () => {
+    seedCandidate('cand_full1', 'full1', 'WalletFull1');
+    // The watch table is shared with earlier tests in this file, so the cap is
+    // derived from the rows that already exist: with this test's two extra
+    // watching wallets the list is one over the cap; archiving both frees it.
+    const existing = repo.listWatchWallets(handle.db, 'watching').length;
+    const h = harness(riskConfig({ WATCH_LIST_SIZE: existing + 1, BENCH_TARGET: 1 }));
+    seedWatching('cand_slot_a', 'slot_a', 'WalletSlotA');
+    seedWatching('cand_slot_b', 'slot_b', 'WalletSlotB');
+    stampAllActivity();
+    setActivity('cand_full1', { checkedAt: iso(Date.now() - 96 * HOUR) });
+
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletFull1')).toBeUndefined();
+    expect(repo.listAudit(handle.db, 20).some((row) => row.message.includes('watch list is full'))).toBe(
+      true,
+    );
+
+    repo.setWatchStatus(handle.db, 'cand_slot_a', 'archived', 'test');
+    repo.setWatchStatus(handle.db, 'cand_slot_b', 'archived', 'test');
+    await h.svc.evaluate();
+    expect(h.signatureCalls.get('WalletFull1')).toBe(1);
+    expect(repo.listAudit(handle.db, 20).some((row) => row.message.includes('admission resumed'))).toBe(true);
+  });
+
+  it('releases a stale watching wallet to the queue instead of archiving it', async () => {
+    seedWatching('cand_stalehold', 'stalehold', 'WalletStaleHold');
+    const h = harness(riskConfig({ ADMISSION_MAX_LAST_BUY_HOURS: 24, WATCH_EVICTION_DAYS: 14 }));
+    // Last funded buy 30h ago: past admission's own 24h freshness, far inside
+    // the 14-day eviction window, with a closed forward record and nothing
+    // open. There is nothing left to observe and no way to promote it.
+    const lastBuy = iso(Date.now() - 30 * HOUR);
+    repo.insertWatchEvent(handle.db, {
+      candidateId: 'cand_stalehold',
+      address: 'WalletStaleHold',
+      signature: 'stale_b1',
+      side: 'buy',
+      mint: TOKEN,
+      tokenAmountBase: '1000000',
+      decimals: 6,
+      usdMicro: '0',
+      blockTime: Math.floor(Date.parse(lastBuy) / 1000),
+      observedAt: lastBuy,
+      source: 'watch-poll',
+    });
+
+    const result = await h.svc.evaluate();
+    expect(result.released).toBe(1);
+    // The slot is gone…
+    expect(repo.getWatchWallet(handle.db, 'cand_stalehold')).toBeUndefined();
+    // …but the evidence stays for a later re-admission.
+    expect(repo.listWatchEvents(handle.db, 'cand_stalehold')).toHaveLength(1);
+    expect(
+      repo
+        .listAudit(handle.db, 20)
+        .some((row) => row.message.includes('watch released: no funded buy for 30h')),
+    ).toBe(true);
   });
 
   it('defers a spent detail budget briefly so one candidate cannot starve the queue', async () => {
